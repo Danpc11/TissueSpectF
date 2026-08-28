@@ -29,10 +29,11 @@ list(
 
   # maxT permutation settings (kept here so both datasets provably share them).
   maxt = list(
-    B            = 1000L,
+    # TSF_MAXT_B lets a smoke run use a small B; production runs leave it unset.
+    B            = as.integer(Sys.getenv("TSF_MAXT_B", "1000")),
     seed         = 42L,
     block_sizes  = c(10L, 20L, 50L),
     alpha        = 0.05,
-    stable_frac  = 0.9
+    stable_frac  = as.numeric(Sys.getenv("TSF_STABLE_FRAC", "0.9"))
   )
 )
