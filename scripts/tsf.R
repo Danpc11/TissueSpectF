@@ -15,7 +15,7 @@ if (!dir.exists("R") || !dir.exists("config")) {
        call. = FALSE)
 }
 suppressPackageStartupMessages({
-  for (f in c("utils_io", "config", "labels", "ingest", "paths", "spectrum",
+  for (f in c("utils_io", "config", "labels", "ingest", "paths", "grid", "spectrum",
               "maxt", "stability", "peaks_genes", "compare", "stages")) {
     source(file.path("R", paste0(f, ".R")))
   }
@@ -35,6 +35,7 @@ Commands:
   stability   stable peaks per condition + peak tables
   peaks       gene-level reconstruction of every stable peak
   compare     constant signature, transitions, cross-dataset replication
+  window      spectral window: what the gap pattern alone can produce
   run         all of the above, in order
   status      what each dataset has on disk
   selfcheck   run the full pipeline on synthetic data with a known peak
@@ -79,7 +80,7 @@ parse_cli <- function(args) {
 opt <- parse_cli(commandArgs(trailingOnly = TRUE))
 if (opt$help || opt$command %in% c("help", "--help")) { cat(USAGE); quit(status = 0L) }
 
-known <- c(stage_names, "check", "run", "status", "selfcheck")
+known <- c(stage_names, "check", "run", "status", "selfcheck", "window")
 if (!opt$command %in% known) {
   cat(USAGE)
   tsf_abort("Unknown command: ", opt$command)
