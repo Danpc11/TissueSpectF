@@ -17,11 +17,24 @@ R/
   config.R               config loading and validation
   labels.R               controlled vocabulary + label harmonisation engine
   ingest.R               GEO -> common format
+  spectrum.R             FFT per chromosome + Fisher g-test
+  maxt.R                 maxT permutation test
+  stability.R            stable peaks per condition
+  peaks_genes.R          gene-level reconstruction of a peak
+  compare.R              signature, transitions, cross-dataset crossing
+  paths.R                where each stage reads and writes
 scripts/
   00_check_inputs.R      verify the GEO files are where the configs expect them
   01_ingest_dataset.R    GEO -> common format
+  02_spectra.R           FFT, per sample and per condition
+  03_maxt.R              permutation test (the slow stage)
+  04_stability.R         stable peaks + condition peak tables
+  05_peaks_genes.R       gene reconstruction per peak
+  06_compare_datasets.R  signature, transitions, replication
+  99_validate_against_legacy.R   peak-by-peak diff against an old run
 tests/
-  test_labels.R          dependency-free tests (Rscript tests/test_labels.R)
+  test_labels.R          label engine
+  test_spectrum.R        FFT, maxT, stability, Wilson
 ```
 
 ## Common format
@@ -86,13 +99,49 @@ results_dir /scratch/home/dperez/GPIB/gene_notes/TissueSpectF/results
 From the repository root:
 
 ```bash
-Rscript tests/test_labels.R          # label engine, no Bioconductor needed
-Rscript scripts/00_check_inputs.R    # are the GEO files where the configs expect them?
-Rscript scripts/01_ingest_dataset.R  # GEO -> common format, all datasets
-Rscript scripts/01_ingest_dataset.R GSE135251   # one dataset
+make test        # label engine + spectral core, no Bioconductor needed
+make check       # are the GEO files where the configs expect them?
+make all         # ingest -> spectra -> maxT -> stability -> peaks -> compare
 ```
 
-or `make test`, `make check`, `make ingest`.
+Stage by stage, with the same arguments available everywhere
+(`<GSE>`, `--cond=F2`, `--branch=median`):
+
+```bash
+Rscript scripts/01_ingest_dataset.R
+Rscript scripts/02_spectra.R
+Rscript scripts/03_maxt.R               # slow: B x samples x chromosomes
+Rscript scripts/04_stability.R
+Rscript scripts/05_peaks_genes.R
+Rscript scripts/06_compare_datasets.R
+```
+
+## Re-running one stage
+
+Stages communicate only through files, never through session state, so any
+stage can be re-run on its own. After changing `stable_frac` or `alpha` in
+`config/project.R`:
+
+```bash
+Rscript scripts/04_stability.R
+Rscript scripts/05_peaks_genes.R
+```
+
+maxT is not recomputed. `03_maxt.R` is the one stage that reuses existing output
+by default, because it is the only one that costs hours; pass `--force` to
+recompute it. Every other stage always recomputes, since silent reuse is how two
+different runs end up interleaved in one output tree.
+
+## Validating the port
+
+```bash
+Rscript scripts/99_validate_against_legacy.R GSE135251 /path/to/old/GSE135251
+```
+
+Compares the stable-peak key set and per-peak power against a run of the
+original script, condition by condition, and exits non-zero on any difference.
+The only differences that should be accepted are samples whose condition changed
+because of the label fix, and each one should be traceable in `label_audit.tsv`.
 
 `00_check_inputs.R` verifies each expected file, prints the closest names it
 actually found when one is missing, and checks that the output directories are
@@ -122,16 +171,17 @@ cut -f3 $TSF_INTERIM_DIR/GSE162694/samples.tsv | sort | uniq -c
 GSE162694 must contain no `Control` rows; GSE135251 must show `Control` and `F0`
 as separate, non-identical counts. If both hold, the label fix is in effect.
 
-## Still to port
+## What changed from the original scripts
 
-The spectral stages (`02_spectra`, `03_maxt`, `04_stability`, `05_peaks_genes`,
-`06_compare_datasets`) are unchanged in intent from the original scripts and
-should be lifted into `R/spectrum.R`, `R/maxt.R`, `R/stability.R`,
-`R/peaks_genes.R`, `R/compare.R` one at a time, each reading only the common
-format. Two things to change while porting:
-
-1. `save_tsv(overwrite = FALSE)` silently kept files from earlier runs. Here
-   writes overwrite by default and each output directory carries a manifest.
-2. The per-transition tables named `*_cambian_magnitud.tsv` contained peaks
-   *stable in both* conditions, with no amplitude change computed. Either rename
-   them or add the amplitude delta and its interval.
+1. `save_tsv(overwrite = FALSE)` silently kept files from earlier runs. Writes
+   now overwrite by default and each output tree carries a manifest.
+2. The per-transition tables named `*_cambian_magnitud.tsv` held peaks *stable in
+   both* conditions, with no amplitude change computed anywhere.
+   `transition_table()` now reports the amplitude delta, its log2 ratio, and a
+   Welch test on per-sample peak power, and the file is named for what it holds.
+3. Cross-dataset results are reported side by side, never pooled. A combined
+   percentage over summed counts would be dominated by the larger cohort and
+   would hide heterogeneity; `replicated` (same direction, FDR <= 0.05 in both)
+   is the replication statement instead.
+4. Gene order along a chromosome is computed once at ingest, not re-derived at
+   each call site.
