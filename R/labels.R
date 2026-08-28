@@ -21,7 +21,7 @@
 # then runs only over conditions present on both sides (see compare layer).
 # ---------------------------------------------------------------------------
 
-LFFT_CONDITION_LEVELS <- c("Control", paste0("F", 0:4))
+TSF_CONDITION_LEVELS <- c("Control", paste0("F", 0:4))
 
 #' Numeric fibrosis stage from a raw phenotype value.
 #'
@@ -92,7 +92,7 @@ apply_condition_rule <- function(rule, pheno) {
     out[!is.na(stage)] <- paste0("F", stage[!is.na(stage)])
 
   } else {
-    lfft_abort("Unknown condition rule type: ", rule$type)
+    tsf_abort("Unknown condition rule type: ", rule$type)
   }
   out
 }
@@ -113,7 +113,7 @@ find_pheno_column <- function(pheno, pattern) {
 #' reason, and the caller decides.
 harmonize_conditions <- function(pheno, dataset_config) {
   rules <- dataset_config$condition_rules
-  if (!length(rules)) lfft_abort("Dataset config declares no condition_rules")
+  if (!length(rules)) tsf_abort("Dataset config declares no condition_rules")
 
   n <- nrow(pheno)
   condition <- rep(NA_character_, n)
@@ -128,16 +128,16 @@ harmonize_conditions <- function(pheno, dataset_config) {
     rule_used[take] <- rule$id
   }
 
-  bad <- !is.na(condition) & !(condition %in% LFFT_CONDITION_LEVELS)
+  bad <- !is.na(condition) & !(condition %in% TSF_CONDITION_LEVELS)
   if (any(bad)) {
-    lfft_warn(sum(bad), " sample(s) resolved to a label outside the vocabulary (",
+    tsf_warn(sum(bad), " sample(s) resolved to a label outside the vocabulary (",
               paste(unique(condition[bad]), collapse = ", "), "); dropped.")
     condition[bad] <- NA_character_
     rule_used[bad] <- NA_character_
   }
 
   if (isFALSE(dataset_config$has_control_cohort) && any(condition %in% "Control", na.rm = TRUE)) {
-    lfft_abort("Dataset ", dataset_config$id, " declares has_control_cohort = FALSE ",
+    tsf_abort("Dataset ", dataset_config$id, " declares has_control_cohort = FALSE ",
                "but a rule assigned Control. Fix the config, not the data.")
   }
 
@@ -151,7 +151,7 @@ harmonize_conditions <- function(pheno, dataset_config) {
   implied <- suppressWarnings(as.numeric(sub("^F", "", condition)))
   mismatch <- !is.na(implied) & !is.na(fibrosis_stage) & implied != fibrosis_stage
   if (any(mismatch)) {
-    lfft_warn(sum(mismatch), " sample(s) disagree between label and fibrosis column; ",
+    tsf_warn(sum(mismatch), " sample(s) disagree between label and fibrosis column; ",
               "label kept, see label_audit.tsv")
   }
 
@@ -175,23 +175,23 @@ audit_labels <- function(labels, dataset_config, max_unresolved_frac = 0.05,
                          min_n_per_condition = 5L) {
   n <- nrow(labels)
   unresolved <- sum(!labels$keep)
-  lfft_log("Labels for ", dataset_config$id, ": ", n - unresolved, "/", n, " resolved")
-  tab <- table(factor(labels$condition[labels$keep], levels = LFFT_CONDITION_LEVELS))
-  for (cnd in names(tab)) lfft_log("  ", cnd, ": ", tab[[cnd]])
+  tsf_log("Labels for ", dataset_config$id, ": ", n - unresolved, "/", n, " resolved")
+  tab <- table(factor(labels$condition[labels$keep], levels = TSF_CONDITION_LEVELS))
+  for (cnd in names(tab)) tsf_log("  ", cnd, ": ", tab[[cnd]])
 
   if (unresolved / max(n, 1L) > max_unresolved_frac) {
-    lfft_abort(unresolved, "/", n, " samples unresolved in ", dataset_config$id,
+    tsf_abort(unresolved, "/", n, " samples unresolved in ", dataset_config$id,
                " (> ", max_unresolved_frac * 100, "%). Check condition_rules.")
   }
   low <- names(tab)[tab > 0 & tab < min_n_per_condition]
   if (length(low)) {
-    lfft_warn("Low sample size (n < ", min_n_per_condition, ") in: ",
+    tsf_warn("Low sample size (n < ", min_n_per_condition, ") in: ",
               paste(low, collapse = ", "),
               " -- underpowered for per-condition spectra.")
   }
   empty <- names(tab)[tab == 0]
   if (length(empty)) {
-    lfft_log("Conditions absent from ", dataset_config$id, ": ",
+    tsf_log("Conditions absent from ", dataset_config$id, ": ",
              paste(empty, collapse = ", "),
              " (recorded; cross-dataset comparison will skip them)")
   }
@@ -205,14 +205,14 @@ audit_labels <- function(labels, dataset_config, max_unresolved_frac = 0.05,
 #' one side, that is reported here rather than showing up as an empty signature.
 comparable_conditions <- function(present_by_dataset) {
   common <- Reduce(intersect, present_by_dataset)
-  common <- LFFT_CONDITION_LEVELS[LFFT_CONDITION_LEVELS %in% common]
+  common <- TSF_CONDITION_LEVELS[TSF_CONDITION_LEVELS %in% common]
   for (nm in names(present_by_dataset)) {
     missing <- setdiff(unlist(present_by_dataset), present_by_dataset[[nm]])
     if (length(missing)) {
-      lfft_warn(nm, " lacks: ", paste(missing, collapse = ", "))
+      tsf_warn(nm, " lacks: ", paste(missing, collapse = ", "))
     }
   }
-  if (!length(common)) lfft_abort("No condition is present in every dataset.")
-  lfft_log("Comparable conditions: ", paste(common, collapse = ", "))
+  if (!length(common)) tsf_abort("No condition is present in every dataset.")
+  tsf_log("Comparable conditions: ", paste(common, collapse = ", "))
   common
 }
