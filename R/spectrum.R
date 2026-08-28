@@ -97,15 +97,16 @@ run_fft <- function(signal) {
     stringsAsFactors = FALSE)
 }
 
-#' Gene indices per chromosome, in gene_order, for chromosomes long enough.
+#' Observed positions per chromosome on the reference grid.
+#'
+#' Superseded by grid_index() in grid.R; kept as the single entry point the
+#' stages call, so the axis definition lives in exactly one place.
 chromosome_index <- function(genes, chrom_levels, min_genes_per_chr = 8L) {
-  out <- list()
-  for (chr_now in chrom_levels) {
-    idx <- which(genes$chr == chr_now)
-    if (length(idx) < min_genes_per_chr) next
-    out[[chr_now]] <- idx[order(genes$gene_order[idx])]
+  if (!"grid_index" %in% colnames(genes)) {
+    tsf_abort("genes.tsv has no grid_index column -- re-run the ingest stage; ",
+              "the spectral axis is now the annotation grid, not the filtered rank.")
   }
-  out
+  grid_index(genes, chrom_levels, min_observed = min_genes_per_chr)
 }
 
 #' Per-sample and per-condition signals for one condition.
@@ -140,12 +141,14 @@ compute_condition_spectra <- function(dataset, cond, chrom_idx) {
 
   rows <- list()
   for (chr_now in names(chrom_idx)) {
-    ord <- chrom_idx[[chr_now]]
+    ci <- chrom_idx[[chr_now]]
+    terms <- gls_prepare(ci$t, ci$N)
     for (nm in names(all_signals)) {
-      res <- run_fft(all_signals[[nm]][ord])
+      res <- gls_spectrum(all_signals[[nm]][ci$rows], terms)
       if (is.null(res) || !nrow(res)) next
       res$chr <- chr_now
       res$sample <- nm
+      res$coverage <- ci$coverage
       rows[[length(rows) + 1]] <- res
     }
   }
