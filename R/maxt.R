@@ -1,47 +1,49 @@
-# maxt.R -- maxT permutation test for spectral peaks.
+# maxt.R -- permutation test for spectral peaks on a gappy reference grid.
 #
-# Null distribution: for each of B permutations, the maximum power over all k.
-# Comparing every observed power against that maximum controls the family-wise
-# error rate across frequencies within a chromosome. Two permutation schemes are
-# used: full (destroys all positional structure) and block (preserves local
-# correlation at the given block sizes). The primary p-value is the full scheme;
-# the max across schemes is reported as the conservative alternative.
+# Null: the observed values are permuted AMONG THE OBSERVED POSITIONS, with the
+# positions themselves held fixed. The sampling pattern is therefore identical
+# in the data and in every permutation, so the pattern of missing genes cannot
+# by itself produce significance -- which is the guarantee that zero-filling or
+# mean-imputation would destroy.
 #
-# Direct port of permutation_spectrum_test(); seeds are derived per chromosome
-# and per sample exactly as before, so results are reproducible across runs and
-# independent of how the work is split across cores.
+# For each permutation the maximum power over all k is recorded; comparing an
+# observed power against that maximum controls the family-wise error rate across
+# frequencies within a chromosome. This matters more with gaps than without,
+# because the frequency bins are no longer orthogonal and a per-bin p-value
+# would be badly calibrated.
+#
+# Two schemes are used: `full` (permute all observed values) and `block`
+# (permute contiguous blocks of grid positions, preserving local correlation).
+# The primary p-value is `full`; `p_empirical_maxT_all` is the max across
+# schemes, reported for the conservative reading.
 
-permutation_spectrum_test <- function(signal, B = 1000L, seed = 42L,
-                                      block_sizes = c(10L, 20L, 50L)) {
-  signal <- as.numeric(signal)
-  signal[!is.finite(signal)] <- 0
-  signal <- signal - mean(signal)
+permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
+                                 block_sizes = c(10L, 20L, 50L)) {
+  y <- as.numeric(y)
+  y[!is.finite(y)] <- 0
+  n <- terms$n
+  if (n < 8L || stats::sd(y) == 0) return(NULL)
 
-  N <- length(signal)
-  if (N < 8 || all(signal == 0)) return(NULL)
+  obs <- gls_spectrum(y, terms)
+  power_observed <- obs$power
 
-  k <- seq_len(floor((N - 1) / 2))
-  spectral_power <- function(x) {
-    Y <- stats::fft(x)
-    (Mod(Y[k + 1]) / N)^2 * 2
-  }
-  power_observed <- spectral_power(signal)
-
-  permute_blocks <- function(x, block_size) {
-    block_id <- ceiling(seq_along(x) / block_size)
-    blocks <- split(x, block_id)
+  permute_blocks <- function(v, block_size) {
+    block_id <- ceiling(seq_along(v) / block_size)
+    blocks <- split(v, block_id)
     unlist(blocks[sample.int(length(blocks))], use.names = FALSE)
   }
 
   block_sizes <- unique(as.integer(block_sizes[is.finite(block_sizes) & block_sizes >= 2]))
+  block_sizes <- block_sizes[block_sizes < n]
   scheme_names <- c("full", paste0("block", block_sizes))
   null_max <- matrix(NA_real_, nrow = B, ncol = length(scheme_names),
                      dimnames = list(NULL, scheme_names))
   set.seed(seed)
   for (b in seq_len(B)) {
-    null_max[b, "full"] <- max(spectral_power(sample(signal, replace = FALSE)))
+    null_max[b, "full"] <- max(gls_spectrum(sample(y), terms)$power)
     for (bs in block_sizes) {
-      null_max[b, paste0("block", bs)] <- max(spectral_power(permute_blocks(signal, bs)))
+      null_max[b, paste0("block", bs)] <-
+        max(gls_spectrum(permute_blocks(y, bs), terms)$power)
     }
   }
 
@@ -54,35 +56,34 @@ permutation_spectrum_test <- function(signal, B = 1000L, seed = 42L,
   p_primary <- p_by_scheme[, "p_empirical_maxT_full"]
   p_all <- apply(p_by_scheme, 1, max, na.rm = TRUE)
 
-  out <- data.frame(
-    N = N, k = k, freq = k / N, period = N / k,
-    power = power_observed,
-    p_empirical_maxT = p_primary,
-    significant = p_primary <= 0.05,
-    significant_all_schemes = p_all <= 0.05,
-    stringsAsFactors = FALSE)
+  out <- obs
+  out$p_empirical_maxT <- p_primary
+  out$p_empirical_maxT_all <- p_all
+  out$significant <- p_primary <= 0.05
+  out$significant_all_schemes <- p_all <= 0.05
   cbind(out, as.data.frame(p_by_scheme, stringsAsFactors = FALSE))
 }
 
-#' Run maxT for every sample of one condition, parallel over chromosomes.
+#' maxT for every sample of one condition, parallel over chromosomes.
 maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L) {
   sig <- condition_signals(dataset, cond)
   if (is.null(sig)) return(NULL)
   chrom_levels <- names(chrom_idx)
 
   per_chr <- parallel::mclapply(chrom_levels, function(chr_now) {
-    ord <- chrom_idx[[chr_now]]
+    ci <- chrom_idx[[chr_now]]
+    terms <- gls_prepare(ci$t, ci$N)     # window terms reused across samples
     chr_seed <- maxt_cfg$seed + 100000L * match(chr_now, chrom_levels)
     rows <- list()
     for (s in sig$samples) {
-      res <- permutation_spectrum_test(
-        sig$matrix[ord, s],
-        B = maxt_cfg$B,
-        seed = chr_seed + match(s, sig$samples),
-        block_sizes = maxt_cfg$block_sizes)
+      res <- permutation_gls_test(sig$matrix[ci$rows, s], terms,
+                                  B = maxt_cfg$B,
+                                  seed = chr_seed + match(s, sig$samples),
+                                  block_sizes = maxt_cfg$block_sizes)
       if (is.null(res) || !nrow(res)) next
       res$chr <- chr_now
       res$sample <- s
+      res$coverage <- ci$coverage
       rows[[length(rows) + 1]] <- res
     }
     if (!length(rows)) NULL else do.call(rbind, rows)
@@ -96,7 +97,6 @@ maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L) {
   out
 }
 
-#' Cores to use: leave one free, never more than the number of chromosomes.
 maxt_cores <- function(chrom_idx) {
   detected <- suppressWarnings(parallel::detectCores(logical = TRUE))
   if (is.na(detected) || detected < 1) return(1L)
