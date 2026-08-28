@@ -2,6 +2,10 @@
 
 Chromosome-ordered Fourier spectral analysis of tissue level transcriptomes.
 
+This repository replaces two ~4,200-line per-dataset scripts with a layered
+pipeline. Everything that was dataset-specific now lives in a config file;
+everything else is shared code.
+
 ## Layout
 
 ```
@@ -14,16 +18,15 @@ R/
   labels.R               controlled vocabulary + label harmonisation engine
   ingest.R               GEO -> common format
 scripts/
-  01_ingest_dataset.R    CLI entry point
+  00_check_inputs.R      verify the GEO files are where the configs expect them
+  01_ingest_dataset.R    GEO -> common format
 tests/
   test_labels.R          dependency-free tests (Rscript tests/test_labels.R)
-data/interim/<GSE>/      the common format (git-ignored)
-results/                 downstream outputs (git-ignored)
 ```
 
 ## Common format
 
-Every dataset lands in `data/interim/<GSE>/` with the same schema, so nothing
+Every dataset lands in `<interim_dir>/<GSE>/` with the same schema, so nothing
 downstream needs to know which GEO series it came from:
 
 | file | contents |
@@ -72,17 +75,52 @@ with `condition = NA` and are reported, never guessed.
 
 ## Running
 
-```bash
-Rscript tests/test_labels.R                       # no Bioconductor needed
-Rscript scripts/01_ingest_dataset.R               # all datasets
-Rscript scripts/01_ingest_dataset.R GSE135251     # one dataset
+The configs default to the INMEGEN scratch layout:
+
+```
+geo_dir     /scratch/home/dperez/GPIB/gene_notes/TissueSpectF/data
+interim_dir /scratch/home/dperez/GPIB/gene_notes/TissueSpectF/interim
+results_dir /scratch/home/dperez/GPIB/gene_notes/TissueSpectF/results
 ```
 
-Paths can be overridden with `LFFT_GEO_DIR`, `LFFT_INTERIM_DIR`,
-`LFFT_RESULTS_DIR`.
+From the repository root:
+
+```bash
+Rscript tests/test_labels.R          # label engine, no Bioconductor needed
+Rscript scripts/00_check_inputs.R    # are the GEO files where the configs expect them?
+Rscript scripts/01_ingest_dataset.R  # GEO -> common format, all datasets
+Rscript scripts/01_ingest_dataset.R GSE135251   # one dataset
+```
+
+or `make test`, `make check`, `make ingest`.
+
+`00_check_inputs.R` verifies each expected file, prints the closest names it
+actually found when one is missing, and checks that the output directories are
+writable. GEO count tables often carry a suffix (`_raw_counts_GRCh38`,
+`_norm_counts_TPM`), so if a name differs, edit `counts_file` / `series_matrix`
+in `config/datasets/<GSE>.R` rather than renaming the download.
+
+To run somewhere else, override the paths:
+
+```bash
+export TSF_GEO_DIR=/some/other/data
+export TSF_INTERIM_DIR=/some/other/interim
+export TSF_RESULTS_DIR=/some/other/results
+```
 
 `GEOquery` is used when installed; a minimal series-matrix parser is used
-otherwise, which keeps ingest testable without Bioconductor.
+otherwise, which keeps ingest testable without Bioconductor. On a cluster with
+environment modules, load R first (`module load R/4.3` or equivalent).
+
+## Sanity check after ingest
+
+```bash
+cut -f3 $TSF_INTERIM_DIR/GSE135251/samples.tsv | sort | uniq -c
+cut -f3 $TSF_INTERIM_DIR/GSE162694/samples.tsv | sort | uniq -c
+```
+
+GSE162694 must contain no `Control` rows; GSE135251 must show `Control` and `F0`
+as separate, non-identical counts. If both hold, the label fix is in effect.
 
 ## Still to port
 
