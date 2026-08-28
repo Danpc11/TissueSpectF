@@ -21,10 +21,13 @@ list(
   # against the annotation's gene_type. The grid is what makes N comparable
   # across datasets, so changing this changes what "period in genes" means --
   # run both and report both rather than picking one silently.
-  #   "PROTEIN_CODING"          coding only
-  #   "PROTEIN_CODING|NCRNA"    coding + long non-coding  (default)
-  #   NULL                      every annotated gene
-  gene_universe = Sys.getenv("TSF_GENE_UNIVERSE", "PROTEIN_CODING|NCRNA"),
+  # Anchor the pattern: the NCBI annotation writes biotypes as "protein-coding"
+  # and "ncRNA" (hyphen, mixed case), so an unanchored "PROTEIN_CODING|NCRNA"
+  # silently matches ncRNA only and builds a grid with no coding genes at all.
+  #   "^protein-coding$"            coding only  (default)
+  #   "^(protein-coding|ncRNA)$"    coding + non-coding
+  #   NULL                          every annotated gene
+  gene_universe = Sys.getenv("TSF_GENE_UNIVERSE", "^protein-coding$"),
 
   # Genes are ordered by start position within a chromosome; a chromosome with
   # fewer than this many genes cannot support a meaningful spectrum.
