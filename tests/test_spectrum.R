@@ -119,6 +119,22 @@ check("a real periodicity survives the gaps", {
   m <- permutation_gls_test(y, gls_prepare(t, N), B = 200L, seed = 4L)
   m$p_empirical_maxT[m$k == 9] <= 0.05 })
 
+check("chromosomes with few genes keep the same columns", {
+  # A block size at or above n/2 cannot run, but its column must survive so
+  # per-chromosome tables can be rbind()ed together.
+  a <- permutation_gls_test(rnorm(200), gls_prepare(sort(sample.int(400, 200)), 400),
+                            B = 30L, seed = 1L, block_sizes = c(10L, 20L, 50L))
+  b <- permutation_gls_test(rnorm(30), gls_prepare(sort(sample.int(60, 30)), 60),
+                            B = 30L, seed = 1L, block_sizes = c(10L, 20L, 50L))
+  identical(colnames(a), colnames(b)) &&
+    all(is.na(b$p_empirical_maxT_block50)) &&
+    !is.null(rbind(a, b)) })
+
+check("a skipped block scheme is recorded", {
+  b <- permutation_gls_test(rnorm(30), gls_prepare(sort(sample.int(60, 30)), 60),
+                            B = 20L, seed = 1L, block_sizes = c(10L, 50L))
+  identical(unique(b$block_schemes_skipped), "50") })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
