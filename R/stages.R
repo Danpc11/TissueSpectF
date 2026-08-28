@@ -1,0 +1,250 @@
+# stages.R -- every pipeline stage as a callable function.
+#
+# The numbered scripts and the `tsf` CLI both call these, so there is exactly
+# one implementation of each stage. Each takes (project, opt) where opt carries
+# datasets, cond, branch and force, and each returns a short summary the caller
+# can print or aggregate.
+
+stage_names <- c("ingest", "spectra", "maxt", "stability", "peaks", "compare")
+
+#' Resolve which datasets a stage should run over.
+stage_datasets <- function(opt) {
+  if (length(opt$datasets)) opt$datasets
+  else sub("\\.R$", "", list.files("config/datasets", pattern = "\\.R$"))
+}
+
+# --- 01 ingest ---------------------------------------------------------------
+stage_ingest <- function(project, opt) {
+  ids <- stage_datasets(opt)
+  present <- list()
+  for (id in ids) {
+    res <- ingest_dataset(id, project)
+    present[[id]] <- res$audit$present
+  }
+  if (length(present) > 1) invisible(comparable_conditions(present))
+  sprintf("%d dataset(s) ingested", length(ids))
+}
+
+# --- 02 spectra --------------------------------------------------------------
+stage_spectra <- function(project, opt) {
+  n <- 0L
+  for (id in stage_datasets(opt)) {
+    inp <- tsf_stage_inputs(project, id)
+    tsf_log(id, ": spectra over ", length(inp$chrom_idx), " chromosome(s)")
+    for (cond in tsf_conditions(inp$conditions, opt)) {
+      spec <- compute_condition_spectra(inp$dataset, cond, inp$chrom_idx)
+      if (is.null(spec)) next
+      is_summary <- spec$sample %in% c("avg_signal", "median_signal")
+      write_tsv_tsf(spec[is_summary, ], p_spectra_condition(inp$paths, cond))
+      write_tsv_tsf(spec[!is_summary, ], p_spectra_samples(inp$paths, cond))
+      tsf_log("  ", cond, ": ", sum(is_summary), " summary rows, ",
+              sum(!is_summary), " sample rows")
+      n <- n + 1L
+    }
+  }
+  sprintf("%d condition spectra", n)
+}
+
+# --- 03 maxT -----------------------------------------------------------------
+stage_maxt <- function(project, opt) {
+  computed <- 0L; reused <- 0L
+  for (id in stage_datasets(opt)) {
+    inp <- tsf_stage_inputs(project, id)
+    n_cores <- maxt_cores(inp$chrom_idx)
+    tsf_log(id, ": maxT (B = ", project$maxt$B, ", ", n_cores, " core(s))")
+    for (cond in tsf_conditions(inp$conditions, opt)) {
+      out_path <- p_maxt(inp$paths, cond)
+      if (!isTRUE(opt$force) && file.exists(out_path) && file.size(out_path) > 0) {
+        tsf_log("  ", cond, ": reusing existing maxT (--force to recompute)")
+        reused <- reused + 1L
+        next
+      }
+      t0 <- Sys.time()
+      res <- maxt_condition(inp$dataset, cond, inp$chrom_idx, project$maxt, n_cores)
+      if (is.null(res)) { tsf_warn("  ", cond, ": no maxT result"); next }
+      write_tsv_tsf(res, out_path)
+      write_tsv_tsf(data.frame(condition = cond,
+                               sample_id = attr(res, "expected_samples")),
+                    file.path(inp$paths$maxt, sprintf("expected_samples_%s.tsv", cond)))
+      tsf_log("  ", cond, ": ", nrow(res), " rows in ",
+              round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 1), " min")
+      computed <- computed + 1L
+    }
+  }
+  sprintf("%d computed, %d reused", computed, reused)
+}
+
+# --- 04 stability ------------------------------------------------------------
+stage_stability <- function(project, opt) {
+  total_stable <- 0L
+  for (id in stage_datasets(opt)) {
+    inp <- tsf_stage_inputs(project, id, need = c("maxt", "spectra"))
+    tsf_log(id, ": stability (alpha = ", project$maxt$alpha,
+            ", stable_frac = ", project$maxt$stable_frac, ")")
+    for (cond in tsf_conditions(inp$conditions, opt)) {
+      m <- inp$maxt[[cond]]
+      if (is.null(m)) { tsf_warn("  ", cond, ": no maxT file; run the maxt stage"); next }
+      expected <- read_tsv_tsf(file.path(inp$paths$maxt,
+                                         sprintf("expected_samples_%s.tsv", cond)),
+                               required = FALSE)
+      expected_samples <- if (!is.null(expected)) expected$sample_id else unique(m$sample)
+      st <- stable_peaks_maxt(m, expected_samples,
+                              alpha = project$maxt$alpha,
+                              stable_frac = project$maxt$stable_frac)
+      write_tsv_tsf(st, p_stability(inp$paths, cond))
+      tsf_log("  ", cond, ": ", sum(st$is_stable), " stable of ", nrow(st), " peaks")
+      total_stable <- total_stable + sum(st$is_stable)
+      for (branch in opt$branches) {
+        pk <- condition_peak_table(st, inp$spectra[[cond]], branch)
+        if (!is.null(pk)) write_tsv_tsf(pk, p_peaks(inp$paths, branch, cond))
+      }
+    }
+  }
+  sprintf("%d stable peak(s) across conditions", total_stable)
+}
+
+# --- 05 peak genes -----------------------------------------------------------
+stage_peaks <- function(project, opt) {
+  written <- 0L
+  for (id in stage_datasets(opt)) {
+    inp <- tsf_stage_inputs(project, id)
+    tsf_log(id, ": peak-gene reconstruction")
+    for (cond in tsf_conditions(inp$conditions, opt)) {
+      for (branch in opt$branches) {
+        peaks <- read_tsv_tsf(p_peaks(inp$paths, branch, cond), required = FALSE)
+        if (is.null(peaks) || !nrow(peaks)) {
+          tsf_warn("  ", cond, "/", branch, ": no peak table; run the stability stage")
+          next
+        }
+        out_dir <- p_peak_genes_dir(inp$paths, branch, cond)
+        unlink(list.files(out_dir, pattern = "^pico_chr.*\\.tsv$", full.names = TRUE))
+        n <- write_peak_gene_tables(peaks, inp$dataset$genes, inp$chrom_idx,
+                                    out_dir, branch, cond)
+        tsf_log("  ", cond, "/", branch, ": ", n, " peak file(s)")
+        written <- written + n
+      }
+    }
+  }
+  sprintf("%d peak file(s)", written)
+}
+
+# --- 06 compare --------------------------------------------------------------
+stage_compare <- function(project, opt) {
+  ids <- stage_datasets(opt)
+  if (length(ids) < 2) {
+    tsf_warn("Comparison needs at least two datasets; skipped")
+    return("skipped")
+  }
+  compare_dir <- file.path(project$results_dir, "comparison")
+  ensure_dir(compare_dir)
+
+  loaded <- lapply(ids, function(id) {
+    inp <- tsf_stage_inputs(project, id, need = c("stability", "maxt"))
+    inp$peaks <- stats::setNames(lapply(c("average", "median"), function(br)
+      stats::setNames(lapply(inp$conditions, function(c)
+        read_tsv_tsf(p_peaks(inp$paths, br, c), required = FALSE)), inp$conditions)),
+      c("average", "median"))
+    inp
+  })
+  names(loaded) <- ids
+  common <- comparable_conditions(lapply(loaded, function(x) x$conditions))
+  n_replicated <- 0L
+
+  for (branch in opt$branches) {
+    tsf_log("branch: ", branch)
+    signature_by_ds <- list(); transitions_by_ds <- list(); conditions_by_ds <- list()
+
+    for (id in ids) {
+      x <- loaded[[id]]
+      sig <- constant_signature(x$stability, common)
+      if (!is.null(sig)) {
+        sig$branch <- branch
+        write_tsv_tsf(sig, file.path(x$paths$base, "comparison",
+                                     sprintf("constant_signature_%s.tsv", branch)))
+        tsf_log("  ", id, ": constant signature = ", nrow(sig), " peak(s)")
+      } else tsf_log("  ", id, ": constant signature is empty")
+      signature_by_ds[[id]] <- sig
+
+      conditions_by_ds[[id]] <- do.call(rbind, lapply(common, function(c) {
+        p <- x$peaks[[branch]][[c]]
+        if (is.null(p) || !nrow(p)) return(NULL)
+        p$condition <- c
+        p
+      }))
+
+      trans <- list()
+      for (i in seq_len(length(common) - 1L)) {
+        t <- transition_table(common[i], common[i + 1L], x$peaks[[branch]],
+                              x$stability, x$maxt, branch)
+        if (is.null(t)) {
+          tsf_log("  ", id, ": ", common[i], " -> ", common[i + 1L], ": no shared stable peak")
+          next
+        }
+        tsf_log("  ", id, ": ", common[i], " -> ", common[i + 1L], ": ", nrow(t),
+                " shared, ", sum(t$p_power_fdr <= 0.05, na.rm = TRUE),
+                " with a significant power change")
+        trans[[length(trans) + 1]] <- t
+      }
+      trans <- if (length(trans)) do.call(rbind, trans) else NULL
+      if (!is.null(trans)) {
+        write_tsv_tsf(trans, file.path(x$paths$base, "comparison",
+                                       sprintf("transitions_%s.tsv", branch)))
+      }
+      transitions_by_ds[[id]] <- trans
+    }
+
+    sig_cross <- cross_datasets(signature_by_ds, c("chr", "N", "k"))
+    if (!is.null(sig_cross)) {
+      write_tsv_tsf(sig_cross, file.path(compare_dir,
+                                         sprintf("constant_signature_shared_%s.tsv", branch)))
+    }
+    cond_cross <- cross_datasets(conditions_by_ds, c("chr", "N", "k", "condition"))
+    if (!is.null(cond_cross)) {
+      write_tsv_tsf(cond_cross, file.path(compare_dir,
+                                          sprintf("conditions_shared_%s.tsv", branch)))
+    }
+    trans_cross <- cross_datasets(transitions_by_ds, c("chr", "N", "k", "transition"))
+    if (!is.null(trans_cross)) {
+      trans_cross <- add_replication_flags(trans_cross, ids)
+      if (!is.null(trans_cross$replicated)) {
+        n_replicated <- n_replicated + sum(trans_cross$replicated, na.rm = TRUE)
+      }
+      write_tsv_tsf(trans_cross, file.path(compare_dir,
+                                           sprintf("transitions_shared_%s.tsv", branch)))
+    }
+  }
+  sprintf("%d replicated transition peak(s)", n_replicated)
+}
+
+stage_functions <- list(
+  ingest    = stage_ingest,
+  spectra   = stage_spectra,
+  maxt      = stage_maxt,
+  stability = stage_stability,
+  peaks     = stage_peaks,
+  compare   = stage_compare
+)
+
+#' What exists on disk for each dataset and stage.
+pipeline_status <- function(project, opt) {
+  rows <- list()
+  for (id in stage_datasets(opt)) {
+    p <- tsf_paths(project, id)
+    interim <- file.path(project$interim_dir, id)
+    samples <- read_tsv_tsf(file.path(interim, "samples.tsv"), required = FALSE)
+    conds <- if (is.null(samples)) character(0) else unique(samples$condition)
+    count <- function(dir, pattern) length(list.files(dir, pattern, recursive = TRUE))
+    rows[[id]] <- data.frame(
+      dataset = id,
+      ingested = !is.null(samples),
+      samples = if (is.null(samples)) 0L else nrow(samples),
+      conditions = paste(conds, collapse = ","),
+      spectra = count(p$spectra, "^spectra_condition_.*\\.tsv$"),
+      maxt = count(p$maxt, "^maxt_individual_.*\\.tsv$"),
+      stability = count(p$stability, "^maxt_stability_.*\\.tsv$"),
+      peak_tables = count(p$peaks, "^peaks_.*\\.tsv$"),
+      peak_gene_files = count(p$peak_genes, "^pico_chr.*\\.tsv$"),
+      stringsAsFactors = FALSE)
+  }
+  do.call(rbind, rows)
+}
