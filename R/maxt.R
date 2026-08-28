@@ -33,34 +33,44 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
     unlist(blocks[sample.int(length(blocks))], use.names = FALSE)
   }
 
+  # Every declared scheme keeps a column, even when it cannot run on this
+  # chromosome: a block size at or above the number of observed genes would
+  # permute a single block, which is not a permutation at all. Those columns
+  # stay NA so the table has the same shape for every chromosome -- chromosomes
+  # differ in how many genes are observed, and dropping columns per chromosome
+  # made the per-chromosome results impossible to rbind.
   block_sizes <- unique(as.integer(block_sizes[is.finite(block_sizes) & block_sizes >= 2]))
-  block_sizes <- block_sizes[block_sizes < n]
+  usable <- block_sizes[block_sizes < n / 2]
+  skipped <- setdiff(block_sizes, usable)
   scheme_names <- c("full", paste0("block", block_sizes))
   null_max <- matrix(NA_real_, nrow = B, ncol = length(scheme_names),
                      dimnames = list(NULL, scheme_names))
   set.seed(seed)
   for (b in seq_len(B)) {
     null_max[b, "full"] <- max(gls_spectrum(sample(y), terms)$power)
-    for (bs in block_sizes) {
+    for (bs in usable) {
       null_max[b, paste0("block", bs)] <-
         max(gls_spectrum(permute_blocks(y, bs), terms)$power)
     }
   }
 
   p_by_scheme <- vapply(seq_len(ncol(null_max)), function(j) {
+    if (all(is.na(null_max[, j]))) return(rep(NA_real_, length(power_observed)))
     vapply(power_observed, function(pk) (1 + sum(null_max[, j] >= pk)) / (B + 1), numeric(1))
   }, numeric(length(power_observed)))
   if (is.null(dim(p_by_scheme))) p_by_scheme <- matrix(p_by_scheme, ncol = 1)
   colnames(p_by_scheme) <- paste0("p_empirical_maxT_", scheme_names)
 
   p_primary <- p_by_scheme[, "p_empirical_maxT_full"]
-  p_all <- apply(p_by_scheme, 1, max, na.rm = TRUE)
+  p_all <- apply(p_by_scheme, 1, function(v)
+    if (all(is.na(v))) NA_real_ else max(v, na.rm = TRUE))
 
   out <- obs
   out$p_empirical_maxT <- p_primary
   out$p_empirical_maxT_all <- p_all
   out$significant <- p_primary <= 0.05
-  out$significant_all_schemes <- p_all <= 0.05
+  out$significant_all_schemes <- !is.na(p_all) & p_all <= 0.05
+  out$block_schemes_skipped <- if (length(skipped)) paste(skipped, collapse = ",") else NA_character_
   cbind(out, as.data.frame(p_by_scheme, stringsAsFactors = FALSE))
 }
 
