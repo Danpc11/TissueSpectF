@@ -17,7 +17,8 @@ R/
   config.R               config loading and validation
   labels.R               controlled vocabulary + label harmonisation engine
   ingest.R               GEO -> common format
-  spectrum.R             FFT per chromosome + Fisher g-test
+  grid.R                 reference gene grid + least-squares (Lomb-Scargle) spectrum
+  spectrum.R             spectra per sample and per condition
   maxt.R                 maxT permutation test
   stability.R            stable peaks per condition
   peaks_genes.R          gene-level reconstruction of a peak
@@ -42,14 +43,56 @@ downstream needs to know which GEO series it came from:
 | file | contents |
 |---|---|
 | `samples.tsv` | `sample_id, dataset_id, condition, fibrosis_stage, cohort, label_rule, keep` |
-| `genes.tsv` | `gene_id, gene_name, chr, start, gene_order` |
+| `genes.tsv` | `gene_id, gene_name, chr, start, grid_index, grid_N` |
+| `grid_coverage.tsv` | observed genes vs grid length, per chromosome |
 | `counts.tsv` | raw counts, `gene_id` + one column per sample |
 | `expression.tsv` | `asinh(TPM)` (or `asinh(CPM)` when gene lengths are unavailable — recorded in the manifest) |
 | `label_audit.tsv` | every input sample, resolved or not, with the rule that fired |
 | `manifest.tsv` | code version, config fingerprint, timestamp, per-condition counts |
 
-`gene_order` is the FFT input axis, computed once at ingest instead of being
-re-derived with `order(start)` at each downstream call site.
+## The spectral axis
+
+The axis is the **reference grid**: every annotated gene of the allowed biotypes
+on a chromosome, ordered by start position, indexed `1..N`. `N` is a property of
+the annotation, so it is identical across datasets and conditions and the peak
+key `(chr, N, k)` means the same thing everywhere. Set the universe with
+`gene_universe` in `config/project.R` (default `PROTEIN_CODING|NCRNA`).
+
+Genes without an expression measurement keep their grid slot and are simply
+unobserved. They are never zero-filled or imputed: absence of a measurement is
+not evidence of zero expression, and a zero at a fixed position injects a
+deterministic pattern whose own spectral structure can manufacture a peak.
+
+Spectra are therefore computed by least squares (generalised Lomb-Scargle with a
+floating mean) over the observed positions only. This is still Fourier analysis:
+on a complete grid the fit reproduces the DFT coefficients exactly, which
+`tests/test_spectrum.R` checks against `fft()` and against a brute-force
+least-squares fit on a gapped grid. Internally the sums are evaluated with two
+FFTs, so the cost stays O(N log N).
+
+What gaps cost: the sinusoids are no longer orthogonal over the observed
+positions, so frequency bins are not independent, Parseval no longer holds
+exactly, and the Nyquist limit is not uniquely defined. The first is why the
+permutation null is mandatory rather than optional. The third is why every peak
+carries `window_power` and `window_rank`, and why `./tsf window` exists.
+
+## Spectral window
+
+```bash
+./tsf window
+```
+
+Computes, per chromosome, the spectrum of the presence indicator alone -- what
+the pattern of missing genes can produce with no expression signal at all -- and
+places every stable peak in it. A peak in the top 1% of the window sits exactly
+where the gaps are most periodic and should be treated as a sampling artefact
+until shown otherwise. Run this before interpreting any peak near the Nyquist
+limit.
+
+The permutation null permutes values **among the observed positions**, holding
+the positions fixed, so the missingness pattern is identical in the data and in
+every permutation and cannot by itself produce significance. That is checked
+directly in the test suite.
 
 ## Condition vocabulary
 
