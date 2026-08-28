@@ -216,13 +216,68 @@ stage_compare <- function(project, opt) {
   sprintf("%d replicated transition peak(s)", n_replicated)
 }
 
+#' Spectral window per chromosome: what the gap pattern alone produces.
+#'
+#' This is the diagnostic for a peak near the Nyquist limit. If the sampling
+#' pattern has power at the same frequency as an observed peak, that peak can be
+#' an alias of structure elsewhere rather than structure at its own frequency.
+#' Run it before interpreting any high-frequency result.
+stage_window <- function(project, opt) {
+  rows <- list()
+  for (id in stage_datasets(opt)) {
+    inp <- tsf_stage_inputs(project, id)
+    out_dir <- file.path(inp$paths$base, "window")
+    ensure_dir(out_dir)
+    tsf_log(id, ": spectral window over ", length(inp$chrom_idx), " chromosome(s)")
+
+    for (chr_now in names(inp$chrom_idx)) {
+      ci <- inp$chrom_idx[[chr_now]]
+      w <- spectral_window(ci$t, ci$N)
+      w$chr <- chr_now
+      write_tsv_tsf(w, file.path(out_dir, sprintf("window_chr%s.tsv", chr_now)))
+
+      # Where do the stable peaks of this chromosome sit in the window?
+      for (cond in tsf_conditions(inp$conditions, opt)) {
+        pk <- read_tsv_tsf(p_peaks(inp$paths, opt$branches[1], cond), required = FALSE)
+        if (is.null(pk) || !nrow(pk)) next
+        pk <- pk[pk$chr == chr_now, , drop = FALSE]
+        if (!nrow(pk)) next
+        for (i in seq_len(nrow(pk))) {
+          j <- match(pk$k[i], w$k)
+          rows[[length(rows) + 1]] <- data.frame(
+            dataset = id, condition = cond, chr = chr_now,
+            N = ci$N, k = pk$k[i], period = pk$period[i],
+            coverage_pct = round(100 * ci$coverage, 1),
+            window_power = w$window_power[j],
+            window_rank = rank(-w$window_power)[j],
+            window_pct = round(100 * rank(-w$window_power)[j] / nrow(w), 2),
+            stringsAsFactors = FALSE)
+        }
+      }
+    }
+  }
+  if (!length(rows)) return("no stable peak to place in the window")
+  tab <- do.call(rbind, rows)
+  tab <- tab[order(tab$window_rank), ]
+  write_tsv_tsf(tab, file.path(project$results_dir, "comparison",
+                               "peaks_vs_spectral_window.tsv"))
+  suspicious <- sum(tab$window_pct <= 1, na.rm = TRUE)
+  if (suspicious) {
+    tsf_warn(suspicious, " peak(s) sit in the top 1% of the spectral window -- ",
+             "treat those as sampling artefacts until shown otherwise")
+  }
+  print(utils::head(tab, 10), row.names = FALSE)
+  sprintf("%d peak(s) placed, %d in the window's top 1%%", nrow(tab), suspicious)
+}
+
 stage_functions <- list(
   ingest    = stage_ingest,
   spectra   = stage_spectra,
   maxt      = stage_maxt,
   stability = stage_stability,
   peaks     = stage_peaks,
-  compare   = stage_compare
+  compare   = stage_compare,
+  window    = stage_window
 )
 
 #' What exists on disk for each dataset and stage.
