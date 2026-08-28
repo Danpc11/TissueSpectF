@@ -1,0 +1,12 @@
+key	value
+dataset_id	GSE135251
+run_timestamp	2026-08-28T14:06:11-0600
+pipeline_version	TissueSpectF 0.1.0
+r_version	4.6.0
+config_digest	132248774
+n_samples	216
+n_genes	14495
+expression_unit	asinh(CPM)
+has_control_cohort	TRUE
+conditions_present	Control, F0, F1, F2, F3, F4
+samples_per_condition	Control=10 F0=38 F1=47 F2=53 F3=54 F4=14

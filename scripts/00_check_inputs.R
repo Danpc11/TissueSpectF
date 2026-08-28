@@ -69,4 +69,4 @@ if (!ok) {
   tsf_abort("Inputs incomplete. Fix the file names in config/datasets/<GSE>.R ",
             "(counts_file, series_matrix) or config/project.R (annotation_file, paths).")
 }
-tsf_log("All inputs present. Run: Rscript scripts/01_ingest_dataset.R")
+tsf_log("All inputs present. Run: ./tsf run")
