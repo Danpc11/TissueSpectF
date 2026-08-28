@@ -43,32 +43,40 @@ write_peak_gene_tables <- function(peaks, genes, chrom_idx, out_dir, branch, con
 
   for (i in seq_len(nrow(peaks))) {
     chr_now <- as.character(peaks$chr[i])
-    ord <- chrom_idx[[chr_now]]
-    if (is.null(ord)) next
-    N_genes <- length(ord)
+    ci <- chrom_idx[[chr_now]]
+    if (is.null(ci)) next
+    ord <- ci$rows
+    N_genes <- ci$N          # grid length, not the number of observed genes
 
     amp <- peaks[[amp_col]][i]
     phi <- peaks$phase[i]
     if (!is.finite(amp) || !is.finite(phi)) next
 
-    sig <- reconstruct_signal(
+    # Evaluate the fitted sinusoid at the OBSERVED grid positions only.
+    full <- reconstruct_signal(
       data.frame(freq = peaks$freq[i], amplitude = amp, phase = phi), N_genes)
+    sig <- full[ci$t]
 
+    # Optional columns differ between branches and annotation sets; take what
+    # is there rather than assuming a fixed schema.
+    col <- function(nm) if (nm %in% colnames(peaks)) peaks[[nm]][i] else NA
     df <- data.frame(
       condition = cond, branch = branch,
       chr = chr_now, N = peaks$N[i], k = peaks$k[i],
       freq = peaks$freq[i], period = peaks$period[i],
       phase = phi, amplitude = amp,
-      power = peaks$power[i],
-      power_norm = peaks$power_norm[i],
-      p_value_fisher = peaks$p_value_fisher[i],
-      p_fdr_fisher = peaks$p_fdr_fisher[i],
-      n_samples_expected = peaks$n_samples_expected[i],
-      n_samples_significant = peaks$n_samples_significant[i],
-      pct_samples_significant = peaks$pct_samples_significant[i],
+      power = col("power"),
+      power_normalised = col("power_normalised"),
+      window_power = col("window_power"),
+      window_rank = col("window_rank"),
+      n_samples_expected = col("n_samples_expected"),
+      n_samples_significant = col("n_samples_significant"),
+      pct_samples_significant = col("pct_samples_significant"),
       gene_id = genes$gene_id[ord],
       gene_name = genes$gene_name[ord],
-      gene_position = seq_len(N_genes),
+      grid_position = ci$t,
+      grid_N = ci$N,
+      coverage = ci$coverage,
       reconstructed_signal = sig,
       sign = ifelse(sig > 0, "positive", ifelse(sig < 0, "negative", "zero")),
       magnitude = abs(sig),
