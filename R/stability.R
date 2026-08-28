@@ -58,13 +58,22 @@ condition_peak_table <- function(stability, spectra, branch) {
   spec <- branch_spectrum(spectra, branch)
   amp_col <- if (branch == "average") "amplitude_mean" else "amplitude_median"
   cols <- intersect(c("chr", "N", "k", "freq", "period", "phase", "power",
-                      "power_norm", amp_col, "p_value"), colnames(spec))
+                      "power_normalised", "window_power", "coverage",
+                      amp_col, "p_value"), colnames(spec))
   spec <- spec[, cols, drop = FALSE]
   colnames(spec)[colnames(spec) == "p_value"] <- "p_value_fisher"
 
   out <- merge(stable, spec, by = c("chr", "N", "k"), all.x = TRUE)
-  out$p_fdr_fisher <- stats::p.adjust(out$p_value_fisher, method = "BH")
+  if ("p_value_fisher" %in% colnames(out)) {
+    out$p_fdr_fisher <- stats::p.adjust(out$p_value_fisher, method = "BH")
+  }
   out$branch <- branch
+  # How much of this frequency the sampling pattern alone can explain. A peak
+  # whose window_rank is near 1 sits exactly where the gaps are most periodic
+  # and must not be read as biological without further evidence.
+  if ("window_power" %in% colnames(out)) {
+    out$window_rank <- rank(-out$window_power)
+  }
   n_missing <- sum(is.na(out[[amp_col]]))
   if (n_missing) {
     tsf_warn(n_missing, " stable peak(s) absent from the ", branch,
