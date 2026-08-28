@@ -132,37 +132,59 @@ transition_table <- function(cond_from, cond_to, peaks_by_cond, stability_by_con
 #' dominated by whichever cohort is larger and would hide heterogeneity.
 cross_datasets <- function(tables_by_dataset, key_cols) {
   nms <- names(tables_by_dataset)
-  if (length(nms) < 2) return(NULL)
-  ta <- tables_by_dataset[[nms[1]]]
-  tb <- tables_by_dataset[[nms[2]]]
-  if (is.null(ta) || is.null(tb) || !nrow(ta) || !nrow(tb)) {
-    tsf_warn("Nothing to cross: one side is empty")
+  ok <- vapply(tables_by_dataset, function(t) !is.null(t) && nrow(t) > 0, logical(1))
+  if (sum(ok) < 2) {
+    tsf_warn("Nothing to cross: fewer than two non-empty tables (",
+             paste(nms[!ok], collapse = ", "), " empty)")
     return(NULL)
   }
-  key_cols <- intersect(key_cols, intersect(colnames(ta), colnames(tb)))
-  ta <- ta; tb <- tb
-  colnames(ta)[!colnames(ta) %in% key_cols] <-
-    paste0(colnames(ta)[!colnames(ta) %in% key_cols], "_", nms[1])
-  colnames(tb)[!colnames(tb) %in% key_cols] <-
-    paste0(colnames(tb)[!colnames(tb) %in% key_cols], "_", nms[2])
-  out <- merge(ta, tb, by = key_cols)
-  tsf_log("Shared peaks: ", nrow(out), " (of ", nrow(ta), " and ", nrow(tb), ")")
+  if (any(!ok)) tsf_warn("Excluded from the crossing (empty): ",
+                         paste(nms[!ok], collapse = ", "))
+  nms <- nms[ok]
+
+  suffixed <- lapply(nms, function(nm) {
+    t <- tables_by_dataset[[nm]]
+    kc <- intersect(key_cols, colnames(t))
+    colnames(t)[!colnames(t) %in% kc] <-
+      paste0(colnames(t)[!colnames(t) %in% kc], "_", nm)
+    t
+  })
+  names(suffixed) <- nms
+  common_keys <- Reduce(intersect, lapply(suffixed, function(t)
+    intersect(key_cols, colnames(t))))
+  if (!length(common_keys)) {
+    tsf_warn("No key column is shared by every dataset")
+    return(NULL)
+  }
+  out <- Reduce(function(a, b) merge(a, b, by = common_keys), suffixed)
+  sizes <- vapply(suffixed, nrow, integer(1))
+  tsf_log("Shared peaks across ", length(nms), " dataset(s): ", nrow(out),
+          " (of ", paste(sizes, collapse = ", "), ")")
   out
 }
 
 #' Do the two datasets agree on the direction of change across a transition?
 add_replication_flags <- function(crossed, nms) {
-  d1 <- crossed[[paste0("log2_amplitude_ratio_", nms[1])]]
-  d2 <- crossed[[paste0("log2_amplitude_ratio_", nms[2])]]
-  if (is.null(d1) || is.null(d2)) return(crossed)
-  crossed$same_direction <- sign(d1) == sign(d2) & is.finite(d1) & is.finite(d2)
-  p1 <- crossed[[paste0("p_power_fdr_", nms[1])]]
-  p2 <- crossed[[paste0("p_power_fdr_", nms[2])]]
-  if (!is.null(p1) && !is.null(p2)) {
-    crossed$replicated <- crossed$same_direction & !is.na(p1) & !is.na(p2) &
-      p1 <= 0.05 & p2 <= 0.05
-    tsf_log("Replicated in both datasets (same direction, FDR <= 0.05): ",
+  present <- nms[paste0("log2_amplitude_ratio_", nms) %in% colnames(crossed)]
+  if (length(present) < 2) return(crossed)
+
+  deltas <- vapply(present, function(nm)
+    crossed[[paste0("log2_amplitude_ratio_", nm)]], numeric(nrow(crossed)))
+  if (is.null(dim(deltas))) deltas <- matrix(deltas, nrow = nrow(crossed))
+  finite_all <- apply(is.finite(deltas), 1, all)
+  crossed$same_direction <- finite_all &
+    apply(sign(deltas), 1, function(v) length(unique(v)) == 1L)
+
+  pcols <- paste0("p_power_fdr_", present)
+  if (all(pcols %in% colnames(crossed))) {
+    ps <- vapply(pcols, function(cl) crossed[[cl]], numeric(nrow(crossed)))
+    if (is.null(dim(ps))) ps <- matrix(ps, nrow = nrow(crossed))
+    crossed$replicated <- crossed$same_direction &
+      apply(ps, 1, function(v) all(!is.na(v) & v <= 0.05))
+    tsf_log("Replicated in all ", length(present),
+            " dataset(s) (same direction, FDR <= 0.05): ",
             sum(crossed$replicated, na.rm = TRUE))
+    crossed <- crossed[order(-crossed$same_direction, crossed[[pcols[1]]]), ]
   }
-  crossed[order(-crossed$same_direction, crossed[[paste0("p_power_fdr_", nms[1])]]), ]
+  crossed
 }
