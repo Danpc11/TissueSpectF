@@ -21,12 +21,12 @@ dataset_ids <- if (length(args)) {
   sub("\\.R$", "", list.files("config/datasets", pattern = "\\.R$"))
 }
 
-lfft_log("Datasets: ", paste(dataset_ids, collapse = ", "))
+tsf_log("Datasets: ", paste(dataset_ids, collapse = ", "))
 
 results <- lapply(dataset_ids, function(id) {
   tryCatch(ingest_dataset(id, project),
            error = function(e) {
-             lfft_warn("FAILED ", id, ": ", conditionMessage(e))
+             tsf_warn("FAILED ", id, ": ", conditionMessage(e))
              NULL
            })
 })
@@ -37,6 +37,6 @@ present <- lapply(results[ok], function(r) r$audit$present)
 if (length(present) > 1) invisible(comparable_conditions(present))
 
 if (!all(ok)) {
-  lfft_abort("Ingest failed for: ", paste(dataset_ids[!ok], collapse = ", "))
+  tsf_abort("Ingest failed for: ", paste(dataset_ids[!ok], collapse = ", "))
 }
-lfft_log("Done.")
+tsf_log("Done.")
