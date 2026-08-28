@@ -19,12 +19,20 @@
 #' directly so the ingest layer stays testable without Bioconductor.
 read_series_pheno <- function(path) {
   if (requireNamespace("GEOquery", quietly = TRUE)) {
-    gse <- GEOquery::getGEO(filename = path, getGPL = FALSE)
-    ph <- Biobase::pData(gse)
-    ph[] <- lapply(ph, as.character)
-    return(ph)
+    ph <- tryCatch({
+      gse <- GEOquery::getGEO(filename = path, getGPL = FALSE)
+      p <- Biobase::pData(gse)
+      p[] <- lapply(p, as.character)
+      p
+    }, error = function(e) {
+      tsf_warn("GEOquery could not parse ", basename(path), " (", conditionMessage(e),
+               "); falling back to the minimal parser")
+      NULL
+    })
+    if (!is.null(ph) && nrow(ph)) return(ph)
+  } else {
+    tsf_warn("GEOquery not installed; using the minimal series-matrix parser")
   }
-  tsf_warn("GEOquery not installed; using the minimal series-matrix parser")
   parse_series_matrix_pheno(path)
 }
 
@@ -87,6 +95,14 @@ read_gene_annotation <- function(path, chrom_levels) {
                     entrez_id = as.character(annot$GeneID),
                     chr = chr, start = start,
                     stringsAsFactors = FALSE)
+  # Kept when the annotation provides them: transcript length enables TPM
+  # instead of CPM, and gene biotype lets a run restrict the universe.
+  if ("Length" %in% colnames(annot)) {
+    out$gene_length <- suppressWarnings(as.numeric(annot$Length))
+  }
+  if ("GeneType" %in% colnames(annot)) {
+    out$gene_type <- as.character(annot$GeneType)
+  }
   out <- out[!is.na(out$gene_id) & nzchar(out$gene_id) &
              out$chr %in% chrom_levels & !is.na(out$start), ]
   out <- out[!duplicated(out$gene_id), ]
@@ -94,10 +110,8 @@ read_gene_annotation <- function(path, chrom_levels) {
   out
 }
 
-#' Gene order along each chromosome -- the FFT input axis.
-#'
-#' Computed once here instead of being re-derived with order(start) at every
-#' call site, which is how the ordering silently diverged between stages.
+#' DEPRECATED: rank among filtered genes. Kept only for reading old outputs.
+#' The spectral axis is now the annotation grid; see build_reference_grid().
 add_gene_order <- function(genes, chrom_levels, min_genes_per_chr = 8L) {
   genes <- genes[genes$chr %in% chrom_levels, ]
   genes <- genes[order(match(genes$chr, chrom_levels), genes$start, genes$gene_id), ]
@@ -179,15 +193,49 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   storage.mode(count_mat) <- "double"
   rownames(count_mat) <- merged$gene_id
 
-  gene_len <- if ("Length" %in% colnames(merged)) suppressWarnings(as.numeric(merged$Length)) else NULL
+  gene_len <- if ("gene_length" %in% colnames(merged)) {
+    gl <- suppressWarnings(as.numeric(merged$gene_length))
+    if (all(is.na(gl)) || any(gl <= 0, na.rm = TRUE)) {
+      tsf_warn("gene_length present but unusable; falling back to CPM")
+      NULL
+    } else gl
+  } else {
+    tsf_warn("No gene_length column in the annotation; expression will be CPM, not TPM")
+    NULL
+  }
   expr_mat <- counts_to_expression(count_mat, gene_len)
   unit <- attr(expr_mat, "unit")
   expr_mat <- filter_expressed(expr_mat, project$min_tpm, project$min_fraction)
 
-  genes_out <- merged[merged$gene_id %in% rownames(expr_mat),
-                      c("gene_id", "gene_name", "chr", "start")]
-  genes_out <- add_gene_order(genes_out, project$chrom_levels, project$min_genes_per_chr)
+  # ---- reference grid ------------------------------------------------------
+  # The axis is every annotated gene of the allowed biotypes, NOT the genes that
+  # survived the expression filter. Filtered-out genes keep their grid slot and
+  # are simply unobserved; they are never imputed.
+  grid <- build_reference_grid(genes, project$chrom_levels,
+                               biotypes = project$gene_universe,
+                               min_genes_per_chr = project$min_genes_per_chr)
+
+  keep_cols <- intersect(c("gene_id", "gene_name", "chr", "start",
+                           "gene_length", "gene_type"), colnames(merged))
+  genes_out <- merged[merged$gene_id %in% rownames(expr_mat), keep_cols]
+  genes_out <- merge(genes_out, grid[, c("gene_id", "grid_index", "grid_N")],
+                     by = "gene_id")
+  off_grid <- sum(!rownames(expr_mat) %in% genes_out$gene_id)
+  if (off_grid) {
+    tsf_log(off_grid, " expressed gene(s) are not on the reference grid ",
+            "(biotype excluded or unannotated); dropped from the spectral axis")
+  }
+  genes_out <- genes_out[order(match(genes_out$chr, project$chrom_levels),
+                               genes_out$grid_index), ]
   expr_mat <- expr_mat[genes_out$gene_id, , drop = FALSE]
+
+  cov <- stats::aggregate(genes_out$gene_id, list(chr = genes_out$chr), length)
+  cov$N <- grid$grid_N[match(cov$chr, grid$chr)]
+  cov$coverage_pct <- round(100 * cov$x / cov$N, 1)
+  tsf_log("Grid coverage: median ", stats::median(cov$coverage_pct), "%, range ",
+          min(cov$coverage_pct), "-", max(cov$coverage_pct), "%")
+  write_tsv_tsf(stats::setNames(cov, c("chr", "n_observed", "grid_N", "coverage_pct")),
+                file.path(out_dir, "grid_coverage.tsv"))
 
   # ---- write the common format ---------------------------------------------
   write_tsv_tsf(samples, file.path(out_dir, "samples.tsv"))
@@ -201,6 +249,8 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
                      extra = list(
                        n_samples = nrow(samples),
                        n_genes = nrow(genes_out),
+                       grid_genes = nrow(grid),
+                       gene_universe = project$gene_universe %||% "all",
                        expression_unit = unit,
                        has_control_cohort = cfg$has_control_cohort,
                        conditions_present = audit$present,
