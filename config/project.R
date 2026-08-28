@@ -17,6 +17,15 @@ list(
 
   annotation_file = "Human.GRCh38.p13.annot.tsv.gz",
 
+  # Which annotated genes define the spectral axis. Regular expression matched
+  # against the annotation's gene_type. The grid is what makes N comparable
+  # across datasets, so changing this changes what "period in genes" means --
+  # run both and report both rather than picking one silently.
+  #   "PROTEIN_CODING"          coding only
+  #   "PROTEIN_CODING|NCRNA"    coding + long non-coding  (default)
+  #   NULL                      every annotated gene
+  gene_universe = Sys.getenv("TSF_GENE_UNIVERSE", "PROTEIN_CODING|NCRNA"),
+
   # Genes are ordered by start position within a chromosome; a chromosome with
   # fewer than this many genes cannot support a meaningful spectrum.
   min_genes_per_chr = 8L,
