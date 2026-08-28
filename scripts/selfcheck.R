@@ -98,7 +98,8 @@ run_selfcheck <- function() {
   project$geo_dir <- geo
   project$interim_dir <- file.path(tmp, "interim")
   project$results_dir <- file.path(tmp, "results")
-  project$maxt$B <- 100L   # enough to separate an injected peak from noise
+  project$maxt$B <- 100L
+  project$gene_universe <- NULL   # the synthetic annotation carries no biotypes   # enough to separate an injected peak from noise
 
   opt <- list(datasets = c("GSE135251", "GSE162694"), cond = NULL,
               branch = NULL, branches = "average", force = TRUE)
