@@ -24,7 +24,7 @@ read_series_pheno <- function(path) {
     ph[] <- lapply(ph, as.character)
     return(ph)
   }
-  lfft_warn("GEOquery not installed; using the minimal series-matrix parser")
+  tsf_warn("GEOquery not installed; using the minimal series-matrix parser")
   parse_series_matrix_pheno(path)
 }
 
@@ -33,7 +33,7 @@ parse_series_matrix_pheno <- function(path) {
   on.exit(close(con))
   lines <- readLines(con, warn = FALSE)
   lines <- lines[grepl("^!Sample_", lines)]
-  if (!length(lines)) lfft_abort("No !Sample_ lines in ", path)
+  if (!length(lines)) tsf_abort("No !Sample_ lines in ", path)
 
   parsed <- lapply(lines, function(l) {
     parts <- strsplit(l, "\t", fixed = TRUE)[[1]]
@@ -59,17 +59,17 @@ parse_series_matrix_pheno <- function(path) {
 
 #' Read a GEO count table and map its identifiers to Ensembl gene ids.
 read_counts <- function(path, id_type = "ENTREZID") {
-  dt <- read_tsv_lfft(path)
+  dt <- read_tsv_tsf(path)
   id_col <- colnames(dt)[1]
   colnames(dt)[1] <- "source_id"
-  lfft_log("Counts: ", nrow(dt), " rows x ", ncol(dt) - 1, " samples (id column: ", id_col, ")")
+  tsf_log("Counts: ", nrow(dt), " rows x ", ncol(dt) - 1, " samples (id column: ", id_col, ")")
   attr(dt, "id_type") <- id_type
   dt
 }
 
 #' Gene coordinates from the NCBI annotation table shipped with the GEO counts.
 read_gene_annotation <- function(path, chrom_levels) {
-  annot <- read_tsv_lfft(path)
+  annot <- read_tsv_tsf(path)
   ncbi_to_chr <- setNames(
     c(as.character(1:22), "X", "Y"),
     c("NC_000001.11","NC_000002.12","NC_000003.12","NC_000004.12","NC_000005.10",
@@ -90,7 +90,7 @@ read_gene_annotation <- function(path, chrom_levels) {
   out <- out[!is.na(out$gene_id) & nzchar(out$gene_id) &
              out$chr %in% chrom_levels & !is.na(out$start), ]
   out <- out[!duplicated(out$gene_id), ]
-  lfft_log("Annotation: ", nrow(out), " genes with chromosome and start")
+  tsf_log("Annotation: ", nrow(out), " genes with chromosome and start")
   out
 }
 
@@ -105,7 +105,7 @@ add_gene_order <- function(genes, chrom_levels, min_genes_per_chr = 8L) {
   keep_chr <- names(which(table(genes$chr) >= min_genes_per_chr))
   dropped <- setdiff(unique(genes$chr), keep_chr)
   if (length(dropped)) {
-    lfft_warn("Chromosomes with < ", min_genes_per_chr, " genes dropped: ",
+    tsf_warn("Chromosomes with < ", min_genes_per_chr, " genes dropped: ",
               paste(dropped, collapse = ", "))
   }
   genes[genes$chr %in% keep_chr, ]
@@ -133,14 +133,14 @@ counts_to_expression <- function(count_mat, gene_length = NULL) {
 #' Keep genes expressed in a reasonable fraction of samples.
 filter_expressed <- function(expr_mat, min_value, min_fraction) {
   keep <- rowMeans(expr_mat >= asinh(min_value)) >= min_fraction
-  lfft_log("Expression filter: ", sum(keep), "/", length(keep), " genes kept")
+  tsf_log("Expression filter: ", sum(keep), "/", length(keep), " genes kept")
   expr_mat[keep, , drop = FALSE]
 }
 
 #' Full ingest for one dataset.
 ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets") {
   cfg <- load_dataset_config(dataset_id, dataset_dir)
-  lfft_log("=== Ingesting ", cfg$id, " (", cfg$description, ") ===")
+  tsf_log("=== Ingesting ", cfg$id, " (", cfg$description, ") ===")
 
   out_dir <- file.path(project$interim_dir, cfg$id)
   ensure_dir(out_dir)
@@ -148,10 +148,10 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   # ---- phenotype and labels -------------------------------------------------
   pheno <- read_series_pheno(file.path(project$geo_dir, cfg$series_matrix))
   labels <- harmonize_conditions(pheno, cfg)
-  write_tsv_lfft(labels, file.path(out_dir, "label_audit.tsv"))
+  write_tsv_tsf(labels, file.path(out_dir, "label_audit.tsv"))
   audit <- audit_labels(labels, cfg)
   samples <- labels[labels$keep, , drop = FALSE]
-  samples$condition <- factor(samples$condition, levels = LFFT_CONDITION_LEVELS)
+  samples$condition <- factor(samples$condition, levels = TSF_CONDITION_LEVELS)
 
   # ---- counts and annotation ------------------------------------------------
   counts <- read_counts(file.path(project$geo_dir, cfg$counts_file), cfg$count_id_type)
@@ -160,18 +160,18 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
 
   key <- if (identical(cfg$count_id_type, "ENTREZID")) "entrez_id" else "gene_id"
   merged <- merge(counts, genes, by.x = "source_id", by.y = key)
-  if (!nrow(merged)) lfft_abort("No count row mapped to the annotation for ", cfg$id)
+  if (!nrow(merged)) tsf_abort("No count row mapped to the annotation for ", cfg$id)
   merged <- merged[!duplicated(merged$gene_id), ]
 
   sample_cols <- intersect(colnames(counts)[-1], samples$sample_id)
   missing_cols <- setdiff(samples$sample_id, colnames(counts))
   if (length(missing_cols)) {
-    lfft_warn(length(missing_cols), " labelled sample(s) absent from the count matrix: ",
+    tsf_warn(length(missing_cols), " labelled sample(s) absent from the count matrix: ",
               paste(utils::head(missing_cols, 5), collapse = ", "))
     samples <- samples[samples$sample_id %in% sample_cols, , drop = FALSE]
   }
   if (!length(sample_cols)) {
-    lfft_abort("Sample ids in the series matrix do not match count columns for ", cfg$id,
+    tsf_abort("Sample ids in the series matrix do not match count columns for ", cfg$id,
                " -- check quoting/prefixes in sample_id_column.")
   }
 
@@ -190,12 +190,12 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   expr_mat <- expr_mat[genes_out$gene_id, , drop = FALSE]
 
   # ---- write the common format ---------------------------------------------
-  write_tsv_lfft(samples, file.path(out_dir, "samples.tsv"))
-  write_tsv_lfft(genes_out, file.path(out_dir, "genes.tsv"))
-  write_tsv_lfft(data.frame(gene_id = rownames(count_mat), count_mat[, sample_cols, drop = FALSE],
+  write_tsv_tsf(samples, file.path(out_dir, "samples.tsv"))
+  write_tsv_tsf(genes_out, file.path(out_dir, "genes.tsv"))
+  write_tsv_tsf(data.frame(gene_id = rownames(count_mat), count_mat[, sample_cols, drop = FALSE],
                             check.names = FALSE),
                  file.path(out_dir, "counts.tsv"))
-  write_tsv_lfft(data.frame(gene_id = rownames(expr_mat), expr_mat, check.names = FALSE),
+  write_tsv_tsf(data.frame(gene_id = rownames(expr_mat), expr_mat, check.names = FALSE),
                  file.path(out_dir, "expression.tsv"))
   write_run_manifest(file.path(out_dir, "manifest.tsv"), cfg$id, list(project, cfg),
                      extra = list(
@@ -207,7 +207,7 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
                        samples_per_condition = paste(names(audit$counts), audit$counts,
                                                      sep = "=", collapse = " ")))
 
-  lfft_log("Wrote common format to ", out_dir)
+  tsf_log("Wrote common format to ", out_dir)
   invisible(list(dir = out_dir, samples = samples, genes = genes_out,
                  expression = expr_mat, audit = audit))
 }
@@ -215,11 +215,11 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
 #' Load a previously ingested dataset in the common format.
 load_dataset <- function(dataset_id, project) {
   dir <- file.path(project$interim_dir, dataset_id)
-  samples <- read_tsv_lfft(file.path(dir, "samples.tsv"))
-  genes   <- read_tsv_lfft(file.path(dir, "genes.tsv"))
-  expr    <- read_tsv_lfft(file.path(dir, "expression.tsv"))
+  samples <- read_tsv_tsf(file.path(dir, "samples.tsv"))
+  genes   <- read_tsv_tsf(file.path(dir, "genes.tsv"))
+  expr    <- read_tsv_tsf(file.path(dir, "expression.tsv"))
   mat <- as.matrix(expr[, setdiff(colnames(expr), "gene_id"), drop = FALSE])
   rownames(mat) <- expr$gene_id
-  samples$condition <- factor(samples$condition, levels = LFFT_CONDITION_LEVELS)
+  samples$condition <- factor(samples$condition, levels = TSF_CONDITION_LEVELS)
   list(id = dataset_id, samples = samples, genes = genes, expression = mat)
 }
