@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
+source("R/grid.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
 source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
@@ -44,20 +44,21 @@ check("a peak outside the Nyquist range is ignored", {
   pk <- data.frame(freq = 1.5, amplitude = 1, phase = 0)
   all(reconstruct_signal(pk, 32) == 0) })
 
-# --- maxT --------------------------------------------------------------------
-mt <- permutation_spectrum_test(sig + rnorm(N, sd = 0.2), B = 200L, seed = 1L,
-                                block_sizes = c(10L, 20L))
+# --- maxT on a complete grid (GLS reduces to the FFT case) --------------------
+mt <- permutation_gls_test(sig + rnorm(N, sd = 0.2), gls_prepare(1:N, N),
+                           B = 200L, seed = 1L, block_sizes = c(10L, 20L))
 check("maxT returns one row per positive frequency", nrow(mt) == floor((N - 1) / 2))
 check("maxT flags a strong periodic component", mt$p_empirical_maxT[mt$k == k_true] <= 0.05)
 check("maxT p-values are bounded by 1/(B+1)", min(mt$p_empirical_maxT) >= 1 / 201)
 check("block schemes are reported", all(c("p_empirical_maxT_full",
                                           "p_empirical_maxT_block10") %in% colnames(mt)))
-check("maxT is reproducible for a fixed seed",
-      identical(permutation_spectrum_test(sig, B = 50L, seed = 7L)$p_empirical_maxT,
-                permutation_spectrum_test(sig, B = 50L, seed = 7L)$p_empirical_maxT))
+check("maxT is reproducible for a fixed seed", {
+  a <- permutation_gls_test(sig, gls_prepare(1:N, N), B = 50L, seed = 7L)
+  b <- permutation_gls_test(sig, gls_prepare(1:N, N), B = 50L, seed = 7L)
+  identical(a$p_empirical_maxT, b$p_empirical_maxT) })
 check("pure noise rarely reaches significance", {
   set.seed(5)
-  m <- permutation_spectrum_test(rnorm(N), B = 200L, seed = 2L)
+  m <- permutation_gls_test(rnorm(N), gls_prepare(1:N, N), B = 200L, seed = 2L)
   mean(m$p_empirical_maxT <= 0.05) < 0.10 })
 
 # --- stability ---------------------------------------------------------------
@@ -73,6 +74,50 @@ check("percentages are reported", st$pct_samples_significant[st$k == 6L] == 80)
 check("a missing sample blocks stability",
       !stable_peaks_maxt(indiv[indiv$sample != "S1" | indiv$k != 5L, ],
                          paste0("S", 1:10))$is_stable[1])
+
+# --- GLS on a gappy grid -----------------------------------------------------
+check("GLS equals the FFT on a complete grid", {
+  set.seed(21); N <- 256; t <- 1:N
+  y <- 3 * cos(2 * pi * 7 * (t - 1) / N + 0.7) + rnorm(N, sd = 0.3)
+  g <- gls_spectrum(y, gls_prepare(t, N)); f <- run_fft(y)
+  i <- match(g$k, f$k)
+  max(abs(g$amplitude - f$amplitude[i])) < 1e-9 &&
+    max(abs(((g$phase - f$phase[i] + pi) %% (2 * pi)) - pi)) < 1e-9 })
+
+check("GLS equals brute-force least squares with gaps", {
+  set.seed(22); N <- 200; t <- sort(sample.int(N, 130))
+  y <- 2 * cos(2 * pi * 11 * (t - 1) / N + 1.1) + rnorm(length(t), sd = 0.4)
+  g <- gls_spectrum(y, gls_prepare(t, N))
+  brute <- function(k) {
+    X <- cbind(1, cos(2 * pi * k * (t - 1) / N), sin(2 * pi * k * (t - 1) / N))
+    cf <- qr.solve(X, y); c(sqrt(cf[2]^2 + cf[3]^2), atan2(-cf[3], cf[2]))
+  }
+  ks <- c(3, 11, 40, 77)
+  a <- vapply(ks, function(k) brute(k)[1], numeric(1))
+  p <- vapply(ks, function(k) brute(k)[2], numeric(1))
+  max(abs(g$amplitude[match(ks, g$k)] - a)) < 1e-8 &&
+    max(abs(((g$phase[match(ks, g$k)] - p + pi) %% (2 * pi)) - pi)) < 1e-8 })
+
+check("the injected k is recovered at 65% coverage", {
+  set.seed(23); N <- 200; t <- sort(sample.int(N, 130))
+  y <- 2 * cos(2 * pi * 11 * (t - 1) / N + 1.1) + rnorm(length(t), sd = 0.4)
+  gls_spectrum(y, gls_prepare(t, N))$k[which.max(gls_spectrum(y, gls_prepare(t, N))$power)] == 11 })
+
+check("a complete grid has a flat zero window", {
+  max(spectral_window(1:128, 128)$window_power) < 1e-20 })
+
+check("gaps alone do not create significance", {
+  # White noise on a heavily gapped grid: the permutation null holds the
+  # positions fixed, so the missingness pattern cannot produce a peak.
+  set.seed(24); N <- 300; t <- sort(sample.int(N, 150))
+  m <- permutation_gls_test(rnorm(length(t)), gls_prepare(t, N), B = 200L, seed = 3L)
+  mean(m$p_empirical_maxT <= 0.05) < 0.10 })
+
+check("a real periodicity survives the gaps", {
+  set.seed(25); N <- 300; t <- sort(sample.int(N, 150))
+  y <- 1.5 * cos(2 * pi * 9 * (t - 1) / N) + rnorm(length(t), sd = 0.5)
+  m <- permutation_gls_test(y, gls_prepare(t, N), B = 200L, seed = 4L)
+  m$p_empirical_maxT[m$k == 9] <= 0.05 })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
