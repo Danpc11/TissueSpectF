@@ -1,9 +1,19 @@
-# Project-level paths and constants. Override via environment or a local copy.
+# Project-level paths and constants.
+#
+# Defaults point at the INMEGEN scratch layout; override with environment
+# variables (TSF_GEO_DIR, TSF_INTERIM_DIR, TSF_RESULTS_DIR) to run elsewhere.
 list(
-  geo_dir     = Sys.getenv("LFFT_GEO_DIR",
-                           "/scratch/home/storres/tejidos_fft/liver_fft/GEO"),
-  interim_dir = Sys.getenv("LFFT_INTERIM_DIR", "data/interim"),
-  results_dir = Sys.getenv("LFFT_RESULTS_DIR", "results"),
+  # Raw GEO downloads: count tables, series matrices, NCBI annotation.
+  geo_dir     = Sys.getenv("TSF_GEO_DIR",
+                           "/scratch/home/dperez/GPIB/gene_notes/TissueSpectF/data"),
+
+  # Common format written by the ingest stage. Kept outside the git tree.
+  interim_dir = Sys.getenv("TSF_INTERIM_DIR",
+                           "/scratch/home/dperez/GPIB/gene_notes/TissueSpectF/interim"),
+
+  # Downstream spectral results.
+  results_dir = Sys.getenv("TSF_RESULTS_DIR",
+                           "/scratch/home/dperez/GPIB/gene_notes/TissueSpectF/results"),
 
   annotation_file = "Human.GRCh38.p13.annot.tsv.gz",
 
