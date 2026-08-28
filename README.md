@@ -23,15 +23,12 @@ R/
   peaks_genes.R          gene-level reconstruction of a peak
   compare.R              signature, transitions, cross-dataset crossing
   paths.R                where each stage reads and writes
+  stages.R               each stage as a callable function
+tsf                      the command line entry point
 scripts/
+  tsf.R                  CLI implementation
   00_check_inputs.R      verify the GEO files are where the configs expect them
-  01_ingest_dataset.R    GEO -> common format
-  02_spectra.R           FFT, per sample and per condition
-  03_maxt.R              permutation test (the slow stage)
-  04_stability.R         stable peaks + condition peak tables
-  05_peaks_genes.R       gene reconstruction per peak
-  06_compare_datasets.R  signature, transitions, replication
-  99_validate_against_legacy.R   peak-by-peak diff against an old run
+  selfcheck.R            end-to-end run on synthetic data with a known peak
 tests/
   test_labels.R          label engine
   test_spectrum.R        FFT, maxT, stability, Wilson
@@ -88,33 +85,45 @@ with `condition = NA` and are reported, never guessed.
 
 ## Running
 
-The configs default to the INMEGEN scratch layout:
-
-```
-geo_dir     /scratch/home/dperez/GPIB/gene_notes/TissueSpectF/data
-interim_dir /scratch/home/dperez/GPIB/gene_notes/TissueSpectF/interim
-results_dir /scratch/home/dperez/GPIB/gene_notes/TissueSpectF/results
+```bash
+./tsf check       # are the GEO files where the configs expect them?
+./tsf run         # ingest -> spectra -> maxt -> stability -> peaks -> compare
+./tsf status      # what exists on disk
 ```
 
-From the repository root:
+`run` prints a per-stage timing table and stops at the first failure, so a long
+run never leaves you guessing which stage produced which output.
+
+Any stage can be run on its own, over a subset:
 
 ```bash
-make test        # label engine + spectral core, no Bioconductor needed
-make check       # are the GEO files where the configs expect them?
-make all         # ingest -> spectra -> maxT -> stability -> peaks -> compare
+./tsf spectra                        # one stage, all datasets
+./tsf maxt GSE135251 --cond=F3       # one dataset, one condition
+./tsf run --from=stability           # resume after changing a threshold
+./tsf run --to=maxt --log=run.log    # stop early, tee the output to a file
+./tsf run --dry-run                  # print the plan, do nothing
 ```
 
-Stage by stage, with the same arguments available everywhere
-(`<GSE>`, `--cond=F2`, `--branch=median`):
+Options: `--from=`, `--to=`, `--cond=F2,F3`, `--branch=median`, `--force`,
+`--dry-run`, `--log=<file>`. Stages in order: `ingest`, `spectra`, `maxt`,
+`stability`, `peaks`, `compare`.
+
+## Checking that it works
 
 ```bash
-Rscript scripts/01_ingest_dataset.R
-Rscript scripts/02_spectra.R
-Rscript scripts/03_maxt.R               # slow: B x samples x chromosomes
-Rscript scripts/04_stability.R
-Rscript scripts/05_peaks_genes.R
-Rscript scripts/06_compare_datasets.R
+make test         # 38 unit tests: labels, FFT, maxT, stability, Wilson
+./tsf selfcheck   # the full pipeline on synthetic data with a known answer
 ```
+
+`selfcheck` builds a GEO-shaped dataset in a temporary directory with one
+sinusoid injected on chromosome 1, whose amplitude grows with fibrosis stage,
+runs every stage, and asserts that the labels resolve as declared, that the
+recovered peak is the injected `(chr, N, k)`, that the phase matches, that
+amplitude increases across every transition, and that the increase replicates
+across both datasets. It exercises the same code a real run does, so a
+regression anywhere in the chain shows up. It says nothing about whether a
+signal found in real data is biologically meaningful -- only that the machinery
+recovers a signal known to be there.
 
 ## Re-running one stage
 
@@ -123,43 +132,13 @@ stage can be re-run on its own. After changing `stable_frac` or `alpha` in
 `config/project.R`:
 
 ```bash
-Rscript scripts/04_stability.R
-Rscript scripts/05_peaks_genes.R
+./tsf run --from=stability
 ```
 
-maxT is not recomputed. `03_maxt.R` is the one stage that reuses existing output
-by default, because it is the only one that costs hours; pass `--force` to
+maxT is not recomputed. It is the one stage that reuses existing output by
+default, because it is the only one that costs hours; pass `--force` to
 recompute it. Every other stage always recomputes, since silent reuse is how two
 different runs end up interleaved in one output tree.
-
-## Validating the port
-
-```bash
-Rscript scripts/99_validate_against_legacy.R GSE135251 /path/to/old/GSE135251
-```
-
-Compares the stable-peak key set and per-peak power against a run of the
-original script, condition by condition, and exits non-zero on any difference.
-The only differences that should be accepted are samples whose condition changed
-because of the label fix, and each one should be traceable in `label_audit.tsv`.
-
-`00_check_inputs.R` verifies each expected file, prints the closest names it
-actually found when one is missing, and checks that the output directories are
-writable. GEO count tables often carry a suffix (`_raw_counts_GRCh38`,
-`_norm_counts_TPM`), so if a name differs, edit `counts_file` / `series_matrix`
-in `config/datasets/<GSE>.R` rather than renaming the download.
-
-To run somewhere else, override the paths:
-
-```bash
-export TSF_GEO_DIR=/some/other/data
-export TSF_INTERIM_DIR=/some/other/interim
-export TSF_RESULTS_DIR=/some/other/results
-```
-
-`GEOquery` is used when installed; a minimal series-matrix parser is used
-otherwise, which keeps ingest testable without Bioconductor. On a cluster with
-environment modules, load R first (`module load R/4.3` or equivalent).
 
 ## Sanity check after ingest
 
