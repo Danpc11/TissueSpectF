@@ -1,0 +1,74 @@
+# stability.R -- which peaks are stable within a condition.
+#
+# A peak (chr, N, k) is stable in a condition when maxT called it significant in
+# at least `stable_frac` of that condition's samples, and every sample produced
+# a result for it. This is the definition the whole downstream analysis rests
+# on, so it lives in one function with one threshold, read from project.R.
+
+stable_peaks_maxt <- function(maxt_individual, expected_samples,
+                              alpha = 0.05, stable_frac = 0.9) {
+  if (is.null(maxt_individual) || !nrow(maxt_individual)) return(NULL)
+  n_expected <- length(unique(expected_samples))
+
+  d <- maxt_individual
+  d$is_sig <- d$p_empirical_maxT <= alpha
+  by <- list(chr = as.character(d$chr), N = as.integer(d$N), k = as.integer(d$k))
+
+  n_res <- stats::aggregate(d$sample, by, function(x) length(unique(x)))
+  n_sig <- stats::aggregate(d$sample[d$is_sig],
+                            lapply(by, function(v) v[d$is_sig]),
+                            function(x) length(unique(x)))
+  pw_mean <- stats::aggregate(d$power, by, mean)
+  pw_med  <- stats::aggregate(d$power, by, stats::median)
+
+  out <- n_res
+  names(out)[names(out) == "x"] <- "n_samples_with_result"
+  out <- merge(out, stats::setNames(pw_mean, c("chr", "N", "k", "mean_power")),
+               by = c("chr", "N", "k"))
+  out <- merge(out, stats::setNames(pw_med, c("chr", "N", "k", "median_power")),
+               by = c("chr", "N", "k"))
+  out <- merge(out, stats::setNames(n_sig, c("chr", "N", "k", "n_samples_significant")),
+               by = c("chr", "N", "k"), all.x = TRUE)
+  out$n_samples_significant[is.na(out$n_samples_significant)] <- 0L
+
+  out$n_samples_expected <- n_expected
+  out$freq <- out$k / out$N
+  out$period <- out$N / out$k
+  out$pct_samples_significant <- 100 * out$n_samples_significant / out$n_samples_expected
+  out$is_stable <- out$n_samples_with_result == n_expected &
+    out$n_samples_significant >= stable_frac * n_expected
+  out[order(-out$pct_samples_significant, out$chr, out$k), ]
+}
+
+#' Condition-level peak table for one branch (average or median).
+#'
+#' Keys are the maxT-stable peaks; amplitude, phase and the Fisher p-value come
+#' from the condition's summary spectrum. Peaks that maxT calls stable but that
+#' the Fisher test did not flag are kept -- that union is what the original
+#' pipeline built with union_fisher_maxt(), and dropping it would silently
+#' shrink the peak set.
+condition_peak_table <- function(stability, spectra, branch) {
+  if (is.null(stability) || !nrow(stability)) return(NULL)
+  stable <- stability[stability$is_stable %in% TRUE, c("chr", "N", "k",
+                                                       "n_samples_expected",
+                                                       "n_samples_significant",
+                                                       "pct_samples_significant",
+                                                       "mean_power", "median_power")]
+  if (!nrow(stable)) return(NULL)
+  spec <- branch_spectrum(spectra, branch)
+  amp_col <- if (branch == "average") "amplitude_mean" else "amplitude_median"
+  cols <- intersect(c("chr", "N", "k", "freq", "period", "phase", "power",
+                      "power_norm", amp_col, "p_value"), colnames(spec))
+  spec <- spec[, cols, drop = FALSE]
+  colnames(spec)[colnames(spec) == "p_value"] <- "p_value_fisher"
+
+  out <- merge(stable, spec, by = c("chr", "N", "k"), all.x = TRUE)
+  out$p_fdr_fisher <- stats::p.adjust(out$p_value_fisher, method = "BH")
+  out$branch <- branch
+  n_missing <- sum(is.na(out[[amp_col]]))
+  if (n_missing) {
+    tsf_warn(n_missing, " stable peak(s) absent from the ", branch,
+             " summary spectrum; amplitude is NA for those rows")
+  }
+  out[order(-out$pct_samples_significant, out$chr, out$k), ]
+}
