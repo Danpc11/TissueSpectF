@@ -101,3 +101,87 @@ normalise_fingerprints <- function(mat) {
     (v - mean(v)) / s
   }))
 }
+
+
+# --- query side ---------------------------------------------------------------
+#
+# A query file covers a different set of genes from the reference cohorts, and
+# the genes it lacks must be treated exactly as unmeasured genes are everywhere
+# else in this pipeline: absent from the observed positions, NEVER zero.
+#
+# Filling a missing gene with zero would put a deterministic value at a fixed
+# grid position, and with the 20% coverage floor up to four fifths of the grid
+# could be zeros. The resulting spectrum would be dominated by the pattern of
+# absence rather than by expression -- the precise failure the grid design
+# exists to prevent. An explicit zero count inside the file is a measurement and
+# is kept; a gene not in the file is not.
+
+#' Observed positions for a query, on the reference grid.
+#'
+#' @param grid the reference's own grid (gene_id, entrez_id, chr, grid_index, grid_N)
+#' @param present_ids identifiers actually present in the query file
+#' @return list(chrom_idx, rows_gene_id, coverage, id_type)
+query_grid_index <- function(grid, present_ids, min_observed = 8L,
+                             min_coverage = 0.05) {
+  ids <- unique(as.character(present_ids))
+  by_ensembl <- sum(grid$gene_id %in% ids)
+  by_entrez <- if ("entrez_id" %in% colnames(grid))
+    sum(as.character(grid$entrez_id) %in% ids) else 0L
+  id_type <- if (by_entrez > by_ensembl) "entrez" else "ensembl"
+  key <- if (id_type == "entrez") as.character(grid$entrez_id) else grid$gene_id
+
+  observed <- key %in% ids
+  g <- grid[observed, , drop = FALSE]
+  if (!nrow(g)) return(NULL)
+
+  chrom_idx <- list()
+  for (chr_now in unique(g$chr)) {
+    sel <- which(g$chr == chr_now)
+    sel <- sel[order(g$grid_index[sel])]
+    N <- g$grid_N[sel[1]]
+    cov <- length(sel) / N
+    if (length(sel) < min_observed || cov < min_coverage) next
+    chrom_idx[[as.character(chr_now)]] <-
+      list(rows = sel, t = as.integer(g$grid_index[sel]),
+           N = as.integer(N), coverage = cov)
+  }
+  if (!length(chrom_idx)) return(NULL)
+  list(chrom_idx = chrom_idx, genes = g, key = key[observed],
+       coverage = nrow(g) / nrow(grid), id_type = id_type)
+}
+
+#' Fingerprint of one query column, built only on the genes it actually contains.
+fingerprint_query <- function(values, ids, ref) {
+  qi <- query_grid_index(ref$grid, ids)
+  if (is.null(qi)) return(NULL)
+
+  v <- suppressWarnings(as.numeric(values))[match(qi$key, as.character(ids))]
+  # Non-finite entries are unusable measurements, not zeros: drop those
+  # positions from the observed set rather than imputing them.
+  good <- is.finite(v)
+  if (!all(good)) {
+    keep_ids <- qi$key[good]
+    qi <- query_grid_index(ref$grid, keep_ids)
+    if (is.null(qi)) return(NULL)
+    v <- suppressWarnings(as.numeric(values))[match(qi$key, as.character(ids))]
+  }
+  y <- asinh(v / max(sum(v, na.rm = TRUE), 1) * 1e6)
+
+  terms <- fingerprint_terms(qi$chrom_idx)
+  fp <- fingerprint_vector(y, qi$chrom_idx, terms,
+                           k_max = ref$params$k_max,
+                           features = ref$params$features)
+  if (is.null(fp)) return(NULL)
+  fp <- (fp - mean(fp)) / max(stats::sd(fp), .Machine$double.eps)
+  list(vector = fp, coverage = qi$coverage, id_type = qi$id_type,
+       n_chromosomes = length(qi$chrom_idx))
+}
+
+#' Project a query fingerprint onto the reference feature space.
+project_to_reference <- function(fp, ref) {
+  vv <- stats::setNames(rep(0, length(ref$feature_space)), ref$feature_space)
+  shared <- intersect(names(fp), ref$feature_space)
+  vv[shared] <- fp[shared]
+  list(vector = vv, n_shared = length(shared),
+       n_features = length(ref$feature_space))
+}
