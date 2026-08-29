@@ -316,6 +316,57 @@ when $B$ is too small to be able to conclude.
 
 ---
 
+### 5.6 The characteristic spectrum of a condition
+
+The spectrum of the mean profile is not the same object as a summary of the
+per-sample spectra. The transform is linear, so the spectrum of the mean is the
+**vector** mean of the complex coefficients: a component present in every sample
+at the same frequency but with scattered phases cancels in that sum and vanishes
+from the condition spectrum, however reproducible it is. One extreme sample can
+equally carry a peak no other sample has.
+
+A condition is therefore summarised on three axes the mean profile cannot
+separate (`R/consensus.R`):
+
+| axis | statistic | reads as |
+|---|---|---|
+| how strong | median normalised power across samples | robust to one outlier sample |
+| how common | prevalence: fraction of samples where the frequency stands out within its own sample and chromosome | independent of depth and of chromosome |
+| how aligned | phase-locking value | 1 when every sample puts the crest in the same place |
+
+$$
+\mathrm{PLV}=\left\lvert \frac{1}{n}\sum_{s=1}^{n} e^{i\phi_s} \right\rvert,
+\qquad
+S = \tilde P_{\mathrm{norm}} \cdot \pi \cdot \mathrm{PLV}.
+$$
+
+$S$ is a product of median normalised power, prevalence $\pi$ and $\mathrm{PLV}$,
+so a component must satisfy all three: any factor near zero sends the score to
+zero. Normalised power rather than raw, because raw power differs by orders of
+magnitude between chromosomes and the score would otherwise rank chromosomes
+instead of components. Prevalence is judged within a sample **and** a
+chromosome, for the same reason.
+
+Two cautions. Under uniformly random phases
+
+$$
+\mathbb{E}\left[\mathrm{PLV}\right] \approx \frac{\sqrt{\pi}}{2\sqrt{n}},
+$$
+
+which is not zero — with 8 samples a $\mathrm{PLV}$ of $0.3$ is unremarkable —
+so a Rayleigh p-value accompanies every value. And that p-value cannot fall
+below $e^{-n}$, so after BH over $n_f$ frequencies the smallest reachable $q$ is
+$e^{-n} n_f$: below roughly $\log(n_f/q)$ samples, about 9 for 5,000
+frequencies, perfect alignment could not pass. The stage says so and falls back
+to prevalence and score rather than returning an empty signature.
+
+The score is a **ranking statistic, not a test**. Bootstrap intervals over
+samples say how stable it is; the Rayleigh p-value covers phase alignment alone.
+Neither makes it a significance claim — §5.4 is for that. Stouffer stays a
+secondary analysis; Fisher's method is not used, because its sensitivity to a
+single small p-value is the wrong behaviour when the question is whether a
+component is *shared*.
+
 ## 6. Decomposition: which components are there?
 
 ### 6.1 Why thresholding the periodogram is wrong
@@ -440,6 +491,26 @@ along the chromosome, telling you a 200-gene structure exists but not where its
 crest falls; phase anchors the structure to genomic coordinates. For tissue
 identity, phase is plausibly the more discriminative half.
 
+Coverage is calibrated, not assumed. A query rarely covers the whole grid, and
+the similarity distribution shifts with coverage, so a threshold calibrated on
+complete fingerprints rejects members of a 60%-covered query that should be
+accepted. Validation therefore re-scores every held-out sample under simulated
+loss — whole chromosomes and contiguous genomic blocks as well as scattered
+genes, because real loss is structured — and calibrates accuracy and rejection
+threshold per band: 90–100%, 75–90%, 50–75%, and below 50%, where nothing is
+classified. Each combination of fold, coverage level and loss mode is repeated
+over many independent masks (`fingerprint$n_masks`), since *which* regions are
+missing matters as much as how many; the spread between masks is reported next
+to each threshold. A query whose band has no calibrated threshold is reported
+`UNCALIBRATED_COVERAGE` rather than judged against the wrong number.
+
+The reference is self-contained — it carries the canonical annotation grid, gene
+identifiers, species, genome build, annotation release, frequency ceiling,
+feature representation and expression unit — so a query is never scored against
+a grid or a scale other than the one the reference was built on. Similarity is
+computed over the shared features only: a frequency the query never observed
+contributes nothing, rather than contributing the mean of a z-scored vector.
+
 **The decisive experiment**, implemented in `R/reference.R` as leave-one-cohort-
 out validation: train on one cohort's fingerprints and predict the other
 cohort's labels, with no tuning against the second. Internal cross-validation cannot substitute for this — with
@@ -503,6 +574,9 @@ of any positive result.
 | `p_condition`, `q_condition` | this frequency shows structure unlikely under positional exchangeability | that the structure is biological rather than compositional |
 | `window_rank` | whether sampling alone could produce the frequency | anything about biology |
 | CLEAN components | the components the data prefer to retain | a per-component error rate |
+| consensus score | how strong, common and phase-aligned a frequency is | a significance claim; it has no null |
+| PLV + Rayleigh q | whether the crest falls in the same place across samples | that the component is biological |
+| band accuracy | how well a query of that coverage can be classified | that an out-of-domain sample will be rejected |
 | `pct_samples_significant` | reproducibility across samples | evidence strength; it does not aggregate |
 | `replicated` | agreement in frequency and direction across cohorts | a mechanism |
 | crest gene lists | genes positioned on a crest | that those genes are periodically regulated |
