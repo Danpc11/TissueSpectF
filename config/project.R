@@ -46,6 +46,17 @@ list(
 
   chrom_levels = c(as.character(1:22), "X", "Y"),
 
+  # Consensus spectrum: how strong, how common and how phase-aligned each
+  # frequency is across the samples of a condition. See R/consensus.R for why
+  # this is not the spectrum of the mean profile.
+  consensus = list(
+    n_boot         = 500L,
+    quantile_cut   = 0.95,   # "stands out" cut when no maxT is available
+    min_prevalence = 0.5,
+    plv_q          = 0.05,   # BH-adjusted Rayleigh p for phase alignment
+    max_components = 50L
+  ),
+
   # CLEAN decomposition: greedy deflation with an extended-BIC stopping rule.
   # No number of components is chosen -- EBIC decides per chromosome. gamma
   # scales the cost of searching the frequency grid; 1 is strict and is what
