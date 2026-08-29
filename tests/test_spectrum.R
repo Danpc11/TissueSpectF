@@ -336,6 +336,57 @@ check("an uncalibrated reference says so instead of deciding", {
   identical(apply_rejection(list(best = "A", similarity = 0.9), NULL)$decision,
             "UNCALIBRATED") })
 
+check("similarity uses shared features only, never zero padding", {
+  set.seed(71)
+  feats <- paste0("f", 1:40)
+  cent <- rbind(A = rnorm(40), B = rnorm(40)); colnames(cent) <- feats
+  model <- list(features = feats, centroids = cent, classes = c("A", "B"))
+  q <- stats::setNames(rnorm(40), feats)
+  half <- feats[1:20]
+  # Scoring a query that only observed half the features must equal scoring the
+  # half-length query directly -- i.e. the absent half contributes nothing,
+  # rather than contributing a zero.
+  a <- score_query(model, q[half], half)
+  b <- score_query(model, q, half)
+  isTRUE(all.equal(a$similarity, b$similarity)) })
+
+check("padding with zeros would have changed the answer", {
+  set.seed(72)
+  feats <- paste0("f", 1:40)
+  cent <- rbind(A = rnorm(40), B = rnorm(40)); colnames(cent) <- feats
+  model <- list(features = feats, centroids = cent, classes = c("A", "B"))
+  q <- stats::setNames(rnorm(40), feats); half <- feats[1:20]
+  shared_only <- score_query(model, q[half], half)
+  padded <- q; padded[feats[21:40]] <- 0
+  with_padding <- score_query(model, padded, feats)
+  max(abs(shared_only$similarity[match(with_padding$class, shared_only$class)] -
+            with_padding$similarity)) > 0.01 })
+
+check("a query with too few shared features is refused", {
+  feats <- paste0("f", 1:40)
+  cent <- rbind(A = rnorm(40)); colnames(cent) <- feats
+  is.null(score_query(list(features = feats, centroids = cent),
+                      stats::setNames(rnorm(2), feats[1:2]), feats[1:2])) })
+
+# --- query hygiene -----------------------------------------------------------
+check("duplicate identifiers are summed, not silently dropped", {
+  r <- collapse_duplicate_ids(c(10, 5, 7), c("g1", "g1", "g2"))
+  r$collapsed == 2L && r$values[r$ids == "g1"] == 15 })
+
+check("duplicates cannot be summed for normalised input", {
+  inherits(tryCatch(collapse_duplicate_ids(c(1, 2), c("g1", "g1"), unit = "tpm"),
+                    error = function(e) e), "error") })
+
+check("negative values are refused", {
+  inherits(tryCatch(collapse_duplicate_ids(c(1, -2), c("g1", "g2")),
+                    error = function(e) e), "error") })
+
+check("the input unit changes the transform", {
+  v <- c(10, 100, 1000)
+  !isTRUE(all.equal(query_signal(v, "counts"), query_signal(v, "tpm"))) &&
+    identical(query_signal(v, "logged"), v) &&
+    inherits(tryCatch(query_signal(v, "rpkm"), error = function(e) e), "error") })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
