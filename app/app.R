@@ -13,13 +13,18 @@
 
 library(shiny)
 
-for (f in c("utils_io", "config", "labels", "ingest", "paths", "grid",
-            "spectrum", "fingerprint", "reference")) {
+# Only what a query needs. No ingest, no stages: the reference is
+# self-contained, so the app never rebuilds a grid from local config.
+for (f in c("utils_io", "grid", "fingerprint", "reference")) {
   source(file.path("..", "R", paste0(f, ".R")))
 }
 
-project <- load_project_config(file.path("..", "config", "project.R"))
-ref_path <- file.path(project$results_dir, "reference", "reference.rds")
+# The reference path comes from the caller (`./tsf app --results-dir ...` sets
+# TSF_APP_REFERENCE), never from re-reading config/project.R. Re-reading it was
+# how the app ended up looking for a reference on the cluster's default path
+# while the user had pointed the CLI somewhere else entirely. It can also be
+# changed from the interface.
+initial_ref_path <- Sys.getenv("TSF_APP_REFERENCE", "")
 
 ui <- fluidPage(
   tags$head(tags$style(HTML("
@@ -41,6 +46,9 @@ ui <- fluidPage(
     "Identify an expression profile by the shape of its chromosome-ordered ",
     "spectrum. Everything runs locally; nothing is uploaded."),
 
+  textInput("ref_path", "Reference library (.rds)", value = initial_ref_path,
+            width = "100%"),
+
   uiOutput("reference_banner"),
 
   hr(),
@@ -60,25 +68,27 @@ ui <- fluidPage(
 server <- function(input, output, session) {
 
   ref <- reactive({
-    if (!file.exists(ref_path)) return(NULL)
-    readRDS(ref_path)
-  })
-
-  grid_ctx <- reactive({
-    ids <- sub("\\.R$", "", list.files(file.path("..", "config", "datasets"),
-                                       pattern = "\\.R$"))
-    inp <- tsf_stage_inputs(project, ids[1])
-    list(chrom_idx = inp$chrom_idx, genes = inp$dataset$genes,
-         terms = fingerprint_terms(inp$chrom_idx))
+    p <- input$ref_path
+    if (is.null(p) || !nzchar(p) || !file.exists(p)) return(NULL)
+    r <- readRDS(p)
+    if (is.null(r$grid)) return(structure(list(), class = "stale_reference"))
+    r
   })
 
   output$reference_banner <- renderUI({
     r <- ref()
     if (is.null(r)) {
       return(div(class = "banner bad",
-                 strong("No reference library."), br(),
-                 "Build one first: ", code("./tsf run --to=spectra"), " then ",
-                 code("./tsf reference"), "."))
+                 strong("No reference library at that path."), br(),
+                 "Build one with ", code("./tsf run --to spectra"), " then ",
+                 code("./tsf reference"),
+                 ", or point the box above at an existing reference.rds."))
+    }
+    if (inherits(r, "stale_reference")) {
+      return(div(class = "banner bad",
+                 strong("Reference too old."), br(),
+                 "It carries no grid, so a query cannot be scored on the grid it ",
+                 "was built with. Rebuild it: ", code("./tsf reference"), "."))
     }
     v <- r$validation
     if (is.null(v)) {
@@ -97,95 +107,113 @@ server <- function(input, output, session) {
     } else {
       "Reference validated out of cohort."
     }
+    calib <- v$calibration
+    reject_note <- if (!is.null(calib) && !is.na(calib$separability_auc)) {
+      sprintf(" A query scoring below the per-class %.0fth percentile of correct
+               held-out matches is reported UNKNOWN; correct and incorrect
+               matches separate with AUC %.2f. That threshold bounds how often a
+               true member is rejected, not how often an out-of-domain sample is
+               accepted -- no out-of-domain sample was in the validation.",
+              100 * calib$quantile, calib$separability_auc)
+    } else ""
+    excl <- if (!is.null(v$excluded) && v$excluded$samples > 0) {
+      sprintf(" %d sample(s) in %d class(es) were excluded from validation for
+               not being shared across cohorts.", v$excluded$samples, v$excluded$classes)
+    } else ""
     div(class = paste("banner", cls),
         strong(head), br(),
         sprintf("Trained and tested across %d independent cohorts. Accuracy on
-                 held-out cohorts: %.1f%%, against %.1f%% for always guessing the
-                 commonest class. Target: %s.",
-                v$n_datasets, 100 * v$accuracy, 100 * v$baseline, v$target))
+                 held-out cohorts: %.1f%%, against %.1f%% for the training-fold
+                 majority class. Target: %s.%s%s",
+                v$n_datasets, 100 * v$accuracy, 100 * v$baseline, v$target,
+                excl, reject_note))
   })
 
   query_fp <- reactive({
     req(input$query)
     r <- req(ref())
-    ctx <- grid_ctx()
     q <- read_tsv_tsf(input$query$datapath)
     ids <- sub("\\..*$", "", as.character(q[[1]]))
-    hit <- match(ctx$genes$gene_id, ids)
-    if (sum(!is.na(hit)) < 0.2 * nrow(ctx$genes) &&
-        "entrez_id" %in% colnames(ctx$genes)) {
-      hit <- match(ctx$genes$entrez_id, ids)
-    }
-    coverage <- mean(!is.na(hit))
     value_cols <- colnames(q)[-1]
 
     out <- lapply(value_cols, function(col) {
-      counts <- suppressWarnings(as.numeric(q[[col]]))[hit]
-      counts[!is.finite(counts)] <- 0
-      y <- asinh(counts / max(sum(counts, na.rm = TRUE), 1) * 1e6)
-      fp <- fingerprint_vector(y, ctx$chrom_idx, ctx$terms,
-                               k_max = project$fingerprint$k_max %||% 64L,
-                               features = project$fingerprint$features %||% "amplitude")
-      if (is.null(fp)) return(NULL)
-      fp <- (fp - mean(fp)) / max(stats::sd(fp), .Machine$double.eps)
-      vv <- stats::setNames(rep(0, length(r$feature_space)), r$feature_space)
-      shared <- intersect(names(fp), r$feature_space)
-      vv[shared] <- fp[shared]
-      list(name = col, result = match_query(r$model, vv), n_shared = length(shared))
+      # fingerprint_query builds the observed positions from the genes this file
+      # actually contains. Genes it lacks are absent, never zero.
+      fq <- fingerprint_query(q[[col]], ids, r)
+      if (is.null(fq)) return(NULL)
+      proj <- project_to_reference(fq$vector, r)
+      res <- match_query(r$model, proj$vector)
+      if (is.null(res)) return(NULL)
+      res <- apply_rejection(res, r$validation$calibration)
+      list(name = col, result = res, coverage = fq$coverage,
+           id_type = fq$id_type, n_shared = proj$n_shared,
+           n_features = proj$n_features)
     })
-    list(coverage = coverage, matches = out[!vapply(out, is.null, logical(1))],
-         n_features = length(r$feature_space))
+    out[!vapply(out, is.null, logical(1))]
   })
 
   output$result <- renderUI({
     if (is.null(input$query)) return(NULL)
     r <- req(ref())
-    qf <- query_fp()
+    matches <- query_fp()
 
-    if (qf$coverage < 0.2) {
+    if (!length(matches)) {
       return(div(class = "banner bad",
-                 strong("Identifiers not recognised."), br(),
-                 sprintf("Only %.1f%% of the reference grid was found in this
-                          file. Check that the gene ids are Ensembl or Entrez.",
-                         100 * qf$coverage)))
+                 strong("Nothing scorable in this file."), br(),
+                 "No gene identifier matched the reference grid. Ensembl or ",
+                 "Entrez ids are expected, matching the annotation the ",
+                 "reference was built on."))
     }
 
-    blocks <- lapply(qf$matches, function(m) {
-      s <- m$result$scores
+    blocks <- lapply(matches, function(m) {
+      res <- m$result
+      s <- res$scores
       if (!isTRUE(input$show_all)) s <- utils::head(s, 5)
-      warn <- NULL
-      if (is.na(m$result$margin) || m$result$margin < 0.02) {
-        warn <- div(class = "banner weak",
-                    "The top two classes are within 0.02 of each other. ",
-                    "This call is not separable.")
+
+      verdict <- NULL
+      if (m$coverage < 0.2) {
+        verdict <- div(class = "banner bad",
+                       sprintf("Only %.1f%% of the reference grid is present in
+                                this file. Too little to score reliably.",
+                               100 * m$coverage))
+      } else if (identical(res$decision, "UNKNOWN")) {
+        verdict <- div(class = "banner bad",
+                       strong("UNKNOWN — outside the domain of this reference."),
+                       br(),
+                       sprintf("Closest class %s at similarity %.3f, below the
+                                %.3f calibrated for it.", res$best, res$similarity,
+                               res$threshold %||% NA_real_))
+      } else if (identical(res$decision, "UNCALIBRATED")) {
+        verdict <- div(class = "banner weak",
+                       "No rejection threshold could be calibrated, so nothing ",
+                       "rules out that this sample belongs to no class at all.")
+      } else if (res$p_shuffle > 0.05) {
+        verdict <- div(class = "banner bad",
+                       "A randomly shuffled copy of this profile scores as well. ",
+                       "There is no usable spectral shape here.")
+      } else if (is.na(res$margin) || res$margin < 0.02) {
+        verdict <- div(class = "banner weak",
+                       "The top two classes are within 0.02. This call is not ",
+                       "separable.")
       }
-      if (m$result$p_shuffle > 0.05) {
-        warn <- div(class = "banner bad",
-                    "A randomly shuffled version of this same profile scores as ",
-                    "well. There is no usable spectral shape here.")
-      }
+
       tagList(
-        h4(m$name),
+        h4(m$name), verdict,
         tags$table(
           tags$tr(tags$th("Class"), tags$th("Similarity")),
           lapply(seq_len(nrow(s)), function(i) {
-            tags$tr(class = if (i == 1) "top" else "",
+            tags$tr(class = if (i == 1 && !identical(res$decision, "UNKNOWN")) "top" else "",
                     tags$td(s$class[i]), tags$td(sprintf("%.3f", s$similarity[i])))
           })
         ),
         p(class = "muted",
-          sprintf("Margin over runner-up: %.3f | p against a shuffled query: %.3f
-                   | %d of %d reference features present",
-                  m$result$margin, m$result$p_shuffle, m$n_shared, qf$n_features)),
-        warn
+          sprintf("Margin %.3f | p against a shuffled query %.3f | grid coverage
+                   %.1f%% (%s ids) | %d of %d reference features present",
+                  res$margin, res$p_shuffle, 100 * m$coverage, m$id_type,
+                  m$n_shared, m$n_features))
       )
     })
-
-    tagList(
-      p(class = "muted",
-        sprintf("Grid coverage of this file: %.1f%%", 100 * qf$coverage)),
-      blocks
-    )
+    tagList(blocks)
   })
 }
 
