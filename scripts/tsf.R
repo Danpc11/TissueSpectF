@@ -16,7 +16,7 @@ if (!dir.exists("R") || !dir.exists("config")) {
 }
 suppressPackageStartupMessages({
   for (f in c("utils_io", "config", "labels", "fetch", "ingest", "paths", "grid", "spectrum",
-              "maxt", "condition_test", "clean", "stability", "peaks_genes", "compare",
+              "maxt", "condition_test", "clean", "fingerprint", "reference", "stability", "peaks_genes", "compare",
               "stages")) {
     source(file.path("R", paste0(f, ".R")))
   }
@@ -40,6 +40,9 @@ Commands:
   peaks       gene-level reconstruction of every stable peak
   compare     constant signature, transitions, cross-dataset replication
   window      spectral window: what the gap pattern alone can produce
+  reference   build the fingerprint library + out-of-cohort validation
+  match       identify one expression profile against the reference
+  app         open the local desktop app in a browser (needs shiny)
   run         all of the above, in order
   status      what each dataset has on disk
   selfcheck   run the full pipeline on synthetic data with a known peak
@@ -51,6 +54,8 @@ Options:
   --branch=median   restrict to one branch (default: average and median)
   --force           recompute maxT even if output exists
   --dry-run         print the plan without doing anything
+  --query=<file>    counts TSV to identify        (match only)
+  --reference=<f>   reference .rds to match against (match only)
   --log=<file>      also append all output to this file
   --help            this message
 
@@ -72,6 +77,8 @@ parse_cli <- function(args) {
     from     = flag("from"),
     to       = flag("to"),
     cond     = flag("cond"),
+    query    = flag("query"),
+    reference = flag("reference"),
     branch   = branch,
     branches = if (is.null(branch)) c("average", "median") else branch,
     force    = any(args == "--force"),
@@ -84,7 +91,8 @@ parse_cli <- function(args) {
 opt <- parse_cli(commandArgs(trailingOnly = TRUE))
 if (opt$help || opt$command %in% c("help", "--help")) { cat(USAGE); quit(status = 0L) }
 
-known <- c(stage_names, "check", "run", "status", "selfcheck", "window", "fetch")
+known <- c(stage_names, "check", "run", "status", "selfcheck", "window",
+           "fetch", "reference", "match", "app")
 if (!opt$command %in% known) {
   cat(USAGE)
   tsf_abort("Unknown command: ", opt$command)
@@ -113,6 +121,25 @@ if (opt$command == "status") {
   tsf_log("results_dir: ", project$results_dir)
   print(st, row.names = FALSE)
   quit(status = 0L)
+}
+
+if (opt$command == "app") {
+  if (!requireNamespace("shiny", quietly = TRUE)) {
+    tsf_abort("The app needs shiny. Install it once with:\n",
+              "  Rscript -e 'install.packages(\"shiny\")'\n",
+              "Everything else in TissueSpectF works without it.")
+  }
+  if (!file.exists(file.path(project$results_dir, "reference", "reference.rds"))) {
+    tsf_warn("No reference yet -- the app will say so. Build one with ./tsf reference")
+  }
+  tsf_log("Starting the app. It runs locally; nothing leaves this machine.")
+  shiny::runApp("app", launch.browser = TRUE)
+  quit(status = 0L)
+}
+
+if (opt$command == "match") {
+  source("scripts/match_query.R")
+  quit(status = run_match(project, opt))
 }
 
 if (opt$command == "selfcheck") {
