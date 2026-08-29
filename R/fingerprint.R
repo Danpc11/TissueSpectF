@@ -150,38 +150,97 @@ query_grid_index <- function(grid, present_ids, min_observed = 8L,
        coverage = nrow(g) / nrow(grid), id_type = id_type)
 }
 
+#' Collapse duplicate identifiers explicitly.
+#'
+#' A query file often carries several rows per gene (transcript-level rows,
+#' duplicated symbols). match() would keep the first silently, which loses most
+#' of a gene's signal and does so invisibly. Counts are summed; anything already
+#' normalised cannot be summed, so duplicates there are an error the caller has
+#' to resolve.
+collapse_duplicate_ids <- function(values, ids, unit = "counts") {
+  v <- suppressWarnings(as.numeric(values))
+  ids <- as.character(ids)
+  keep <- !is.na(ids) & nzchar(ids)
+  v <- v[keep]; ids <- ids[keep]
+
+  if (any(v < 0, na.rm = TRUE)) {
+    tsf_abort(sum(v < 0, na.rm = TRUE), " negative value(s) in the query. ",
+              "Counts and abundances cannot be negative; if this is already ",
+              "log-transformed, declare it with --input-unit logged.")
+  }
+  dup <- duplicated(ids) | duplicated(ids, fromLast = TRUE)
+  if (!any(dup)) return(list(values = v, ids = ids, collapsed = 0L))
+
+  n_dup_ids <- length(unique(ids[dup]))
+  if (!unit %in% c("counts")) {
+    tsf_abort(n_dup_ids, " identifier(s) appear more than once. Rows can only ",
+              "be summed for counts; with unit '", unit, "' the duplicates must ",
+              "be resolved before matching.")
+  }
+  agg <- stats::aggregate(v, list(id = ids), sum, na.rm = TRUE)
+  tsf_log("Collapsed ", sum(dup), " row(s) over ", n_dup_ids,
+          " duplicated identifier(s) by summing counts")
+  list(values = agg$x, ids = agg$id, collapsed = sum(dup))
+}
+
+#' Values on the observed positions, on the scale the reference was built on.
+query_signal <- function(v, unit = "counts") {
+  switch(unit,
+    counts = asinh(v / max(sum(v, na.rm = TRUE), 1) * 1e6),
+    cpm = ,
+    tpm = asinh(v),
+    logged = v,
+    tsf_abort("Unknown input unit '", unit,
+              "'. Use counts, cpm, tpm or logged."))
+}
+
 #' Fingerprint of one query column, built only on the genes it actually contains.
-fingerprint_query <- function(values, ids, ref) {
-  qi <- query_grid_index(ref$grid, ids)
+#'
+#' Returns the fingerprint UNNORMALISED. Normalisation has to happen after the
+#' intersection with the reference feature space, not before: a query missing a
+#' chromosome would otherwise have its mean and standard deviation computed over
+#' a different set of features from the one the centroids were trained on, and
+#' the two would no longer be on the same scale.
+fingerprint_query <- function(values, ids, ref, unit = "counts") {
+  cl <- collapse_duplicate_ids(values, ids, unit)
+  qi <- query_grid_index(ref$grid, cl$ids)
   if (is.null(qi)) return(NULL)
 
-  v <- suppressWarnings(as.numeric(values))[match(qi$key, as.character(ids))]
+  v <- cl$values[match(qi$key, cl$ids)]
   # Non-finite entries are unusable measurements, not zeros: drop those
   # positions from the observed set rather than imputing them.
-  good <- is.finite(v)
-  if (!all(good)) {
-    keep_ids <- qi$key[good]
-    qi <- query_grid_index(ref$grid, keep_ids)
+  if (!all(is.finite(v))) {
+    qi <- query_grid_index(ref$grid, qi$key[is.finite(v)])
     if (is.null(qi)) return(NULL)
-    v <- suppressWarnings(as.numeric(values))[match(qi$key, as.character(ids))]
+    v <- cl$values[match(qi$key, cl$ids)]
   }
-  y <- asinh(v / max(sum(v, na.rm = TRUE), 1) * 1e6)
+  y <- query_signal(v, unit)
 
   terms <- fingerprint_terms(qi$chrom_idx)
   fp <- fingerprint_vector(y, qi$chrom_idx, terms,
                            k_max = ref$params$k_max,
                            features = ref$params$features)
   if (is.null(fp)) return(NULL)
-  fp <- (fp - mean(fp)) / max(stats::sd(fp), .Machine$double.eps)
   list(vector = fp, coverage = qi$coverage, id_type = qi$id_type,
-       n_chromosomes = length(qi$chrom_idx))
+       n_chromosomes = length(qi$chrom_idx), collapsed = cl$collapsed,
+       unit = unit)
 }
 
-#' Project a query fingerprint onto the reference feature space.
+#' Which reference features a query can actually contribute.
+#'
+#' No zero-filling. A frequency the query never observed is ABSENT, not average:
+#' filling it with 0 (the mean of a z-scored vector) would let the missing part
+#' of the query pull every similarity toward the centroid mean, and would let
+#' the centroid keep its full norm while the query contributes over a subset.
+#' Similarity is computed over the shared features only.
 project_to_reference <- function(fp, ref) {
-  vv <- stats::setNames(rep(0, length(ref$feature_space)), ref$feature_space)
   shared <- intersect(names(fp), ref$feature_space)
-  vv[shared] <- fp[shared]
-  list(vector = vv, n_shared = length(shared),
-       n_features = length(ref$feature_space))
+  model_shared <- intersect(shared, ref$model$features)
+  list(available = shared,
+       model_available = model_shared,
+       n_shared = length(shared),
+       n_features = length(ref$feature_space),
+       feature_coverage = if (length(ref$model$features))
+         length(model_shared) / length(ref$model$features) else 0,
+       vector = fp[shared])
 }
