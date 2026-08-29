@@ -118,9 +118,11 @@ fitted by ordinary least squares over the observed positions. This is the
 generalised Lomb–Scargle periodogram with a floating mean (Zechmeister &
 Kürster 2009). Reported quantities:
 
-$$A_k = \sqrt{a_k^2+b_k^2}, \qquad
-\phi_k = \operatorname{atan2}(-b_k, a_k), \qquad
-P_k = \tfrac{1}{2}A_k^2,$$
+$$
+A_k=\sqrt{a_k^2+b_k^2}, \qquad
+\phi_k=\mathrm{atan2}\!\left(-b_k,a_k\right), \qquad
+P_k=\frac{1}{2}A_k^2.
+$$
 
 so that the fitted component is $A_k\cos(\omega_k t_0 + \phi_k)$, and
 
@@ -177,7 +179,7 @@ are not independent and power leaks between them. *Consequence:* per-bin
 p-values would be badly calibrated; the family-wise permutation null of §5 is
 mandatory, not optional.
 
-**Parseval.** $\sum_k P_k \neq \operatorname{Var}(y)$ exactly, so normalised
+**Parseval.** $\sum_k P_k \neq \mathrm{Var}(y)$ exactly, so normalised
 power is not a clean fraction of variance. *Consequence:* `power_normalised` is
 reported as the classical GLS statistic in $[0,1]$, not as a variance share.
 
@@ -226,7 +228,9 @@ Two properties of this null matter:
 
 For each permutation $b$, record $M_b = \max_k P_k^{(b)}$, and
 
-$$p_k = \frac{1 + \#\{b : M_b \ge P_k\}}{B+1}.$$
+$$
+p_k=\frac{1+\left|\left\{b:M_b\ge P_k\right\}\right|}{B+1}.
+$$
 
 Comparing every observed power against the null *maximum* controls the
 family-wise error rate across all frequencies within a chromosome
