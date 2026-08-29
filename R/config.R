@@ -18,12 +18,40 @@ load_dataset_config <- function(dataset_id, dir = "config/datasets") {
   path <- file.path(dir, paste0(dataset_id, ".R"))
   if (!file.exists(path)) tsf_abort("No config for dataset ", dataset_id, " at ", path)
   cfg <- source(path, local = TRUE)$value
+  cfg <- attach_vocabulary(cfg)
   validate_dataset_config(cfg, dataset_id)
+}
+
+#' Load the condition vocabulary a dataset declares.
+#'
+#' A dataset may name a vocabulary file, override its levels, or (for
+#' tissue-atlas style designs) supply condition_levels directly.
+load_vocabulary <- function(name, dir = "config/vocabularies") {
+  path <- file.path(dir, paste0(name, ".R"))
+  if (!file.exists(path)) {
+    tsf_abort("No vocabulary '", name, "' at ", path, ". Available: ",
+              paste(sub("\\.R$", "", list.files(dir, pattern = "\\.R$")),
+                    collapse = ", "))
+  }
+  source(path, local = TRUE)$value
+}
+
+attach_vocabulary <- function(cfg) {
+  voc <- load_vocabulary(cfg$vocabulary %||% TSF_DEFAULT_VOCABULARY)
+  if (!is.null(cfg$condition_levels)) voc$levels <- cfg$condition_levels
+  if (!is.null(cfg$tissue)) voc$tissue <- cfg$tissue
+  if (is.null(voc$levels) || !length(voc$levels)) {
+    tsf_abort("Vocabulary '", voc$id, "' declares no levels and dataset ", cfg$id,
+              " supplies no condition_levels")
+  }
+  cfg$vocabulary_spec <- voc
+  cfg$tissue <- cfg$tissue %||% voc$tissue
+  cfg
 }
 
 validate_dataset_config <- function(cfg, dataset_id) {
   required <- c("id", "counts_file", "series_matrix", "condition_rules",
-                "has_control_cohort")
+                "has_control_cohort", "tissue")
   missing <- setdiff(required, names(cfg))
   if (length(missing)) {
     tsf_abort("Dataset config ", dataset_id, " missing: ", paste(missing, collapse = ", "))
