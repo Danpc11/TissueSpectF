@@ -45,6 +45,11 @@ list(
     B            = as.integer(Sys.getenv("TSF_MAXT_B", "1000")),
     seed         = 42L,
     block_sizes  = c(10L, 20L, 50L),
+    # Which null decides significance. "full" permutes every observed value and
+    # so destroys local autocorrelation as well as long-range structure; "all"
+    # additionally requires the peak to survive the block schemes, i.e. to be
+    # more than local correlation. Use "all" for any claim about periodicity.
+    primary_scheme = Sys.getenv("TSF_PRIMARY_SCHEME", "full"),
     alpha        = 0.05,
     stable_frac  = as.numeric(Sys.getenv("TSF_STABLE_FRAC", "0.9"))
   )
