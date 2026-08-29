@@ -39,6 +39,13 @@ list(
 
   chrom_levels = c(as.character(1:22), "X", "Y"),
 
+  # What decides which peaks go downstream.
+  #   "condition"   condition-level permutation test, q <= 0.05  (default)
+  #   "consistency" >= stable_frac of samples individually significant
+  # Both are always computed and written; this only picks which one drives
+  # is_stable. See the note at the top of R/condition_test.R.
+  stability_criterion = Sys.getenv("TSF_STABILITY_CRITERION", "condition"),
+
   # maxT permutation settings (kept here so both datasets provably share them).
   maxt = list(
     # TSF_MAXT_B lets a smoke run use a small B; production runs leave it unset.
@@ -51,6 +58,10 @@ list(
     # more than local correlation. Use "all" for any claim about periodicity.
     primary_scheme = Sys.getenv("TSF_PRIMARY_SCHEME", "full"),
     alpha        = 0.05,
-    stable_frac  = as.numeric(Sys.getenv("TSF_STABLE_FRAC", "0.9"))
+    stable_frac  = as.numeric(Sys.getenv("TSF_STABLE_FRAC", "0.9")),
+    # Permutations for the condition-level test. It runs once per condition
+    # instead of once per sample, so a larger B is affordable and gives a
+    # smaller attainable p-value (the floor is 1/(B+1)).
+    condition_B  = as.integer(Sys.getenv("TSF_CONDITION_B", "2000"))
   )
 )
