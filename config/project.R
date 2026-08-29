@@ -39,6 +39,18 @@ list(
 
   chrom_levels = c(as.character(1:22), "X", "Y"),
 
+  # CLEAN decomposition: greedy deflation with an extended-BIC stopping rule.
+  # No number of components is chosen -- EBIC decides per chromosome. gamma
+  # scales the cost of searching the frequency grid; 1 is strict and is what
+  # keeps pure noise from yielding components. Lower it only as a declared
+  # sensitivity analysis.
+  clean = list(
+    ebic_gamma     = as.numeric(Sys.getenv("TSF_EBIC_GAMMA", "1")),
+    penalty_factor = 1,
+    max_components = 20L,
+    per_sample     = FALSE   # TRUE gives one fingerprint per sample (slower)
+  ),
+
   # What decides which peaks go downstream.
   #   "condition"   condition-level permutation test, q <= 0.05  (default)
   #   "consistency" >= stable_frac of samples individually significant
