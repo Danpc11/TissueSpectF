@@ -136,6 +136,13 @@ server <- function(input, output, session) {
   query_fp <- reactive({
     req(input$query)
     r <- req(ref())
+    # Unit compatibility is checked BEFORE any fingerprint is built, exactly as
+    # the CLI does. A TPM query against a CPM reference is not a warning case:
+    # length normalisation changes the spectrum, so the comparison is void.
+    unit_error <- tryCatch({ assert_unit_compatible(r, input$unit); NULL },
+                          error = function(e) conditionMessage(e))
+    if (!is.null(unit_error)) return(list(unit_error = unit_error))
+
     q <- read_tsv_tsf(input$query$datapath)
     ids <- sub("\\..*$", "", as.character(q[[1]]))
     value_cols <- colnames(q)[-1]
@@ -169,6 +176,10 @@ server <- function(input, output, session) {
     r <- req(ref())
     matches <- query_fp()
 
+    if (!is.null(matches$unit_error)) {
+      return(div(class = "banner bad",
+                 strong("Incompatible expression unit."), br(), matches$unit_error))
+    }
     if (!length(matches)) {
       return(div(class = "banner bad",
                  strong("Nothing scorable in this file."), br(),
