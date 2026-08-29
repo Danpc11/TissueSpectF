@@ -146,7 +146,13 @@ counts_to_expression <- function(count_mat, gene_length = NULL) {
 
 #' Keep genes expressed in a reasonable fraction of samples.
 filter_expressed <- function(expr_mat, min_value, min_fraction) {
-  keep <- rowMeans(expr_mat >= asinh(min_value)) >= min_fraction
+  bad <- rowSums(!is.finite(expr_mat)) > 0
+  if (any(bad)) {
+    tsf_warn(sum(bad), " gene(s) have non-finite expression and are dropped")
+    expr_mat <- expr_mat[!bad, , drop = FALSE]
+  }
+  keep <- rowMeans(expr_mat >= asinh(min_value), na.rm = TRUE) >= min_fraction
+  keep[is.na(keep)] <- FALSE
   tsf_log("Expression filter: ", sum(keep), "/", length(keep), " genes kept")
   expr_mat[keep, , drop = FALSE]
 }
@@ -194,14 +200,29 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   rownames(count_mat) <- merged$gene_id
 
   gene_len <- if ("gene_length" %in% colnames(merged)) {
-    gl <- suppressWarnings(as.numeric(merged$gene_length))
-    if (all(is.na(gl)) || any(gl <= 0, na.rm = TRUE)) {
-      tsf_warn("gene_length present but unusable; falling back to CPM")
-      NULL
-    } else gl
+    suppressWarnings(as.numeric(merged$gene_length))
   } else {
     tsf_warn("No gene_length column in the annotation; expression will be CPM, not TPM")
     NULL
+  }
+
+  if (!is.null(gene_len)) {
+    # A single NA or non-positive length would produce an all-NA row in the TPM
+    # matrix, and rowMeans() downstream would then return NA for the filter.
+    # Drop those genes outright: they keep their slot on the reference grid and
+    # are simply unobserved, which is exactly how any other unmeasured gene is
+    # treated. Never impute a length.
+    valid <- is.finite(gene_len) & gene_len > 0
+    if (!any(valid)) {
+      tsf_warn("No usable gene length; expression will be CPM, not TPM")
+      gene_len <- NULL
+    } else if (any(!valid)) {
+      tsf_log(sum(!valid), " gene(s) dropped for missing or non-positive length ",
+              "(they stay on the grid as unobserved)")
+      count_mat <- count_mat[valid, , drop = FALSE]
+      gene_len <- gene_len[valid]
+      merged <- merged[valid, , drop = FALSE]
+    }
   }
   expr_mat <- counts_to_expression(count_mat, gene_len)
   unit <- attr(expr_mat, "unit")
