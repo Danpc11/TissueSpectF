@@ -182,6 +182,11 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   merged <- merge(counts, genes, by.x = "source_id", by.y = key)
   if (!nrow(merged)) tsf_abort("No count row mapped to the annotation for ", cfg$id)
   merged <- merged[!duplicated(merged$gene_id), ]
+  # merge() consumed the join key into source_id; restore it under its own name
+  # so a query keyed on Entrez ids can be matched without conversion.
+  if (identical(cfg$count_id_type, "ENTREZID") && !"entrez_id" %in% colnames(merged)) {
+    merged$entrez_id <- as.character(merged$source_id)
+  }
 
   sample_cols <- intersect(colnames(counts)[-1], samples$sample_id)
   missing_cols <- setdiff(samples$sample_id, colnames(counts))
@@ -236,7 +241,9 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
                                biotypes = project$gene_universe,
                                min_genes_per_chr = project$min_genes_per_chr)
 
-  keep_cols <- intersect(c("gene_id", "gene_name", "chr", "start",
+  # entrez_id is kept because GEO count tables are commonly keyed on it, and a
+  # query file has to be matchable without the user converting identifiers.
+  keep_cols <- intersect(c("gene_id", "gene_name", "entrez_id", "chr", "start",
                            "gene_length", "gene_type"), colnames(merged))
   genes_out <- merged[merged$gene_id %in% rownames(expr_mat), keep_cols]
   genes_out <- merge(genes_out, grid[, c("gene_id", "grid_index", "grid_N")],
