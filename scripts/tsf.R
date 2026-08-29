@@ -47,45 +47,145 @@ Commands:
   status      what each dataset has on disk
   selfcheck   run the full pipeline on synthetic data with a known peak
 
-Options:
-  --from=<stage>    start at this stage (run only)
-  --to=<stage>      stop after this stage (run only)
-  --cond=F2,F3      restrict to these conditions
-  --branch=median   restrict to one branch (default: average and median)
-  --force           recompute maxT even if output exists
-  --dry-run         print the plan without doing anything
-  --query=<file>    counts TSV to identify        (match only)
-  --reference=<f>   reference .rds to match against (match only)
-  --log=<file>      also append all output to this file
-  --help            this message
+Options take `--key value` or `--key=value`; names are case-insensitive and
+`-` and `_` are interchangeable (--results-dir = --RESULTS_DIR).
 
-Stages, in order: ingest, spectra, maxt, stability, peaks, compare
-Paths come from config/project.R (override with TSF_GEO_DIR, TSF_INTERIM_DIR,
-TSF_RESULTS_DIR).
+Scope:
+  --from <stage>        start at this stage            (run only)
+  --to <stage>          stop after this stage          (run only)
+  --cond F2,F3          restrict to these conditions
+  --branch median       one branch (default: both)
+  --force               recompute even if output exists
+  --dry-run             print the plan, do nothing
+
+Paths:
+  --geo-dir <dir>       raw GEO downloads
+  --interim-dir <dir>   the common format
+  --results-dir <dir>   everything downstream
+
+Parameters (override config/project.R):
+  --gene-universe <re>  biotypes on the grid, e.g. '^protein-coding$'
+  --maxt-b <n>          permutations, per-sample maxT
+  --condition-b <n>     permutations, condition-level test
+  --stable-frac <f>     consistency threshold
+  --primary-scheme <s>  full | all
+  --criterion <s>       condition | consistency
+  --ebic-gamma <f>      CLEAN selection penalty
+  --k-max <n>           frequencies per chromosome in a fingerprint
+  --target <s>          condition | tissue   (reference only)
+
+Matching:
+  --query <file>        counts TSV to identify
+  --reference <file>    reference .rds to match against
+
+Other:
+  --log <file>          append all output to this file
+  --help                this message
+
+Stages, in order: ingest, spectra, maxt, condition, clean, stability, peaks,
+compare. Precedence: command line > environment (TSF_*) > config/project.R.
 "
 
+# Options accept both `--key value` and `--key=value`, and key names are
+# matched case-insensitively with `-` and `_` interchangeable, so --results-dir,
+# --results_dir and --RESULTS_DIR are the same flag. Every path and tuning
+# parameter that used to require an environment variable is a flag; the
+# environment variables still work, and the precedence is
+#
+#     command line  >  environment  >  config/project.R
+#
+# so a flag never has to fight a stale export.
+
+OPTION_ALIASES <- c(
+  from = "from", to = "to", cond = "cond", condition = "cond",
+  branch = "branch", log = "log", query = "query", reference = "reference",
+  geodir = "geo_dir", geo_dir = "geo_dir",
+  interimdir = "interim_dir", interim_dir = "interim_dir",
+  resultsdir = "results_dir", results_dir = "results_dir",
+  geneuniverse = "gene_universe", gene_universe = "gene_universe",
+  maxtb = "maxt_b", maxt_b = "maxt_b", b = "maxt_b",
+  conditionb = "condition_b", condition_b = "condition_b",
+  stablefrac = "stable_frac", stable_frac = "stable_frac",
+  primaryscheme = "primary_scheme", primary_scheme = "primary_scheme",
+  criterion = "criterion", ebicgamma = "ebic_gamma", ebic_gamma = "ebic_gamma",
+  kmax = "k_max", k_max = "k_max", target = "target",
+  cores = "cores"
+)
+
+FLAG_ALIASES <- c(force = "force", dryrun = "dry_run", dry_run = "dry_run",
+                  help = "help", h = "help", persample = "per_sample",
+                  per_sample = "per_sample")
+
+normalise_key <- function(k) tolower(gsub("-", "_", k))
+
 parse_cli <- function(args) {
-  flag <- function(name) {
-    hit <- grep(paste0("^--", name, "="), args, value = TRUE)
-    if (length(hit)) sub(paste0("^--", name, "="), "", hit[1]) else NULL
+  opts <- list(); positional <- character(0); i <- 1L
+  while (i <= length(args)) {
+    a <- args[i]
+    if (!startsWith(a, "-")) { positional <- c(positional, a); i <- i + 1L; next }
+
+    key <- normalise_key(sub("^--?", "", sub("=.*$", "", a)))
+    inline <- if (grepl("=", a, fixed = TRUE)) sub("^[^=]*=", "", a) else NULL
+
+    if (key %in% names(FLAG_ALIASES) && is.null(inline)) {
+      opts[[FLAG_ALIASES[[key]]]] <- TRUE; i <- i + 1L; next
+    }
+    if (!key %in% names(OPTION_ALIASES)) {
+      cat(USAGE); tsf_abort("Unknown option: ", a)
+    }
+    value <- inline
+    if (is.null(value)) {
+      if (i + 1L > length(args) || startsWith(args[i + 1L], "--")) {
+        cat(USAGE); tsf_abort("Option --", key, " needs a value")
+      }
+      value <- args[i + 1L]; i <- i + 1L
+    }
+    opts[[OPTION_ALIASES[[key]]]] <- value
+    i <- i + 1L
   }
-  positional <- args[!grepl("^--", args)]
-  branch <- flag("branch")
-  list(
+
+  # R's `$` does partial matching on lists, so opt$cond would silently resolve to
+  # opt$condition_b when no exact "cond" element exists. Every option name is
+  # therefore pre-created as an explicit NULL entry, which makes `$` exact.
+  all_names <- unique(c(unname(OPTION_ALIASES), unname(FLAG_ALIASES)))
+  full <- stats::setNames(vector("list", length(all_names)), all_names)
+  full[names(opts)] <- opts
+  opts <- full
+
+  branch <- opts$branch
+  c(list(
     command  = if (length(positional)) positional[1] else "help",
     datasets = if (length(positional) > 1) positional[-1] else character(0),
-    from     = flag("from"),
-    to       = flag("to"),
-    cond     = flag("cond"),
-    query    = flag("query"),
-    reference = flag("reference"),
-    branch   = branch,
     branches = if (is.null(branch)) c("average", "median") else branch,
-    force    = any(args == "--force"),
-    dry_run  = any(args == "--dry-run"),
-    log      = flag("log"),
-    help     = any(args %in% c("--help", "-h"))
-  )
+    force    = isTRUE(opts$force),
+    dry_run  = isTRUE(opts$dry_run),
+    help     = isTRUE(opts$help)
+  ), opts[setdiff(names(opts), c("force", "dry_run", "help"))])
+}
+
+#' Apply command-line overrides to the loaded project config.
+apply_cli_overrides <- function(project, opt) {
+  set <- function(path, value, cast = identity) {
+    if (is.null(value)) return(invisible(NULL))
+    v <- cast(value)
+    if (length(path) == 1L) project[[path]] <<- v
+    else project[[path[1]]][[path[2]]] <<- v
+    tsf_log("override: ", paste(path, collapse = "$"), " = ", value)
+  }
+  set("geo_dir", opt$geo_dir)
+  set("interim_dir", opt$interim_dir)
+  set("results_dir", opt$results_dir)
+  set("gene_universe", opt$gene_universe)
+  set("stability_criterion", opt$criterion)
+  set(c("maxt", "B"), opt$maxt_b, as.integer)
+  set(c("maxt", "condition_B"), opt$condition_b, as.integer)
+  set(c("maxt", "stable_frac"), opt$stable_frac, as.numeric)
+  set(c("maxt", "primary_scheme"), opt$primary_scheme)
+  set(c("clean", "ebic_gamma"), opt$ebic_gamma, as.numeric)
+  set(c("clean", "per_sample"), opt$per_sample, isTRUE)
+  set(c("fingerprint", "k_max"), opt$k_max, as.integer)
+  set(c("fingerprint", "target"), opt$target)
+  project
 }
 
 opt <- parse_cli(commandArgs(trailingOnly = TRUE))
@@ -97,7 +197,7 @@ if (!opt$command %in% known) {
   cat(USAGE)
   tsf_abort("Unknown command: ", opt$command)
 }
-if (!is.null(opt$branch) && !opt$branch %in% c("average", "median")) {
+if (!all(opt$branches %in% c("average", "median"))) {
   tsf_abort("--branch must be average or median")
 }
 
@@ -108,7 +208,7 @@ if (!is.null(opt$log)) {
   on.exit({ sink(type = "message"); sink(); close(con) }, add = TRUE)
 }
 
-project <- load_project_config("config/project.R")
+project <- apply_cli_overrides(load_project_config("config/project.R"), opt)
 
 # --- commands that are not stages -------------------------------------------
 if (opt$command == "check") {
@@ -165,7 +265,8 @@ datasets <- stage_datasets(opt)
 tsf_log("datasets: ", paste(datasets, collapse = ", "))
 tsf_log("stages:   ", paste(plan, collapse = " -> "))
 if (!is.null(opt$cond))   tsf_log("conditions: ", opt$cond)
-if (!identical(opt$branches, c("average", "median"))) tsf_log("branch: ", opt$branch)
+if (!identical(opt$branches, c("average", "median")))
+  tsf_log("branch: ", paste(opt$branches, collapse = ", "))
 
 if (opt$dry_run) {
   tsf_log("dry run: nothing was executed")
