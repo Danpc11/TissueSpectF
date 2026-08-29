@@ -328,6 +328,42 @@ stage_compare <- function(project, opt) {
   sprintf("%d replicated transition peak(s)", n_replicated)
 }
 
+# --- reference library -------------------------------------------------------
+stage_reference <- function(project, opt) {
+  ids <- stage_datasets(opt)
+  fps <- list()
+  for (id in ids) {
+    inp <- tsf_stage_inputs(project, id)
+    tsf_log(id, ": fingerprinting ", nrow(inp$dataset$samples), " samples")
+    f <- fingerprint_dataset(inp$dataset, inp$chrom_idx,
+                             k_max = project$fingerprint$k_max %||% 64L,
+                             features = project$fingerprint$features %||% "amplitude")
+    if (is.null(f)) { tsf_warn("  no fingerprint for ", id); next }
+    write_tsv_tsf(cbind(f$labels, as.data.frame(f$matrix)),
+                  file.path(inp$paths$base, "fingerprints", "fingerprints.tsv"))
+    fps[[id]] <- f
+  }
+  if (!length(fps)) tsf_abort("No fingerprints could be built")
+
+  ref <- build_reference(fps, target = project$fingerprint$target %||% "condition",
+                         n_features = project$fingerprint$n_features %||% 500L)
+  ensure_dir(file.path(project$results_dir, "reference"))
+  path <- file.path(project$results_dir, "reference", "reference.rds")
+  saveRDS(ref, path)
+
+  if (!is.null(ref$validation)) {
+    write_tsv_tsf(ref$validation$predictions,
+                  file.path(project$results_dir, "reference",
+                            "out_of_cohort_predictions.tsv"))
+    write_tsv_tsf(as.data.frame(ref$validation$confusion),
+                  file.path(project$results_dir, "reference", "confusion_matrix.tsv"))
+    print(ref$validation$confusion)
+  }
+  tsf_log(reference_status(ref))
+  sprintf("reference over %d sample(s), %d class(es)",
+          nrow(ref$labels), length(ref$model$classes))
+}
+
 #' Spectral window per chromosome: what the gap pattern alone produces.
 #'
 #' This is the diagnostic for a peak near the Nyquist limit. If the sampling
@@ -392,7 +428,8 @@ stage_functions <- list(
   stability = stage_stability,
   peaks     = stage_peaks,
   compare   = stage_compare,
-  window    = stage_window
+  window    = stage_window,
+  reference = stage_reference
 )
 
 #' What exists on disk for each dataset and stage.
