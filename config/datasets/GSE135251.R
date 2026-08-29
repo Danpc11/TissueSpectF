@@ -3,6 +3,8 @@
 # and must stay separate: F0 means NAFLD without fibrosis.
 list(
   id            = "GSE135251",
+  tissue      = "liver",
+  vocabulary  = "liver_fibrosis",
   description   = "NAFLD liver biopsies + non-NAFLD controls",
   counts_file   = "GSE135251.tsv.gz",
   series_matrix = "GSE135251_series_matrix.txt.gz",
