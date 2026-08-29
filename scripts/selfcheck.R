@@ -146,8 +146,12 @@ run_selfcheck <- function() {
     check(paste0(id, ": amplitude increases across every transition"), ok)
   }
 
-  shared <- read_tsv_tsf(file.path(project$results_dir, "comparison",
-                                   "transitions_shared_average.tsv"), required = FALSE)
+  # compare/ is now grouped by tissue/vocabulary, so the file lives one or two
+  # directories deeper. Find it rather than hard-coding the layout.
+  hits <- list.files(file.path(project$results_dir, "comparison"),
+                     pattern = "^transitions_shared_average\\.tsv$",
+                     recursive = TRUE, full.names = TRUE)
+  shared <- if (length(hits)) read_tsv_tsf(hits[1], required = FALSE) else NULL
   check("the increase replicates across datasets",
         !is.null(shared) && sum(shared$replicated, na.rm = TRUE) >= 3)
 
