@@ -79,8 +79,7 @@ tsf_conditions <- function(available, cli) {
 }
 
 tsf_source_pipeline <- function() {
-  for (f in c("utils_io", "config", "labels", "fetch", "ingest", "paths", "grid",
-              "spectrum", "maxt", "condition_test", "stability", "peaks_genes", "compare")) {
-    source(file.path("R", paste0(f, ".R")))
-  }
+  # Kept for callers that source paths.R directly; the real loader lives in
+  # utils_io.R and globs the directory, so no list has to be maintained.
+  tsf_load_all("R")
 }
