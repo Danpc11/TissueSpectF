@@ -409,6 +409,7 @@ stage_reference <- function(project, opt) {
   prov <- grids[[1]]$provenance
   ref <- build_reference(fps, target = project$fingerprint$target %||% "condition",
                          n_features = project$fingerprint$n_features %||% 500L,
+                         n_masks = project$fingerprint$n_masks %||% 25L,
                          grid = canonical_grid,
                          params = list(
                            k_max = project$fingerprint$k_max %||% 64L,
