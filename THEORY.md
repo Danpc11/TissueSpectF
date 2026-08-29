@@ -229,7 +229,7 @@ Two properties of this null matter:
 For each permutation $b$, record $M_b = \max_k P_k^{(b)}$, and
 
 $$
-p_k=\frac{1+\left|\left\{b:M_b\ge P_k\right\}\right|}{B+1}.
+p_k=\frac{1+\lvert\{b:M_b\ge P_k\}\rvert}{B+1}.
 $$
 
 Comparing every observed power against the null *maximum* controls the
