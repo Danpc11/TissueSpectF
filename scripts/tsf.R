@@ -15,11 +15,8 @@ if (!dir.exists("R") || !dir.exists("config")) {
        call. = FALSE)
 }
 suppressPackageStartupMessages({
-  for (f in c("utils_io", "config", "labels", "fetch", "ingest", "paths", "grid", "spectrum",
-              "maxt", "condition_test", "clean", "fingerprint", "reference", "stability", "peaks_genes", "compare",
-              "stages")) {
-    source(file.path("R", paste0(f, ".R")))
-  }
+  source(file.path("R", "utils_io.R"))
+  tsf_load_all("R")
 })
 
 USAGE <- "
@@ -35,6 +32,7 @@ Commands:
   spectra     FFT per chromosome, per sample and per condition
   maxt        per-sample permutation test              [the slow stage]
   condition   condition-level test on the summary signal  [~1/n the cost]
+  consensus   characteristic spectrum of each condition (power, prevalence, PLV)
   clean       CLEAN decomposition: components by EBIC, no threshold
   stability   stable peaks per condition + peak tables
   peaks       gene-level reconstruction of every stable peak
