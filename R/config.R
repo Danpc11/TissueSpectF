@@ -50,12 +50,29 @@ attach_vocabulary <- function(cfg) {
 }
 
 validate_dataset_config <- function(cfg, dataset_id) {
-  required <- c("id", "counts_file", "series_matrix", "condition_rules",
-                "has_control_cohort", "tissue")
+  # Required fields depend on where the data comes from and on whether the
+  # vocabulary even has a baseline. A tissue atlas has no notion of control, so
+  # demanding has_control_cohort from it would be asking a question that does
+  # not apply.
+  cfg$source <- cfg$source %||% "geo"
+  required <- switch(cfg$source,
+    geo = c("id", "tissue", "counts_file", "series_matrix", "condition_rules"),
+    matrix = c("id", "tissue", "counts_file", "metadata_file"),
+    tsf_abort("Unknown source '", cfg$source, "' in ", dataset_id,
+              ". Supported: geo, matrix"))
   missing <- setdiff(required, names(cfg))
   if (length(missing)) {
-    tsf_abort("Dataset config ", dataset_id, " missing: ", paste(missing, collapse = ", "))
+    tsf_abort("Dataset config ", dataset_id, " (source: ", cfg$source,
+              ") missing: ", paste(missing, collapse = ", "))
   }
+  has_baseline <- !is.null(cfg$vocabulary_spec$baseline)
+  if (has_baseline && is.null(cfg$has_control_cohort)) {
+    tsf_abort("Vocabulary '", cfg$vocabulary_spec$id, "' has a baseline (",
+              cfg$vocabulary_spec$baseline, "), so ", dataset_id,
+              " must declare has_control_cohort. That single field is what keeps ",
+              "the baseline label from meaning two different things across cohorts.")
+  }
+  if (!has_baseline) cfg$has_control_cohort <- cfg$has_control_cohort %||% FALSE
   if (!identical(cfg$id, dataset_id)) {
     tsf_abort("Config id (", cfg$id, ") does not match filename (", dataset_id, ")")
   }
