@@ -141,5 +141,33 @@ check("chromosome names are normalised", {
   identical(normalise_chrom_names(c("chr1", "1", "CHR1", "chrM", "MT")),
             c("1", "1", "1", "MT", "MT")) })
 
+# --- integration: the CLI's own load path resolves every stage ---------------
+check("every stage function exists after the CLI load path", {
+  # Loading exactly as scripts/tsf.R does, then checking that each declared
+  # stage resolves. A module added to R/ but forgotten in a hand-written source
+  # list used to fail only at run time, in the middle of a long pipeline.
+  env <- new.env()
+  sys.source("R/utils_io.R", envir = env)
+  invisible(lapply(get("tsf_module_order", envir = env)(),
+                   function(f) sys.source(f, envir = env)))
+  fns <- get("stage_functions", envir = env)
+  stages <- get("stage_names", envir = env)
+  all(stages %in% names(fns)) &&
+    all(vapply(fns[stages], is.function, logical(1))) })
+
+check("the consensus entry points are reachable from the load path", {
+  env <- new.env()
+  sys.source("R/utils_io.R", envir = env)
+  invisible(lapply(get("tsf_module_order", envir = env)(),
+                   function(f) sys.source(f, envir = env)))
+  all(vapply(c("consensus_spectrum", "consensus_signature", "phase_locking",
+               "prevalence_from_rank", "signature_features"),
+             function(f) is.function(get0(f, envir = env)), logical(1))) })
+
+check("no module is missing from the load order", {
+  env <- new.env(); sys.source("R/utils_io.R", envir = env)
+  files <- basename(get("tsf_module_order", envir = env)())
+  setequal(files, list.files("R", pattern = "\\.R$")) })
+
 cat("\n", if (failures == 0L) "All tests passed." else paste(failures, "test(s) failed."), "\n")
 quit(status = if (failures == 0L) 0L else 1L)
