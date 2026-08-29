@@ -14,7 +14,7 @@ transcription carries positional structure at scales of tens to hundreds of
 genes, and whether that structure changes with disease stage.
 
 The model, the estimators and the limits of each claim are written up in
-[docs/THEORY.md](docs/THEORY.md).
+[THEORY.md](THEORY.md).
 
 Three things make the result trustworthy rather than merely computable:
 
@@ -32,41 +32,49 @@ everything else is shared code.
 ## Layout
 
 ```
-app/
-  app.R                  local desktop app (the only part that needs shiny)
-THEORY.md                the model, the estimators, and what each test licenses
-.github/workflows/
-  tests.yml              unit tests + self-check on every push
+tsf                        the command line entry point
+README.md
+THEORY.md                  the model, the estimators, what each test licenses
 TissueSpectF_colab.ipynb   the whole pipeline on a free Colab VM
+Makefile
+.github/workflows/
+  tests.yml                unit tests + self-check on every push
 config/
-  project.R              paths, filters, maxT settings (shared by all datasets)
-  datasets/<GSE>.R       one file per dataset: file names + label rules
+  project.R                paths, filters, and every tunable parameter
+  datasets/<GSE>.R         one per dataset: file names, tissue, label rules
+  vocabularies/<name>.R    condition vocabularies (levels, order, baseline)
 R/
-  utils_io.R             logging, TSV I/O, phenotype value cleaning, manifests
-  config.R               config loading and validation
-  labels.R               controlled vocabulary + label harmonisation engine
-  ingest.R               GEO -> common format
-  fetch.R                download the GEO inputs
-  grid.R                 reference gene grid + least-squares (Lomb-Scargle) spectrum
-  condition_test.R       condition-level significance (permutation + Stouffer)
-  spectrum.R             spectra per sample and per condition
-  maxt.R                 maxT permutation test
-  stability.R            stable peaks per condition
-  peaks_genes.R          gene-level reconstruction of a peak
-  compare.R              signature, transitions, cross-dataset crossing
-  paths.R                where each stage reads and writes
-  fingerprint.R          a sample's spectrum as a comparable feature vector
-  reference.R            reference library, out-of-cohort validation, matching
-  stages.R               each stage as a callable function
-tsf                      the command line entry point
+  utils_io.R               logging, TSV I/O, phenotype cleaning, manifests
+  config.R                 config and vocabulary loading, validation
+  labels.R                 label harmonisation engine
+  fetch.R                  download the GEO inputs
+  ingest.R                 GEO -> common format
+  paths.R                  where each stage reads and writes
+  grid.R                   reference gene grid + least-squares (Lomb-Scargle) spectrum
+  spectrum.R               spectra per sample and per condition
+  maxt.R                   per-sample permutation test
+  condition_test.R         condition-level significance (permutation + Stouffer)
+  clean.R                  CLEAN deflation with an extended-BIC stopping rule
+  stability.R              which peaks go downstream, and by which criterion
+  peaks_genes.R            gene-level reconstruction of a component
+  compare.R                signature, transitions, cross-cohort replication
+  fingerprint.R            a sample's spectrum as a comparable feature vector
+  reference.R              reference library, out-of-cohort validation, matching
+  stages.R                 each stage as a callable function
 scripts/
-  tsf.R                  CLI implementation
-  00_check_inputs.R      verify the GEO files are where the configs expect them
-  selfcheck.R            end-to-end run on synthetic data with a known peak
+  tsf.R                    CLI implementation
+  00_check_inputs.R        verify the GEO inputs are where the configs expect
+  match_query.R            the match command
+  selfcheck.R              end-to-end run on synthetic data with a known peak
+app/
+  app.R                    local desktop app (the only part that needs shiny)
 tests/
-  test_labels.R          label engine
-  test_spectrum.R        FFT, maxT, stability, Wilson
+  test_labels.R            label engine
+  test_spectrum.R          grid, GLS, maxT, CLEAN, condition test, Wilson
 ```
+
+Outputs go where `config/project.R` says (`interim_dir`, `results_dir`),
+outside the repository by default.
 
 ## Common format
 
@@ -163,7 +171,7 @@ with `condition = NA` and are reported, never guessed.
 
 ```bash
 ./tsf check       # are the GEO files where the configs expect them?
-./tsf run         # ingest -> spectra -> maxt -> stability -> peaks -> compare
+./tsf run         # the whole pipeline, in order
 ./tsf status      # what exists on disk
 ```
 
@@ -173,16 +181,30 @@ run never leaves you guessing which stage produced which output.
 Any stage can be run on its own, over a subset:
 
 ```bash
-./tsf spectra                        # one stage, all datasets
-./tsf maxt GSE135251 --cond=F3       # one dataset, one condition
-./tsf run --from=stability           # resume after changing a threshold
-./tsf run --to=maxt --log=run.log    # stop early, tee the output to a file
-./tsf run --dry-run                  # print the plan, do nothing
+./tsf spectra                             # one stage, all datasets
+./tsf maxt GSE135251 --cond F3            # one dataset, one condition
+./tsf run --from stability                # resume after changing a threshold
+./tsf run --to maxt --log run.log         # stop early, tee output to a file
+./tsf run --dry-run                       # print the plan, do nothing
 ```
 
-Options: `--from=`, `--to=`, `--cond=F2,F3`, `--branch=median`, `--force`,
-`--dry-run`, `--log=<file>`. Stages in order: `ingest`, `spectra`, `maxt`,
-`stability`, `peaks`, `compare`.
+Paths and parameters are flags, so nothing has to be exported:
+
+```bash
+./tsf run --to spectra --results-dir results_pc
+./tsf run --gene-universe '^(protein-coding|ncRNA)$' \
+          --results-dir results_pc_nc --interim-dir interim_pc_nc
+./tsf stability --stable-frac 0.7 --criterion consistency
+./tsf reference --target tissue --k-max 96
+```
+
+Both `--key value` and `--key=value` work, names are case-insensitive, and `-`
+and `_` are interchangeable — `--results-dir`, `--results_dir` and
+`--RESULTS_DIR` are the same flag. Precedence is **command line > environment
+(`TSF_*`) > `config/project.R`**, and every override is echoed in the log.
+
+`./tsf --help` lists the flags. Stages in order: `ingest`, `spectra`, `maxt`,
+`condition`, `clean`, `stability`, `peaks`, `compare`.
 
 ## What decides that a peak exists
 
@@ -217,7 +239,7 @@ about 460 for 23 chromosomes. The stage warns when B is too small to conclude.
 
 ## Running on Colab
 
-`colab/TissueSpectF_colab.ipynb` runs the whole thing on a free VM, starting
+`TissueSpectF_colab.ipynb` runs the whole thing on a free VM, starting
 from `./tsf fetch` so no data needs copying. Two cores make the per-sample
 `maxt` stage impractical (roughly 8 hours), so the notebook runs
 `--from=condition`, which is about 1/n the cost and answers the primary
@@ -270,7 +292,7 @@ as separate, non-identical counts. If both hold, the label fix is in effect.
 
 ```bash
 Rscript -e 'install.packages("shiny")'   # once
-./tsf run --to=spectra
+./tsf run --to spectra
 ./tsf reference
 ./tsf app
 ```
