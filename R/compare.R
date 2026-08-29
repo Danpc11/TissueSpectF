@@ -115,6 +115,11 @@ transition_table <- function(cond_from, cond_to, peaks_by_cond, stability_by_con
     c(mean(x), mean(y), unname(tt$p.value))
   })
   test <- do.call(rbind, test)
+  if (all(is.na(test[, 3]))) {
+    tsf_warn("No per-sample maxT for ", cond_from, "/", cond_to,
+             ": the power change is reported without a test, and `replicated` ",
+             "cannot be established. Run the maxt stage for that claim.")
+  }
   out$mean_power_from <- test[, 1]
   out$mean_power_to <- test[, 2]
   out$p_power_welch <- test[, 3]
