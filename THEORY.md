@@ -83,7 +83,9 @@ $\rho$ ranges from 0.16 to 0.78 with medians of 0.66 and 0.73.
 
 For sample $s$ and gene at grid position $t \in T_c$,
 
-$$y_s(t) = \operatorname{asinh}\big(\mathrm{TPM}_s(t)\big).$$
+$$
+y_s(t)=\mathrm{asinh}\!\left(\mathrm{TPM}_s(t)\right).
+$$
 
 `asinh` rather than `log(x+1)`: it is defined at zero, behaves linearly near
 zero and logarithmically in the tail, and needs no pseudocount whose value would
