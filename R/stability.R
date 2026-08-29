@@ -105,3 +105,63 @@ condition_peak_table <- function(stability, spectra, branch) {
   }
   out[order(-out$pct_samples_significant, out$chr, out$k), ]
 }
+
+#' Merge the condition-level test into a stability table and pick the criterion.
+#'
+#' `is_stable` is what everything downstream selects on. Which test drives it is
+#' a declared choice (`stability_criterion` in config/project.R), and both
+#' columns are always written so the sensitivity is visible without a rerun:
+#'
+#'   "condition"   q_condition <= 0.05 on the summary signal  (default)
+#'   "consistency" >= stable_frac of samples individually significant
+#'
+#' The consistency figure never disappears -- it stays as a reproducibility
+#' descriptor next to the test that made the call.
+attach_condition_test <- function(st, paths, cond, branch, criterion = "condition") {
+  path <- file.path(paths$base, "condition",
+                    sprintf("condition_significance_%s_%s.tsv", branch, cond))
+  cs <- read_tsv_tsf(path, required = FALSE)
+  st$is_stable_consistency <- st$is_stable
+
+  if (is.null(cs)) {
+    if (identical(criterion, "condition")) {
+      tsf_warn("  ", cond, ": no condition test found; falling back to consistency ",
+               "(run the condition stage for the intended criterion)")
+    }
+    st$q_condition <- NA_real_
+    st$is_significant_condition <- NA
+    return(st)
+  }
+
+  i <- match(paste(st$chr, st$N, st$k), paste(cs$chr, cs$N, cs$k))
+  st$p_condition <- cs$p_condition[i]
+  st$q_condition <- cs$q_condition[i]
+  if ("q_stouffer" %in% colnames(cs)) st$q_stouffer <- cs$q_stouffer[i]
+  st$is_significant_condition <- !is.na(st$q_condition) & st$q_condition <= 0.05
+
+  st$is_stable <- switch(criterion,
+    condition   = st$is_significant_condition,
+    consistency = st$is_stable_consistency,
+    tsf_abort("stability_criterion must be 'condition' or 'consistency'"))
+  st$criterion <- criterion
+  st
+}
+
+#' Stability table built from the condition test alone (no per-sample maxT).
+stability_from_condition <- function(paths, cond, branch) {
+  path <- file.path(paths$base, "condition",
+                    sprintf("condition_significance_%s_%s.tsv", branch, cond))
+  cs <- read_tsv_tsf(path, required = FALSE)
+  if (is.null(cs)) return(NULL)
+  data.frame(
+    chr = cs$chr, N = cs$N, k = cs$k, freq = cs$freq, period = cs$period,
+    n_samples_with_result = NA_integer_, n_samples_significant = NA_integer_,
+    n_samples_expected = NA_integer_, pct_samples_significant = NA_real_,
+    mean_power = cs$power, median_power = cs$power,
+    p_condition = cs$p_condition, q_condition = cs$q_condition,
+    is_significant_condition = !is.na(cs$q_condition) & cs$q_condition <= 0.05,
+    is_stable = !is.na(cs$q_condition) & cs$q_condition <= 0.05,
+    is_stable_consistency = NA, criterion = "condition",
+    window_power = cs$window_power, window_rank = cs$window_rank,
+    stringsAsFactors = FALSE)
+}
