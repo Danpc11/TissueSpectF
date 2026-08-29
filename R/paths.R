@@ -79,8 +79,8 @@ tsf_conditions <- function(available, cli) {
 }
 
 tsf_source_pipeline <- function() {
-  for (f in c("utils_io", "config", "labels", "ingest", "paths", "grid",
-              "spectrum", "maxt", "stability", "peaks_genes", "compare")) {
+  for (f in c("utils_io", "config", "labels", "fetch", "ingest", "paths", "grid",
+              "spectrum", "maxt", "condition_test", "stability", "peaks_genes", "compare")) {
     source(file.path("R", paste0(f, ".R")))
   }
 }
