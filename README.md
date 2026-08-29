@@ -2,7 +2,7 @@
 
 ![R](https://img.shields.io/badge/R-4.1%2B-276DC3?logo=r&logoColor=white)
 [![Tests](https://github.com/Danpc11/TissueSpectF/actions/workflows/tests.yml/badge.svg)](https://github.com/Danpc11/TissueSpectF/actions/workflows/tests.yml)
-[![Full pipeline](https://img.shields.io/badge/Colab-Full%20pipeline-4285F4?logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/Danpc11/TissueSpectF/blob/main/colab/TissueSpectF_colab.ipynb)
+[![Full pipeline](https://img.shields.io/badge/Colab-Full%20pipeline-4285F4?logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/Danpc11/TissueSpectF/blob/main/TissueSpectF_colab.ipynb)
 ![Datasets](https://img.shields.io/badge/GEO-GSE135251%20%7C%20GSE162694-1f6feb)
 ![Dependencies](https://img.shields.io/badge/dependencies-base%20R-success)
 
@@ -12,6 +12,9 @@ Gene expression is read as a signal along the chromosome, ordered by genomic
 position, and decomposed into periodic components. The question is whether
 transcription carries positional structure at scales of tens to hundreds of
 genes, and whether that structure changes with disease stage.
+
+The model, the estimators and the limits of each claim are written up in
+[docs/THEORY.md](docs/THEORY.md).
 
 Three things make the result trustworthy rather than merely computable:
 
@@ -29,10 +32,12 @@ everything else is shared code.
 ## Layout
 
 ```
+app/
+  app.R                  local desktop app (the only part that needs shiny)
+THEORY.md                the model, the estimators, and what each test licenses
 .github/workflows/
   tests.yml              unit tests + self-check on every push
-colab/
-  TissueSpectF_colab.ipynb   the whole pipeline on a free Colab VM
+TissueSpectF_colab.ipynb   the whole pipeline on a free Colab VM
 config/
   project.R              paths, filters, maxT settings (shared by all datasets)
   datasets/<GSE>.R       one file per dataset: file names + label rules
@@ -50,6 +55,8 @@ R/
   peaks_genes.R          gene-level reconstruction of a peak
   compare.R              signature, transitions, cross-dataset crossing
   paths.R                where each stage reads and writes
+  fingerprint.R          a sample's spectrum as a comparable feature vector
+  reference.R            reference library, out-of-cohort validation, matching
   stages.R               each stage as a callable function
 tsf                      the command line entry point
 scripts/
@@ -258,6 +265,42 @@ cut -f3 $TSF_INTERIM_DIR/GSE162694/samples.tsv | sort | uniq -c
 
 GSE162694 must contain no `Control` rows; GSE135251 must show `Control` and `F0`
 as separate, non-identical counts. If both hold, the label fix is in effect.
+
+## The app
+
+```bash
+Rscript -e 'install.packages("shiny")'   # once
+./tsf run --to=spectra
+./tsf reference
+./tsf app
+```
+
+Opens in a browser and runs entirely on the machine that started it: no upload
+leaves the computer and no server is contacted. Drop in a counts TSV (gene id
+column, then one column per sample, Ensembl or Entrez ids) and it returns the
+ranked classes.
+
+`shiny` is needed only for `app.R`. The CLI, including `./tsf match`, works on
+base R alone.
+
+### What the app will not do
+
+A matcher always returns a best match. Whether it means anything is a separate
+question, and the interface answers it before showing the result:
+
+- the banner reports **out-of-cohort accuracy** against the always-guess-the-
+  commonest-class baseline, and says plainly when the reference does not beat
+  guessing
+- a reference built from one cohort is labelled **uncalibrated** — internal
+  cross-validation is not evidence here, because a classifier with thousands of
+  features reaches a high internal accuracy by learning batch and sequencing
+  depth, neither of which transfers between studies
+- a top-two margin under 0.02 is reported as **not separable**
+- if a randomly shuffled copy of the query scores as well, it says there is no
+  usable spectral shape in the file
+
+`./tsf reference` writes `out_of_cohort_predictions.tsv` and
+`confusion_matrix.tsv` so the validation can be inspected rather than trusted.
 
 ## What changed from the original scripts
 
