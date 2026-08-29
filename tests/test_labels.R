@@ -74,5 +74,42 @@ check("comparable_conditions is the ordered intersection",
       identical(comparable_conditions(list(a = c("F0","F1","Control"), b = c("F1","F0"))),
                 c("F0", "F1")))
 
+# --- input schemas and vocabularies without a baseline -----------------------
+tmp_v <- file.path(tempdir(), "voc"); tmp_d <- file.path(tempdir(), "ds")
+dir.create(tmp_v, showWarnings = FALSE); dir.create(tmp_d, showWarnings = FALSE)
+invisible(file.copy(list.files("config/vocabularies", full.names = TRUE), tmp_v, overwrite = TRUE))
+local_cfg <- function(txt, name) {
+  writeLines(txt, file.path(tmp_d, paste0(name, ".R")))
+  old <- load_vocabulary
+  assign("load_vocabulary",
+         function(n, dir = tmp_v) source(file.path(dir, paste0(n, ".R")), local = TRUE)$value,
+         envir = globalenv())
+  on.exit(assign("load_vocabulary", old, envir = globalenv()), add = TRUE)
+  tryCatch(load_dataset_config(name, tmp_d), error = function(e) e)
+}
+
+check("a tissue atlas needs no has_control_cohort", {
+  cfg <- local_cfg('list(id="ATLAS", tissue="multi", source="matrix",
+    vocabulary="tissue_atlas", condition_levels=c("liver","lung"),
+    counts_file="c.tsv", metadata_file="m.tsv")', "ATLAS")
+  !inherits(cfg, "error") && identical(cfg$has_control_cohort, FALSE) })
+
+check("source = matrix does not require a series matrix", {
+  cfg <- local_cfg('list(id="MAT", tissue="lung", source="matrix",
+    vocabulary="case_control", has_control_cohort=TRUE,
+    counts_file="c.tsv", metadata_file="m.tsv")', "MAT")
+  !inherits(cfg, "error") && identical(cfg$source, "matrix") })
+
+check("a vocabulary with a baseline still demands has_control_cohort", {
+  cfg <- local_cfg('list(id="LIV", tissue="liver", vocabulary="liver_fibrosis",
+    counts_file="c.tsv", series_matrix="s.txt",
+    condition_rules=list(list(id="r", type="fibrosis_stage", column="fib")))', "LIV")
+  inherits(cfg, "error") })
+
+check("an unknown source is refused", {
+  cfg <- local_cfg('list(id="ODD", tissue="x", source="salmon",
+    vocabulary="case_control", has_control_cohort=TRUE)', "ODD")
+  inherits(cfg, "error") })
+
 cat("\n", if (failures == 0L) "All tests passed." else paste(failures, "test(s) failed."), "\n")
 quit(status = if (failures == 0L) 0L else 1L)
