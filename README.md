@@ -1,6 +1,26 @@
 # TissueSpectF
 
+![R](https://img.shields.io/badge/R-4.1%2B-276DC3?logo=r&logoColor=white)
+[![Tests](https://github.com/Danpc11/TissueSpectF/actions/workflows/tests.yml/badge.svg)](https://github.com/Danpc11/TissueSpectF/actions/workflows/tests.yml)
+[![Full pipeline](https://img.shields.io/badge/Colab-Full%20pipeline-4285F4?logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/Danpc11/TissueSpectF/blob/main/colab/TissueSpectF_colab.ipynb)
+![Datasets](https://img.shields.io/badge/GEO-GSE135251%20%7C%20GSE162694-1f6feb)
+![Dependencies](https://img.shields.io/badge/dependencies-base%20R-success)
+
 Chromosome-ordered Fourier spectral analysis of tissue level transcriptomes.
+
+Gene expression is read as a signal along the chromosome, ordered by genomic
+position, and decomposed into periodic components. The question is whether
+transcription carries positional structure at scales of tens to hundreds of
+genes, and whether that structure changes with disease stage.
+
+Three things make the result trustworthy rather than merely computable:
+
+- the spectral axis is the **annotation grid**, not the genes that survived a
+  filter, so `N` means the same thing in every dataset
+- unmeasured genes stay **unobserved**, never zero-filled, and the spectrum is
+  fitted by least squares over the observed positions only
+- every peak is reported next to its **spectral window**: what the pattern of
+  missing genes alone can produce
 
 This repository replaces two ~4,200-line per-dataset scripts with a layered
 pipeline. Everything that was dataset-specific now lives in a config file;
@@ -9,6 +29,10 @@ everything else is shared code.
 ## Layout
 
 ```
+.github/workflows/
+  tests.yml              unit tests + self-check on every push
+colab/
+  TissueSpectF_colab.ipynb   the whole pipeline on a free Colab VM
 config/
   project.R              paths, filters, maxT settings (shared by all datasets)
   datasets/<GSE>.R       one file per dataset: file names + label rules
@@ -17,7 +41,9 @@ R/
   config.R               config loading and validation
   labels.R               controlled vocabulary + label harmonisation engine
   ingest.R               GEO -> common format
+  fetch.R                download the GEO inputs
   grid.R                 reference gene grid + least-squares (Lomb-Scargle) spectrum
+  condition_test.R       condition-level significance (permutation + Stouffer)
   spectrum.R             spectra per sample and per condition
   maxt.R                 maxT permutation test
   stability.R            stable peaks per condition
@@ -150,6 +176,46 @@ Any stage can be run on its own, over a subset:
 Options: `--from=`, `--to=`, `--cond=F2,F3`, `--branch=median`, `--force`,
 `--dry-run`, `--log=<file>`. Stages in order: `ingest`, `spectra`, `maxt`,
 `stability`, `peaks`, `compare`.
+
+## What decides that a peak exists
+
+Two criteria are computed for every peak; `stability_criterion` in
+`config/project.R` picks which one drives `is_stable`, and both are written
+either way.
+
+**condition** (default) -- a permutation test on the condition's summary signal.
+Values are permuted among the observed grid positions, the spectrum recomputed,
+and the maximum power over frequencies gives the null. This is the primary test:
+it evaluates the signal that is actually analysed downstream, and its power
+grows with the number of samples.
+
+**consistency** -- at least `stable_frac` of the samples individually
+significant. This is a reproducibility requirement, not a test with aggregated
+power: each sample has to reach significance alone under family-wise control, so
+a real but moderate periodicity present in every sample stays invisible however
+many samples there are. Kept as a descriptor reported next to the result, not as
+the thing that decides.
+
+Where `maxt` output exists, a Stouffer combination of the per-sample p-values is
+added as a second opinion. It is conservative (its inputs are already family-wise
+adjusted) and assumes independence between samples, which replicates only
+approximately satisfy.
+
+Multiplicity is corrected over **chromosomes, not frequencies**: maxT already
+controls the family-wise error rate across frequencies within a chromosome.
+Correcting over frequencies again would be fatal rather than merely conservative,
+because a permutation p-value cannot fall below `1/(B+1)` and the smallest
+attainable q would exceed 1. This puts a floor on B: `condition_B >= 20 * n_chr`,
+about 460 for 23 chromosomes. The stage warns when B is too small to conclude.
+
+## Running on Colab
+
+`colab/TissueSpectF_colab.ipynb` runs the whole thing on a free VM, starting
+from `./tsf fetch` so no data needs copying. Two cores make the per-sample
+`maxt` stage impractical (roughly 8 hours), so the notebook runs
+`--from=condition`, which is about 1/n the cost and answers the primary
+question. The stability stage falls back to the condition test on its own when
+no per-sample maxT exists.
 
 ## Checking that it works
 
