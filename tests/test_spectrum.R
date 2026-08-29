@@ -2,7 +2,7 @@
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
 source("R/grid.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
-source("R/condition_test.R"); source("R/clean.R"); source("R/peaks_genes.R"); source("R/compare.R")
+source("R/condition_test.R"); source("R/clean.R"); source("R/fingerprint.R"); source("R/reference.R"); source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
 check <- function(label, expr) {
@@ -269,6 +269,72 @@ check("variance explained accumulates and BIC drops each step", {
     rnorm(400, sd = 0.4)
   cp <- clean_decompose(y, gls_prepare(t, N))
   all(diff(cp$var_explained_cumulative) > 0) && all(cp$bic_drop > 0) })
+
+# --- query fingerprints: absence is not zero ---------------------------------
+make_grid <- function(n_per_chr = 120L, chrs = c("1", "2")) {
+  do.call(rbind, lapply(chrs, function(c) data.frame(
+    gene_id = paste0("ENSG", c, "_", seq_len(n_per_chr)),
+    entrez_id = paste0(c, sprintf("%04d", seq_len(n_per_chr))),
+    chr = c, start = seq_len(n_per_chr) * 1000,
+    grid_index = seq_len(n_per_chr), grid_N = n_per_chr,
+    stringsAsFactors = FALSE)))
+}
+fake_ref <- function() list(grid = make_grid(),
+                            params = list(k_max = 20L, features = "amplitude"))
+
+check("a query keeps only the genes it actually contains", {
+  g <- make_grid(); ref <- fake_ref()
+  present <- g$gene_id[seq(1, nrow(g), by = 2)]     # half the grid
+  qi <- query_grid_index(ref$grid, present)
+  abs(qi$coverage - 0.5) < 0.01 &&
+    all(vapply(qi$chrom_idx, function(ci) length(ci$t) == ci$N / 2, logical(1))) &&
+    all(vapply(qi$chrom_idx, function(ci) ci$N == 120L, logical(1))) })
+
+check("missing genes are absent, not zero-filled", {
+  # The same measured values, once with the missing genes simply absent and once
+  # zero-filled, must not give the same fingerprint -- if they did, the query
+  # path would be reintroducing the very artefact the grid design removes.
+  set.seed(61); g <- make_grid()
+  ref <- list(grid = g, params = list(k_max = 40L, features = "amplitude"))
+  idx <- seq(1, nrow(g), by = 2)
+  vals <- round(exp(rnorm(length(idx), 5, 1)))
+  fp_absent <- fingerprint_query(vals, g$gene_id[idx], ref)
+  vals_full <- rep(0, nrow(g)); vals_full[idx] <- vals
+  fp_zeros <- fingerprint_query(vals_full, g$gene_id, ref)
+  shared <- intersect(names(fp_absent$vector), names(fp_zeros$vector))
+  # Same measurements, different observed sets, therefore different spectra.
+  abs(fp_absent$coverage - 0.5) < 0.01 && abs(fp_zeros$coverage - 1) < 0.01 &&
+    length(shared) > 10 &&
+    max(abs(fp_absent$vector[shared] - fp_zeros$vector[shared])) > 0.05 })
+
+check("query grid N is the reference grid, not the query length", {
+  g <- make_grid(); ref <- fake_ref()
+  qi <- query_grid_index(ref$grid, g$gene_id[seq(1, nrow(g), by = 3)])
+  all(vapply(qi$chrom_idx, function(ci) ci$N == 120L, logical(1))) })
+
+check("entrez identifiers are detected", {
+  g <- make_grid(); ref <- fake_ref()
+  query_grid_index(ref$grid, g$entrez_id)$id_type == "entrez" })
+
+# --- calibrated rejection ----------------------------------------------------
+check("rejection threshold comes from correct held-out matches", {
+  pred <- data.frame(
+    truth = c(rep("A", 10), rep("B", 10)),
+    predicted = c(rep("A", 8), "B", "B", rep("B", 8), "A", "A"),
+    similarity = c(runif(8, 0.8, 0.9), 0.3, 0.3, runif(8, 0.8, 0.9), 0.3, 0.3),
+    stringsAsFactors = FALSE)
+  cal <- calibrate_rejection(pred)
+  !is.null(cal) && cal$global_threshold > 0.7 && cal$separability_auc > 0.9 })
+
+check("a low-similarity match is reported UNKNOWN", {
+  cal <- list(global_threshold = 0.8, per_class = NULL, quantile = 0.05)
+  hi <- apply_rejection(list(best = "A", similarity = 0.9), cal)
+  lo <- apply_rejection(list(best = "A", similarity = 0.5), cal)
+  identical(hi$decision, "A") && identical(lo$decision, "UNKNOWN") })
+
+check("an uncalibrated reference says so instead of deciding", {
+  identical(apply_rejection(list(best = "A", similarity = 0.9), NULL)$decision,
+            "UNCALIBRATED") })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
