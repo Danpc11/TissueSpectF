@@ -5,7 +5,7 @@
 # datasets, cond, branch and force, and each returns a short summary the caller
 # can print or aggregate.
 
-stage_names <- c("ingest", "spectra", "maxt", "condition", "stability",
+stage_names <- c("ingest", "spectra", "maxt", "condition", "clean", "stability",
                  "peaks", "compare")
 
 # Stages that can be skipped on a small machine. `maxt` is per sample and costs
@@ -112,6 +112,32 @@ stage_condition <- function(project, opt) {
   sprintf("%d condition-level peak(s) at q <= 0.05", n_sig)
 }
 
+# --- CLEAN decomposition -----------------------------------------------------
+stage_clean <- function(project, opt) {
+  total <- 0L
+  for (id in stage_datasets(opt)) {
+    inp <- tsf_stage_inputs(project, id)
+    n_cores <- maxt_cores(inp$chrom_idx)
+    tsf_log(id, ": CLEAN decomposition (EBIC gamma = ",
+            project$clean$ebic_gamma %||% 1, ")")
+    for (cond in tsf_conditions(inp$conditions, opt)) {
+      for (branch in opt$branches) {
+        cp <- clean_condition(inp$dataset, cond, inp$chrom_idx, branch = branch,
+                              per_sample = isTRUE(project$clean$per_sample),
+                              clean_cfg = project$clean, n_cores = n_cores)
+        if (is.null(cp)) { tsf_log("  ", cond, "/", branch, ": no component"); next }
+        write_tsv_tsf(cp, file.path(inp$paths$base, "clean",
+                                    sprintf("components_%s_%s.tsv", branch, cond)))
+        tsf_log("  ", cond, "/", branch, ": ", nrow(cp), " component(s) over ",
+                length(unique(cp$chr)), " chromosome(s), median period ",
+                round(stats::median(cp$period)), " genes")
+        total <- total + nrow(cp)
+      }
+    }
+  }
+  sprintf("%d component(s) extracted", total)
+}
+
 # --- 04 stability ------------------------------------------------------------
 stage_stability <- function(project, opt) {
   total_stable <- 0L
@@ -202,7 +228,38 @@ stage_compare <- function(project, opt) {
     inp
   })
   names(loaded) <- ids
-  common <- comparable_conditions(lapply(loaded, function(x) x$conditions))
+
+  # Datasets are only comparable within a tissue and a vocabulary. Crossing a
+  # liver fibrosis stage against a lung disease grade would merge on a label
+  # that means different things, so groups are formed first and each is compared
+  # on its own.
+  keys <- vapply(ids, function(id) {
+    cfg <- load_dataset_config(id)
+    paste(cfg$tissue %||% "unknown", cfg$vocabulary_spec$id, sep = "/")
+  }, character(1))
+  groups <- split(ids, keys)
+  if (length(groups) > 1) {
+    tsf_log("Comparison groups: ", paste(names(groups), collapse = " | "))
+  }
+  singles <- names(groups)[lengths(groups) < 2]
+  if (length(singles)) {
+    tsf_warn("Only one dataset in: ", paste(singles, collapse = ", "),
+             " -- no cross-dataset replication possible there")
+  }
+  group_now <- groups[[which.max(lengths(groups))]]
+  if (length(groups) > 1) {
+    tsf_log("Comparing: ", paste(group_now, collapse = ", "))
+  }
+  loaded <- loaded[group_now]; ids <- group_now
+
+  voc <- load_dataset_config(ids[1])$vocabulary_spec
+  common <- comparable_conditions(lapply(loaded, function(x) x$conditions),
+                                  levels_now = tsf_levels(voc))
+  ordered_voc <- isTRUE(voc$ordered)
+  if (!ordered_voc) {
+    tsf_log("Vocabulary '", voc$id, "' is unordered: reporting per-level ",
+            "comparisons, no transitions")
+  }
   n_replicated <- 0L
 
   for (branch in opt$branches) {
@@ -228,7 +285,7 @@ stage_compare <- function(project, opt) {
       }))
 
       trans <- list()
-      for (i in seq_len(length(common) - 1L)) {
+      for (i in if (ordered_voc) seq_len(length(common) - 1L) else integer(0)) {
         t <- transition_table(common[i], common[i + 1L], x$peaks[[branch]],
                               x$stability, x$maxt, branch)
         if (is.null(t)) {
@@ -331,6 +388,7 @@ stage_functions <- list(
   spectra   = stage_spectra,
   maxt      = stage_maxt,
   condition = stage_condition,
+  clean     = stage_clean,
   stability = stage_stability,
   peaks     = stage_peaks,
   compare   = stage_compare,
