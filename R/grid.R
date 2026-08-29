@@ -42,6 +42,18 @@
 # reported alongside the spectral window (see spectral_window), which shows how
 # much of the apparent structure the sampling pattern alone can produce.
 
+#' Canonical chromosome names.
+#'
+#' Annotations disagree on "chr1" vs "1" vs "CHR1", and MT/M/chrM. Everything
+#' downstream keys on the chromosome name, so a single spelling has to be
+#' imposed at the point the annotation is read -- not patched later.
+normalise_chrom_names <- function(x) {
+  v <- toupper(trimws(as.character(x)))
+  v <- sub("^CHR", "", v)
+  v[v %in% c("M", "MT", "MITO")] <- "MT"
+  v
+}
+
 #' Reference grid: every annotated gene of the allowed biotypes, per chromosome.
 #'
 #' @param annot annotation table with gene_id, chr, start and optionally gene_type
