@@ -12,6 +12,12 @@ stable_peaks_maxt <- function(maxt_individual, expected_samples,
 
   d <- maxt_individual
   d$is_sig <- d$p_empirical_maxT <= alpha
+  # Both definitions are always computed and written, whichever is primary, so
+  # the sensitivity of a result to the choice of null is visible without a rerun.
+  d$is_sig_full <- if ("p_empirical_maxT_full" %in% colnames(d))
+    d$p_empirical_maxT_full <= alpha else d$is_sig
+  d$is_sig_all <- if ("p_empirical_maxT_all" %in% colnames(d))
+    !is.na(d$p_empirical_maxT_all) & d$p_empirical_maxT_all <= alpha else NA
   by <- list(chr = as.character(d$chr), N = as.integer(d$N), k = as.integer(d$k))
 
   n_res <- stats::aggregate(d$sample, by, function(x) length(unique(x)))
@@ -31,12 +37,30 @@ stable_peaks_maxt <- function(maxt_individual, expected_samples,
                by = c("chr", "N", "k"), all.x = TRUE)
   out$n_samples_significant[is.na(out$n_samples_significant)] <- 0L
 
+  count_scheme <- function(flag, label) {
+    sub <- d[flag %in% TRUE, , drop = FALSE]
+    if (!nrow(sub)) { out[[label]] <<- 0L; return(invisible(NULL)) }
+    agg <- stats::aggregate(sub$sample,
+                            list(chr = as.character(sub$chr), N = as.integer(sub$N),
+                                 k = as.integer(sub$k)),
+                            function(x) length(unique(x)))
+    v <- agg$x[match(paste(out$chr, out$N, out$k),
+                     paste(agg$chr, agg$N, agg$k))]
+    v[is.na(v)] <- 0L
+    out[[label]] <<- as.integer(v)
+    invisible(NULL)
+  }
+  count_scheme(d$is_sig_full, "n_samples_significant_full")
+  count_scheme(d$is_sig_all,  "n_samples_significant_all")
+
   out$n_samples_expected <- n_expected
   out$freq <- out$k / out$N
   out$period <- out$N / out$k
   out$pct_samples_significant <- 100 * out$n_samples_significant / out$n_samples_expected
-  out$is_stable <- out$n_samples_with_result == n_expected &
-    out$n_samples_significant >= stable_frac * n_expected
+  complete <- out$n_samples_with_result == n_expected
+  out$is_stable      <- complete & out$n_samples_significant >= stable_frac * n_expected
+  out$is_stable_full <- complete & out$n_samples_significant_full >= stable_frac * n_expected
+  out$is_stable_all  <- complete & out$n_samples_significant_all  >= stable_frac * n_expected
   out[order(-out$pct_samples_significant, out$chr, out$k), ]
 }
 
