@@ -1,6 +1,7 @@
 #!/usr/bin/env Rscript
 # Dependency-free tests for the label layer. Run: Rscript tests/test_labels.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
+source("R/grid.R"); source("R/ingest.R")
 
 failures <- 0L
 check <- function(label, expr) {
@@ -110,6 +111,35 @@ check("an unknown source is refused", {
   cfg <- local_cfg('list(id="ODD", tissue="x", source="salmon",
     vocabulary="case_control", has_control_cohort=TRUE)', "ODD")
   inherits(cfg, "error") })
+
+check("incompatible grids cannot share a reference", {
+  g <- data.frame(gene_id = paste0("g", 1:10), chr = "1",
+                  grid_index = 1:10, grid_N = 10L, stringsAsFactors = FALSE)
+  a <- list(grid = g, provenance = list(species = "Homo sapiens",
+            genome_build = "GRCh38", annotation_release = "NCBI",
+            gene_universe = "^protein-coding$", grid_digest = grid_digest(g)))
+  b <- a; b$provenance$genome_build <- "GRCh37"
+  inherits(tryCatch(assert_compatible_grids(list(A = a, B = b)),
+                    error = function(e) e), "error") })
+
+check("identical grids are accepted", {
+  g <- data.frame(gene_id = paste0("g", 1:10), chr = "1",
+                  grid_index = 1:10, grid_N = 10L, stringsAsFactors = FALSE)
+  a <- list(grid = g, provenance = list(species = "Homo sapiens",
+            genome_build = "GRCh38", annotation_release = "NCBI",
+            gene_universe = "^protein-coding$", grid_digest = grid_digest(g)))
+  !inherits(tryCatch(assert_compatible_grids(list(A = a, B = a)),
+                     error = function(e) e), "error") })
+
+check("a changed grid changes its digest", {
+  g <- data.frame(gene_id = paste0("g", 1:10), chr = "1",
+                  grid_index = 1:10, grid_N = 10L, stringsAsFactors = FALSE)
+  h <- g; h$grid_index[3] <- 99L
+  grid_digest(g) != grid_digest(h) })
+
+check("chromosome names are normalised", {
+  identical(normalise_chrom_names(c("chr1", "1", "CHR1", "chrM", "MT")),
+            c("1", "1", "1", "MT", "MT")) })
 
 cat("\n", if (failures == 0L) "All tests passed." else paste(failures, "test(s) failed."), "\n")
 quit(status = if (failures == 0L) 0L else 1L)
