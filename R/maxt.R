@@ -17,8 +17,11 @@
 # The primary p-value is `full`; `p_empirical_maxT_all` is the max across
 # schemes, reported for the conservative reading.
 
+MIN_PERMUTATION_BLOCKS <- 10L
+
 permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
-                                 block_sizes = c(10L, 20L, 50L)) {
+                                 block_sizes = c(10L, 20L, 50L),
+                                 primary_scheme = "full") {
   y <- as.numeric(y)
   y[!is.finite(y)] <- 0
   n <- terms$n
@@ -27,10 +30,26 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
   obs <- gls_spectrum(y, terms)
   power_observed <- obs$power
 
-  permute_blocks <- function(v, block_size) {
-    block_id <- ceiling(seq_along(v) / block_size)
-    blocks <- split(v, block_id)
-    unlist(blocks[sample.int(length(blocks))], use.names = FALSE)
+  # Blocks are intervals of the REFERENCE GRID, not runs of consecutive entries
+  # in the observed list. With gaps the two differ badly: at 20% coverage a run
+  # of 10 observed genes spans ~50 grid positions, so grouping by list index
+  # would treat genes 50 slots apart as neighbours and the scheme would preserve
+  # no local structure at all.
+  #
+  # Blocks therefore hold a variable number of observed genes. The permutation
+  # shuffles the order of the blocks and writes the concatenated values back
+  # onto the same observed positions, in order: positions are untouched, values
+  # keep their within-block ordering, and long-range structure is destroyed.
+  # The compromise is that when block sizes differ, the spacing between a value
+  # and its neighbours is not preserved exactly inside a relocated block; there
+  # is no permutation that keeps both the position set and every within-block
+  # distance, and holding the positions fixed is the property that matters here.
+  grid_blocks <- function(block_size) {
+    split(seq_along(terms$t_index), ceiling(terms$t_index / block_size))
+  }
+  permute_blocks <- function(v, blocks) {
+    unlist(lapply(blocks[sample.int(length(blocks))], function(i) v[i]),
+           use.names = FALSE)
   }
 
   # Every declared scheme keeps a column, even when it cannot run on this
@@ -40,7 +59,15 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
   # differ in how many genes are observed, and dropping columns per chromosome
   # made the per-chromosome results impossible to rbind.
   block_sizes <- unique(as.integer(block_sizes[is.finite(block_sizes) & block_sizes >= 2]))
-  usable <- block_sizes[block_sizes < n / 2]
+  block_map <- lapply(stats::setNames(block_sizes, block_sizes), grid_blocks)
+  # A scheme needs enough blocks for shuffling to have resolution. With only 4
+  # blocks there are 24 distinct orderings, so a sizeable fraction of the null
+  # draws keep the signal nearly intact and no p-value can get small. Such a
+  # scheme would then veto every peak under primary_scheme = "all" -- not
+  # because the peak is local structure, but because the test cannot see. 10
+  # blocks (3.6 million orderings) is the floor.
+  n_blocks <- vapply(block_map, length, integer(1))
+  usable <- block_sizes[n_blocks >= MIN_PERMUTATION_BLOCKS]
   skipped <- setdiff(block_sizes, usable)
   scheme_names <- c("full", paste0("block", block_sizes))
   null_max <- matrix(NA_real_, nrow = B, ncol = length(scheme_names),
@@ -50,7 +77,7 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
     null_max[b, "full"] <- max(gls_spectrum(sample(y), terms)$power)
     for (bs in usable) {
       null_max[b, paste0("block", bs)] <-
-        max(gls_spectrum(permute_blocks(y, bs), terms)$power)
+        max(gls_spectrum(permute_blocks(y, block_map[[as.character(bs)]]), terms)$power)
     }
   }
 
@@ -61,13 +88,23 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
   if (is.null(dim(p_by_scheme))) p_by_scheme <- matrix(p_by_scheme, ncol = 1)
   colnames(p_by_scheme) <- paste0("p_empirical_maxT_", scheme_names)
 
-  p_primary <- p_by_scheme[, "p_empirical_maxT_full"]
+  p_full <- p_by_scheme[, "p_empirical_maxT_full"]
   p_all <- apply(p_by_scheme, 1, function(v)
     if (all(is.na(v))) NA_real_ else max(v, na.rm = TRUE))
+  # `full` destroys every scale of structure, so it is the most permissive null.
+  # `all` requires the peak to survive the block schemes too, i.e. to be more
+  # than local autocorrelation. Which one is primary is a scientific choice and
+  # is declared in config/project.R, never left implicit here.
+  p_primary <- switch(primary_scheme,
+                      full = p_full,
+                      all  = p_all,
+                      tsf_abort("maxt$primary_scheme must be 'full' or 'all'"))
 
   out <- obs
   out$p_empirical_maxT <- p_primary
+  out$p_empirical_maxT_full <- p_full
   out$p_empirical_maxT_all <- p_all
+  out$primary_scheme <- primary_scheme
   out$significant <- p_primary <= 0.05
   out$significant_all_schemes <- !is.na(p_all) & p_all <= 0.05
   out$block_schemes_skipped <- if (length(skipped)) paste(skipped, collapse = ",") else NA_character_
@@ -89,7 +126,8 @@ maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L) {
       res <- permutation_gls_test(sig$matrix[ci$rows, s], terms,
                                   B = maxt_cfg$B,
                                   seed = chr_seed + match(s, sig$samples),
-                                  block_sizes = maxt_cfg$block_sizes)
+                                  block_sizes = maxt_cfg$block_sizes,
+                                  primary_scheme = maxt_cfg$primary_scheme %||% "full")
       if (is.null(res) || !nrow(res)) next
       res$chr <- chr_now
       res$sample <- s
