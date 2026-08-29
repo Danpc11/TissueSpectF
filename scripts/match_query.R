@@ -1,11 +1,12 @@
-# match_query.R -- identify one expression profile against the reference.
+# match_query.R -- identify one expression profile against a reference.
 #
-#   ./tsf match --query=path/to/counts.tsv
-#   ./tsf match --query=path/to/counts.tsv --reference=results/reference/reference.rds
+#   ./tsf match --query counts.tsv
+#   ./tsf match --query counts.tsv --reference /path/to/reference.rds
 #
-# The query is a TSV with a gene id column and one column of counts (or several,
-# scored one at a time). Gene ids are matched to the reference grid, so the
-# query needs no preprocessing beyond being counts of the same annotation.
+# The reference is self-contained: it carries its own grid, identifiers,
+# frequency ceiling and feature representation. Nothing here loads a previously
+# ingested dataset, so a reference.rds is portable to a machine that has never
+# seen the cohorts it was built from.
 
 run_match <- function(project, opt) {
   ref_path <- opt$reference %||%
@@ -14,83 +15,74 @@ run_match <- function(project, opt) {
     tsf_abort("No reference at ", ref_path, ". Build one first: ./tsf reference")
   }
   ref <- readRDS(ref_path)
+  if (is.null(ref$grid)) {
+    tsf_abort("This reference predates self-contained references (no grid). ",
+              "Rebuild it with ./tsf reference.")
+  }
 
-  if (is.null(opt$query)) tsf_abort("Give a query: --query=<counts.tsv>")
+  if (is.null(opt$query)) tsf_abort("Give a query: --query <counts.tsv>")
   if (!file.exists(opt$query)) tsf_abort("No such file: ", opt$query)
-
-  # The grid must be the one the reference was built on, so it is rebuilt from
-  # the same annotation rather than from the query.
-  dataset_id <- stage_datasets(opt)[1]
-  inp <- tsf_stage_inputs(project, dataset_id)
-  genes <- inp$dataset$genes
 
   q <- read_tsv_tsf(opt$query)
   id_col <- colnames(q)[1]
   value_cols <- setdiff(colnames(q), id_col)
   if (!length(value_cols)) tsf_abort("Query has no value column")
+  ids <- sub("\\..*$", "", as.character(q[[id_col]]))
+
   tsf_log("Query: ", basename(opt$query), " (", nrow(q), " rows, ",
           length(value_cols), " sample column(s))")
+  tsf_log("Reference: ", basename(ref_path), " | grid ", nrow(ref$grid),
+          " genes | k_max ", ref$params$k_max, " | ", ref$params$features)
 
-  ids <- sub("\\..*$", "", as.character(q[[id_col]]))
-  hit <- match(genes$gene_id, ids)
-  if (sum(!is.na(hit)) < 0.2 * nrow(genes)) {
-    hit <- match(genes$entrez_id %||% rep(NA, nrow(genes)), ids)
+  cat("\n", strrep("-", 72), "\n", sep = "")
+  cat("REFERENCE: ", reference_status(ref), "\n", sep = "")
+  calib <- ref$validation$calibration
+  if (!is.null(calib) && !is.na(calib$separability_auc)) {
+    cat(sprintf("Rejection rule: similarity below the per-class %.0fth percentile
+                 of correct held-out matches is reported UNKNOWN. Correct vs
+                 incorrect matches separate with AUC %.2f.\n",
+                100 * calib$quantile, calib$separability_auc))
   }
-  coverage <- mean(!is.na(hit))
-  tsf_log("Grid coverage of the query: ", round(100 * coverage, 1), "%")
-  if (coverage < 0.2) {
-    tsf_abort("Fewer than 20% of grid genes found in the query. Check that the ",
-              "identifiers are Ensembl or Entrez gene ids matching the annotation.")
-  }
-
-  terms_cache <- fingerprint_terms(inp$chrom_idx)
-  status <- reference_status(ref)
-
-  cat("\n", strrep("-", 70), "\n", sep = "")
-  cat("REFERENCE: ", status, "\n", sep = "")
-  cat(strrep("-", 70), "\n\n", sep = "")
+  cat(strrep("-", 72), "\n\n", sep = "")
 
   for (col in value_cols) {
-    counts <- suppressWarnings(as.numeric(q[[col]]))[hit]
-    counts[!is.finite(counts)] <- 0
-    y <- asinh(counts / max(sum(counts, na.rm = TRUE), 1) * 1e6)
-
-    fp <- fingerprint_vector(y, inp$chrom_idx, terms_cache,
-                             k_max = project$fingerprint$k_max %||% 64L,
-                             features = project$fingerprint$features %||% "amplitude")
-    if (is.null(fp)) { tsf_warn(col, ": no fingerprint"); next }
-    # Normalise exactly as the reference samples were, then project onto the
-    # reference feature space. Features the query lacks stay at 0 (the mean of
-    # a normalised vector), so a partially covered query degrades rather than
-    # failing.
-    fp <- (fp - mean(fp)) / max(stats::sd(fp), .Machine$double.eps)
-    vv <- stats::setNames(rep(0, length(ref$feature_space)), ref$feature_space)
-    shared <- intersect(names(fp), ref$feature_space)
-    vv[shared] <- fp[shared]
-    if (length(shared) < 0.5 * length(ref$model$features)) {
-      tsf_warn(col, ": only ", length(shared), " of ",
-               length(ref$feature_space), " reference features present")
+    fq <- fingerprint_query(q[[col]], ids, ref)
+    if (is.null(fq)) {
+      tsf_warn(col, ": no usable positions on the reference grid")
+      next
     }
-
-    res <- match_query(ref$model, vv)
+    if (fq$coverage < 0.2) {
+      cat(col, ": only ", round(100 * fq$coverage, 1),
+          "% of the reference grid is present. Too little to score.\n", sep = "")
+      next
+    }
+    proj <- project_to_reference(fq$vector, ref)
+    res <- match_query(ref$model, proj$vector)
     if (is.null(res)) { tsf_warn(col, ": could not be scored"); next }
+    res <- apply_rejection(res, calib)
 
     cat(col, "\n")
-    top <- utils::head(res$scores, 5)
-    for (i in seq_len(nrow(top))) {
-      cat(sprintf("  %-12s similarity %.3f\n", top$class[i], top$similarity[i]))
+    if (identical(res$decision, "UNKNOWN")) {
+      cat("  UNKNOWN -- outside the domain of this reference.\n")
+      cat(sprintf("  Closest class was %s at similarity %.3f, below the %.3f
+                   threshold calibrated for it.\n",
+                  res$best, res$similarity, res$threshold %||% NA_real_))
     }
-    cat(sprintf("  margin over runner-up: %.3f   |   p(shuffled query): %.3f\n",
-                res$margin, res$p_shuffle))
+    for (i in seq_len(min(5, nrow(res$scores)))) {
+      cat(sprintf("  %-14s similarity %.3f\n",
+                  res$scores$class[i], res$scores$similarity[i]))
+    }
+    cat(sprintf("  margin %.3f | p(shuffled) %.3f | grid coverage %.1f%% (%s ids) | %d/%d features\n",
+                res$margin, res$p_shuffle, 100 * fq$coverage, fq$id_type,
+                proj$n_shared, proj$n_features))
 
     if (is.null(ref$validation)) {
-      cat("  -> The reference is uncalibrated. This is a suggestion, not an ",
-          "identification.\n", sep = "")
+      cat("  -> Uncalibrated reference: a suggestion, not an identification.\n")
     } else if (ref$validation$accuracy - ref$validation$baseline <= 0.02) {
-      cat("  -> The reference does not beat guessing out of cohort. ",
-          "Do not read this as an identification.\n", sep = "")
-    } else if (is.na(res$margin) || res$margin < 0.02) {
-      cat("  -> Top two classes are within 0.02: the call is not separable.\n")
+      cat("  -> This reference does not beat its baseline out of cohort.\n")
+    } else if (!is.na(res$margin) && res$margin < 0.02 &&
+               !identical(res$decision, "UNKNOWN")) {
+      cat("  -> Top two classes within 0.02: the call is not separable.\n")
     }
     cat("\n")
   }
