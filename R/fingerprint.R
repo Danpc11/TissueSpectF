@@ -169,7 +169,7 @@ collapse_duplicate_ids <- function(values, ids, unit = "counts") {
               "log-transformed, declare it with --input-unit logged.")
   }
   dup <- duplicated(ids) | duplicated(ids, fromLast = TRUE)
-  if (!any(dup)) return(list(values = v, ids = ids, collapsed = 0L))
+  if (!any(dup)) return(list(values = v, ids = ids, collapsed = 0L, all_na = 0L))
 
   n_dup_ids <- length(unique(ids[dup]))
   if (!unit %in% c("counts")) {
@@ -177,10 +177,18 @@ collapse_duplicate_ids <- function(values, ids, unit = "counts") {
               "be summed for counts; with unit '", unit, "' the duplicates must ",
               "be resolved before matching.")
   }
-  agg <- stats::aggregate(v, list(id = ids), sum, na.rm = TRUE)
+  # sum(na.rm = TRUE) over an all-NA group returns 0, which would turn "this
+  # gene was not measured" into "this gene was measured at zero" -- exactly the
+  # substitution the grid design exists to prevent. Such a gene stays NA and is
+  # therefore dropped from the observed positions later.
+  agg <- stats::aggregate(v, list(id = ids), function(x)
+    if (all(!is.finite(x))) NA_real_ else sum(x, na.rm = TRUE))
+  n_all_na <- sum(is.na(agg$x))
   tsf_log("Collapsed ", sum(dup), " row(s) over ", n_dup_ids,
-          " duplicated identifier(s) by summing counts")
-  list(values = agg$x, ids = agg$id, collapsed = sum(dup))
+          " duplicated identifier(s) by summing counts",
+          if (n_all_na) paste0("; ", n_all_na,
+            " gene(s) had no finite value and stay unmeasured") else "")
+  list(values = agg$x, ids = agg$id, collapsed = sum(dup), all_na = n_all_na)
 }
 
 #' Values on the observed positions, on the scale the reference was built on.
