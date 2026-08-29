@@ -155,7 +155,8 @@ server <- function(input, output, session) {
       }
       res <- match_query(r$model, proj$vector, proj$available)
       if (is.null(res)) return(NULL)
-      res <- apply_rejection(res, r$validation$calibration)
+      res <- apply_rejection(res, r$validation$calibration,
+                             coverage = proj$feature_coverage)
       list(name = col, result = res, coverage = fq$coverage,
            feature_coverage = proj$feature_coverage, id_type = fq$id_type,
            collapsed = fq$collapsed, n_features_used = res$n_features_used)
