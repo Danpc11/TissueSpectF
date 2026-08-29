@@ -77,6 +77,7 @@ Parameters (override config/project.R):
 Matching:
   --query <file>        counts TSV to identify
   --reference <file>    reference .rds to match against
+  --input-unit <u>      counts (default) | cpm | tpm | logged
 
 Other:
   --log <file>          append all output to this file
@@ -109,7 +110,8 @@ OPTION_ALIASES <- c(
   primaryscheme = "primary_scheme", primary_scheme = "primary_scheme",
   criterion = "criterion", ebicgamma = "ebic_gamma", ebic_gamma = "ebic_gamma",
   kmax = "k_max", k_max = "k_max", target = "target",
-  cores = "cores"
+  cores = "cores",
+  inputunit = "input_unit", input_unit = "input_unit", unit = "input_unit"
 )
 
 FLAG_ALIASES <- c(force = "force", dryrun = "dry_run", dry_run = "dry_run",
