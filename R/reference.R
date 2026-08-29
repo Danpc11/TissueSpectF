@@ -106,7 +106,7 @@ match_query <- function(model, query_vec, available = NULL,
 
 #' Leave-one-dataset-out validation. The only number worth reporting.
 validate_across_datasets <- function(fps, target = c("condition", "tissue"),
-                                     n_features = 500L) {
+                                     n_features = 500L, n_masks = 25L) {
   target <- match.arg(target)
   ids <- unique(unlist(lapply(fps, function(f) f$labels$dataset_id)))
   if (length(ids) < 2) {
@@ -179,14 +179,17 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
   }
 
   calib <- calibrate_rejection(pred_all)
-  band_pred <- calibrate_coverage_bands(mat, lab, ids, target, n_features)
+  band_pred <- calibrate_coverage_bands(mat, lab, ids, target, n_features,
+                                        n_masks = n_masks)
   calib$bands <- summarise_bands(band_pred)
   if (!is.null(calib$bands)) {
     tsf_log("Accuracy by query coverage band:")
     for (i in seq_len(nrow(calib$bands))) {
       tsf_log("  ", calib$bands$band[i], ": ",
               round(100 * calib$bands$accuracy[i], 1), "% (n = ",
-              calib$bands$n[i], ", threshold ",
+              calib$bands$n[i], " over ", calib$bands$n_masks[i], " masks, sd ",
+              round(calib$bands$accuracy_sd_between_masks[i], 3),
+              ", threshold ",
               if (is.na(calib$bands$threshold[i])) "none" else
                 round(calib$bands$threshold[i], 3), ")")
     }
@@ -254,7 +257,12 @@ coverage_band <- function(coverage) {
 #' that should be accepted. Each band gets its own threshold.
 calibrate_coverage_bands <- function(mat, lab, ids, target, n_features,
                                      coverage_levels = c(0.95, 0.8, 0.6, 0.4),
-                                     modes = c("block", "chromosome"), seed = 7L) {
+                                     modes = c("block", "chromosome", "random"),
+                                     n_masks = 25L, seed = 7L) {
+  # One mask per (coverage, mode) would calibrate against a single accidental
+  # choice of which chromosomes or blocks went missing. Which regions are absent
+  # matters as much as how many, so each combination is repeated over n_masks
+  # independent masks and the spread between masks enters the calibration.
   rows <- list()
   for (held in ids) {
     tr <- lab$dataset_id != held; te <- !tr
@@ -267,18 +275,22 @@ calibrate_coverage_bands <- function(mat, lab, ids, target, n_features,
 
     for (lev in coverage_levels) {
       for (md in modes) {
-        avail <- simulate_feature_loss(model$features, lev, md, seed)
-        realised <- length(intersect(avail, model$features)) / length(model$features)
-        for (i in which(keep_te)) {
-          sc <- score_query(model, mat[i, ], avail)
-          if (is.null(sc)) next
-          rows[[length(rows) + 1]] <- data.frame(
-            held_out = held, coverage = realised, mode = md,
-            band = coverage_band(realised),
-            truth = lab[[target]][i], predicted = sc$class[1],
-            similarity = sc$similarity[1],
-            margin = if (nrow(sc) > 1) sc$similarity[1] - sc$similarity[2] else NA_real_,
-            stringsAsFactors = FALSE)
+        for (m in seq_len(n_masks)) {
+          mask_seed <- seed + 1000L * m + 17L * match(md, modes) +
+            as.integer(round(100 * lev)) + 7L * match(held, ids)
+          avail <- simulate_feature_loss(model$features, lev, md, mask_seed)
+          realised <- length(intersect(avail, model$features)) / length(model$features)
+          for (i in which(keep_te)) {
+            sc <- score_query(model, mat[i, ], avail)
+            if (is.null(sc)) next
+            rows[[length(rows) + 1]] <- data.frame(
+              held_out = held, mask = m, coverage = realised, mode = md,
+              band = coverage_band(realised),
+              truth = lab[[target]][i], predicted = sc$class[1],
+              similarity = sc$similarity[1],
+              margin = if (nrow(sc) > 1) sc$similarity[1] - sc$similarity[2] else NA_real_,
+              stringsAsFactors = FALSE)
+          }
         }
       }
     }
@@ -295,12 +307,35 @@ summarise_bands <- function(band_pred, quantile_correct = 0.05) {
     d <- band_pred[band_pred$band == b, , drop = FALSE]
     if (!nrow(d)) return(NULL)
     correct <- d$truth == d$predicted
+    # Spread BETWEEN masks, not just between samples: two panels with the same
+    # coverage can behave differently depending on which regions they drop, and
+    # a threshold that ignores that is calibrated to one accidental panel.
+    per_mask <- if ("mask" %in% colnames(d)) {
+      split(seq_len(nrow(d)), paste(d$held_out, d$mode, d$mask))
+    } else list(seq_len(nrow(d)))
+    acc_by_mask <- vapply(per_mask, function(i)
+      mean(d$truth[i] == d$predicted[i], na.rm = TRUE), numeric(1))
+    thr_by_mask <- vapply(per_mask, function(i) {
+      cc <- d$truth[i] == d$predicted[i]
+      if (sum(cc, na.rm = TRUE) < 3) return(NA_real_)
+      unname(stats::quantile(d$similarity[i][cc], quantile_correct, na.rm = TRUE))
+    }, numeric(1))
+
     data.frame(
-      band = b, n = nrow(d), accuracy = mean(correct, na.rm = TRUE),
+      band = b, n = nrow(d), n_masks = length(per_mask),
+      accuracy = mean(correct, na.rm = TRUE),
+      accuracy_sd_between_masks = stats::sd(acc_by_mask, na.rm = TRUE),
+      accuracy_lower = unname(stats::quantile(acc_by_mask, 0.05, na.rm = TRUE)),
       median_similarity_correct = if (any(correct))
         stats::median(d$similarity[correct]) else NA_real_,
+      # The conservative end of the per-mask thresholds, so a query whose
+      # missing regions happen to be the awkward ones is not judged against a
+      # threshold calibrated on a luckier mask.
       threshold = if (sum(correct) >= 5)
         unname(stats::quantile(d$similarity[correct], quantile_correct)) else NA_real_,
+      threshold_sd_between_masks = stats::sd(thr_by_mask, na.rm = TRUE),
+      threshold_conservative = if (all(is.na(thr_by_mask))) NA_real_ else
+        unname(stats::quantile(thr_by_mask, 0.90, na.rm = TRUE)),
       unknown_rate_at_threshold = NA_real_,
       classify = !identical(b, "<50%"),
       stringsAsFactors = FALSE)
@@ -413,13 +448,15 @@ apply_rejection <- function(res, calibration, coverage = NA_real_) {
 
 #' Build the reference: fingerprints, validation, and a model fitted on all data.
 build_reference <- function(fps, target = "condition", n_features = 500L,
-                            grid = NULL, params = list()) {
+                            grid = NULL, params = list(), n_masks = 25L) {
   common <- Reduce(intersect, lapply(fps, function(f) colnames(f$matrix)))
   mat <- normalise_fingerprints(
     do.call(rbind, lapply(fps, function(f) f$matrix[, common, drop = FALSE])))
   lab <- do.call(rbind, lapply(fps, function(f) f$labels))
 
-  validation <- validate_across_datasets(fps, target = target, n_features = n_features)
+  validation <- validate_across_datasets(fps, target = target,
+                                         n_features = n_features,
+                                         n_masks = n_masks)
   model <- fit_centroids(mat, lab[[target]], n_features)
 
   # SELF-CONTAINED. A reference must carry everything needed to fingerprint a
