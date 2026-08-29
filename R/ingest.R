@@ -157,6 +157,41 @@ filter_expressed <- function(expr_mat, min_value, min_fraction) {
   expr_mat[keep, , drop = FALSE]
 }
 
+#' Labels straight from a metadata table, for source = "matrix".
+#'
+#' No rules to apply: the file already names the condition. Values outside the
+#' declared vocabulary are still refused rather than silently accepted.
+labels_from_metadata <- function(pheno, cfg) {
+  id_col <- cfg$sample_id_column %||% "sample_id"
+  cond_col <- cfg$condition_column %||% "condition"
+  for (need in c(id_col, cond_col)) {
+    if (!need %in% colnames(pheno)) {
+      tsf_abort("metadata_file has no column '", need, "' (columns: ",
+                paste(colnames(pheno), collapse = ", "), ")")
+    }
+  }
+  levels_now <- tsf_levels(cfg$vocabulary_spec)
+  cond <- clean_pheno_value(pheno[[cond_col]])
+  bad <- !is.na(cond) & !(cond %in% levels_now)
+  if (any(bad)) {
+    tsf_warn(sum(bad), " sample(s) carry a condition outside vocabulary '",
+             cfg$vocabulary_spec$id, "' (", paste(unique(cond[bad]), collapse = ", "),
+             "); dropped")
+    cond[bad] <- NA_character_
+  }
+  baseline <- cfg$vocabulary_spec$baseline
+  data.frame(
+    sample_id = clean_pheno_value(pheno[[id_col]]),
+    dataset_id = cfg$id, tissue = cfg$tissue %||% NA_character_,
+    vocabulary = cfg$vocabulary_spec$id,
+    condition = cond, fibrosis_stage = NA_real_,
+    fibrosis_stage_reported = NA_real_, label_rule = "metadata_column",
+    label_mismatch = FALSE,
+    cohort = if (is.null(baseline)) NA_character_ else
+      ifelse(is.na(cond), NA_character_, ifelse(cond == baseline, "control", "disease")),
+    keep = !is.na(cond), stringsAsFactors = FALSE)
+}
+
 #' Full ingest for one dataset.
 ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets") {
   cfg <- load_dataset_config(dataset_id, dataset_dir)
@@ -166,8 +201,19 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   ensure_dir(out_dir)
 
   # ---- phenotype and labels -------------------------------------------------
-  pheno <- read_series_pheno(file.path(project$geo_dir, cfg$series_matrix))
-  labels <- harmonize_conditions(pheno, cfg)
+  # source = "geo"    : series matrix + condition rules
+  # source = "matrix" : a plain metadata TSV with a column naming the condition,
+  #                     for data that never went through GEO
+  pheno <- if (identical(cfg$source, "matrix")) {
+    read_tsv_tsf(file.path(project$geo_dir, cfg$metadata_file))
+  } else {
+    read_series_pheno(file.path(project$geo_dir, cfg$series_matrix))
+  }
+  labels <- if (identical(cfg$source, "matrix") && is.null(cfg$condition_rules)) {
+    labels_from_metadata(pheno, cfg)
+  } else {
+    harmonize_conditions(pheno, cfg)
+  }
   write_tsv_tsf(labels, file.path(out_dir, "label_audit.tsv"))
   audit <- audit_labels(labels, cfg)
   samples <- labels[labels$keep, , drop = FALSE]
