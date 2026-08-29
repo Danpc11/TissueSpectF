@@ -83,4 +83,22 @@ digest_config <- function(config) {
   sum(utf8ToInt(txt) * seq_along(utf8ToInt(txt))) %% .Machine$integer.max
 }
 
+#' Load every module in R/, dependencies first.
+#'
+#' Sourcing a hand-written list of file names meant that adding a module and
+#' forgetting to add it here produced "could not find function" at run time,
+#' while the unit tests kept passing because they source what they need
+#' explicitly. Globbing the directory removes that failure mode entirely: a file
+#' that exists is loaded.
+tsf_module_order <- function(dir = "R") {
+  first <- c("utils_io", "config", "labels", "paths")
+  files <- sort(sub("\\.R$", "", basename(list.files(dir, pattern = "\\.R$"))))
+  ordered <- c(intersect(first, files), setdiff(files, first))
+  file.path(dir, paste0(ordered, ".R"))
+}
+
+tsf_load_all <- function(dir = "R") {
+  invisible(lapply(tsf_module_order(dir), source))
+}
+
 TSF_VERSION <- "TissueSpectF 0.1.0"
