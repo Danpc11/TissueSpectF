@@ -17,6 +17,13 @@ list(
 
   annotation_file = "Human.GRCh38.p13.annot.tsv.gz",
 
+  # Provenance of the annotation. Recorded in every output and checked before
+  # two datasets are allowed into the same reference: a feature named chrX_k7
+  # means a different thing under a different build or gene universe.
+  species            = "Homo sapiens",
+  genome_build       = "GRCh38.p13",
+  annotation_release = "NCBI",
+
   # Which annotated genes define the spectral axis. Regular expression matched
   # against the annotation's gene_type. The grid is what makes N comparable
   # across datasets, so changing this changes what "period in genes" means --
