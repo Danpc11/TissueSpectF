@@ -54,6 +54,7 @@ R/
   spectrum.R               spectra per sample and per condition
   maxt.R                   per-sample permutation test
   condition_test.R         condition-level significance (permutation + Stouffer)
+  consensus.R              characteristic spectrum of a condition (power, prevalence, PLV)
   clean.R                  CLEAN deflation with an extended-BIC stopping rule
   stability.R              which peaks go downstream, and by which criterion
   peaks_genes.R            gene-level reconstruction of a component
@@ -204,7 +205,37 @@ and `_` are interchangeable — `--results-dir`, `--results_dir` and
 (`TSF_*`) > `config/project.R`**, and every override is echoed in the log.
 
 `./tsf --help` lists the flags. Stages in order: `ingest`, `spectra`, `maxt`,
-`condition`, `clean`, `stability`, `peaks`, `compare`.
+`condition`, `consensus`, `clean`, `stability`, `peaks`, `compare`.
+
+## The characteristic spectrum of a condition
+
+```bash
+./tsf consensus
+```
+
+The spectrum of the mean profile is not a summary of the samples' spectra. The
+transform is linear, so averaging the profiles averages the complex
+coefficients: a component present in every sample at the same frequency but with
+scattered phases cancels and disappears, however reproducible it is.
+
+`consensus` therefore works from the per-sample spectra and reports each
+frequency on three axes — median normalised power (**how strong**), prevalence
+(**how common**, judged within each sample and chromosome so that chromosomes do
+not compete), and the phase-locking value (**how aligned**) — plus heterogeneity
+of power and phase, bootstrap intervals over samples, and the number of valid
+samples. The consensus score is their product, so a component has to satisfy all
+three.
+
+It is a ranking statistic, not a test: it has no null and no error rate. Every
+PLV comes with a Rayleigh p-value, because under random phases the expected PLV
+is about `sqrt(pi)/(2*sqrt(n))`, not zero — with 8 samples a PLV of 0.3 means
+nothing. That p-value cannot fall below `exp(-n)`, so a condition with fewer
+than roughly `log(n_frequencies/q)` samples cannot establish alignment at all;
+the stage says so and ranks by prevalence and score instead of returning an
+empty signature.
+
+`signature_<condition>.tsv` is the exported characteristic signature, and it can
+drive the reference model.
 
 ## What decides that a peak exists
 
@@ -323,6 +354,10 @@ question, and the interface answers it before showing the result:
 
 - a query below the **calibrated rejection threshold** is reported `UNKNOWN`
   rather than assigned to the least distant centroid
+- thresholds are calibrated **per coverage band** (90–100%, 75–90%, 50–75%,
+  below 50%), because the similarity distribution shifts as coverage falls; a
+  band with no calibrated threshold gives `UNCALIBRATED_COVERAGE`, and below 50%
+  nothing is classified
 
 `./tsf reference` writes `out_of_cohort_predictions.tsv` and
 `confusion_matrix.tsv` so the validation can be inspected rather than trusted.
@@ -343,14 +378,24 @@ centroids are standardised over the same features, and similarity is computed
 over the shared features only: an unobserved frequency contributes nothing
 rather than contributing the mean.
 
+The reference records the expression unit it was built on, and a TPM query
+against a CPM reference is refused: length normalisation changes the relative
+height of every gene, so it changes the spectrum.
+
 Declare what the values are with `--input-unit` (`counts`, `cpm`, `tpm`,
 `logged`). Duplicate identifiers are summed for counts and refused for anything
 already normalised; negative values are refused. A query covering less than 20%
 of the grid, or less than 50% of the features the model uses, is reported
 `LOW_COVERAGE` and **not scored** — in the CLI and in the app alike.
 
+Coverage is calibrated rather than assumed: validation re-scores every held-out
+sample under simulated loss of whole chromosomes, contiguous blocks and
+scattered genes, repeated over many independent masks (`fingerprint$n_masks`),
+and reports accuracy and threshold per band along with the spread between masks.
+Which regions are missing matters as much as how many.
+
 The rejection threshold is calibrated on the similarity that correct held-out
-matches reach, per class. It bounds how often a true member is wrongly rejected.
+matches reach, per class and per coverage band. It bounds how often a true member is wrongly rejected.
 It does **not** bound how often an out-of-domain sample is wrongly accepted:
 no out-of-domain sample was in the validation. Open-set specificity needs
 negatives — for a tissue reference, other tissues.
