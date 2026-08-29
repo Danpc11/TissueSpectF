@@ -327,14 +327,27 @@ question, and the interface answers it before showing the result:
 `./tsf reference` writes `out_of_cohort_predictions.tsv` and
 `confusion_matrix.tsv` so the validation can be inspected rather than trusted.
 
-The reference is **self-contained**: it carries its own grid, gene identifiers,
-frequency ceiling and feature representation, so a `reference.rds` is portable
-to a machine that has never seen the cohorts it was built from, and a query can
-never be scored on a grid other than the one the reference was built with.
+The reference is **self-contained**: it carries the canonical annotation grid
+(not the genes one cohort happened to observe), gene identifiers, species,
+genome build, annotation release, frequency ceiling and feature representation.
+A `reference.rds` is portable to a machine that has never seen the cohorts it
+was built from. Datasets are refused entry into one reference unless species,
+build, release, gene universe and grid digest all match — a feature named
+`chr7_k12` means a different thing under a different build.
 
 A query is fingerprinted on **the genes it actually contains**. Genes the file
 lacks are absent from the observed positions, never zero-filled — the same rule
-that governs unmeasured genes everywhere else here.
+that governs unmeasured genes everywhere else here. The fingerprint is
+normalised *after* intersecting with the reference feature space, so query and
+centroids are standardised over the same features, and similarity is computed
+over the shared features only: an unobserved frequency contributes nothing
+rather than contributing the mean.
+
+Declare what the values are with `--input-unit` (`counts`, `cpm`, `tpm`,
+`logged`). Duplicate identifiers are summed for counts and refused for anything
+already normalised; negative values are refused. A query covering less than 20%
+of the grid, or less than 50% of the features the model uses, is reported
+`LOW_COVERAGE` and **not scored** — in the CLI and in the app alike.
 
 The rejection threshold is calibrated on the similarity that correct held-out
 matches reach, per class. It bounds how often a true member is wrongly rejected.
