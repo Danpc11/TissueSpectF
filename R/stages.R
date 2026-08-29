@@ -5,8 +5,8 @@
 # datasets, cond, branch and force, and each returns a short summary the caller
 # can print or aggregate.
 
-stage_names <- c("ingest", "spectra", "maxt", "condition", "clean", "stability",
-                 "peaks", "compare")
+stage_names <- c("ingest", "spectra", "maxt", "condition", "consensus", "clean",
+                 "stability", "peaks", "compare")
 
 # Stages that can be skipped on a small machine. `maxt` is per sample and costs
 # hours; `condition` answers the primary question at ~1/n of the cost, so a run
@@ -110,6 +110,48 @@ stage_condition <- function(project, opt) {
     }
   }
   sprintf("%d condition-level peak(s) at q <= 0.05", n_sig)
+}
+
+# --- consensus spectrum ------------------------------------------------------
+stage_consensus <- function(project, opt) {
+  n_sig <- 0L
+  for (id in stage_datasets(opt)) {
+    inp <- tsf_stage_inputs(project, id, need = "maxt")
+    tsf_log(id, ": consensus spectra from per-sample spectra")
+    for (cond in tsf_conditions(inp$conditions, opt)) {
+      sp <- read_tsv_tsf(p_spectra_samples(inp$paths, cond), required = FALSE)
+      if (is.null(sp) || !nrow(sp)) {
+        tsf_warn("  ", cond, ": no per-sample spectra; run the spectra stage")
+        next
+      }
+      cs <- consensus_spectrum(sp, maxt = inp$maxt[[cond]],
+                               n_boot = project$consensus$n_boot %||% 500L,
+                               alpha = project$maxt$alpha,
+                               seed = project$maxt$seed,
+                               quantile_cut = project$consensus$quantile_cut %||% 0.95)
+      if (is.null(cs)) { tsf_warn("  ", cond, ": no consensus"); next }
+      write_tsv_tsf(cs, file.path(inp$paths$base, "consensus",
+                                  sprintf("consensus_spectrum_%s.tsv", cond)))
+
+      sig <- consensus_signature(cs,
+                                 max_components = project$consensus$max_components %||% 50L,
+                                 min_prevalence = project$consensus$min_prevalence %||% 0.5,
+                                 plv_q = project$consensus$plv_q %||% 0.05)
+      if (!is.null(sig)) {
+        sig$condition <- cond
+        write_tsv_tsf(sig, file.path(inp$paths$base, "consensus",
+                                     sprintf("signature_%s.tsv", cond)))
+        n_sig <- n_sig + nrow(sig)
+        tsf_log("  ", cond, ": ", nrow(sig), " signature component(s) of ",
+                nrow(cs), " frequencies | top: chr", sig$chr[1], " k", sig$k[1],
+                " period ", round(sig$period[1]), " genes, PLV ",
+                round(sig$plv[1], 2), ", prevalence ", round(sig$prevalence[1], 2))
+      } else {
+        tsf_log("  ", cond, ": no component passes prevalence and phase alignment")
+      }
+    }
+  }
+  sprintf("%d signature component(s) across conditions", n_sig)
 }
 
 # --- CLEAN decomposition -----------------------------------------------------
@@ -377,6 +419,7 @@ stage_reference <- function(project, opt) {
                            genome_build = prov$genome_build %||% NA_character_,
                            annotation_release = prov$annotation_release %||% NA_character_,
                            grid_digest = prov$grid_digest %||% NA_character_,
+                           expression_unit = prov$expression_unit %||% NA_character_,
                            chrom_levels = paste(project$chrom_levels, collapse = ","),
                            datasets = paste(names(fps), collapse = ",")))
   ensure_dir(file.path(project$results_dir, "reference"))
@@ -456,6 +499,7 @@ stage_functions <- list(
   spectra   = stage_spectra,
   maxt      = stage_maxt,
   condition = stage_condition,
+  consensus = stage_consensus,
   clean     = stage_clean,
   stability = stage_stability,
   peaks     = stage_peaks,
