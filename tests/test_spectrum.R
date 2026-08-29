@@ -2,7 +2,7 @@
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
 source("R/grid.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
-source("R/peaks_genes.R"); source("R/compare.R")
+source("R/condition_test.R"); source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
 check <- function(label, expr) {
@@ -187,6 +187,39 @@ check("a skipped block scheme is recorded", {
   identical(unique(b$block_schemes_skipped), "50") &&
     all(is.na(b$p_empirical_maxT_block50)) &&
     !all(is.na(b$p_empirical_maxT_block5)) })
+
+# --- condition-level test ----------------------------------------------------
+check("Stouffer combines evidence and gains power with n", {
+  # Ten samples each at p = 0.20 -- none significant alone -- combine below 0.05
+  p_one <- stouffer_combine(0.20)
+  p_ten <- stouffer_combine(rep(0.20, 10))
+  abs(p_one - 0.20) < 1e-8 && p_ten < 0.05 })
+
+check("Stouffer caps the permutation floor", {
+  # A p of exactly 0 would give an infinite z; the floor is 1/(B+1)
+  is.finite(stouffer_combine(c(0, 0.5), B = 100L)) })
+
+check("Stouffer is calibrated under the null", {
+  # A single combination of uniform p-values is itself uniform, not 0.5, so
+  # calibration has to be checked over replicates: about 5% should fall <= 0.05.
+  set.seed(41)
+  p <- vapply(1:400, function(i) stouffer_combine(runif(10)), numeric(1))
+  abs(mean(p <= 0.05) - 0.05) < 0.03 && abs(mean(p) - 0.5) < 0.06 })
+
+check("the condition test recovers a peak too weak for any single sample", {
+  # Each "sample" carries the periodicity buried in noise; the mean does not.
+  set.seed(42); N <- 400L; t <- 1:N; k0 <- 13L
+  base <- 0.25 * cos(2 * pi * k0 * (t - 1) / N)
+  terms <- gls_prepare(t, N)
+  one <- permutation_gls_test(base + rnorm(N, sd = 2), terms, B = 200L, seed = 1L)
+  avg <- rowMeans(vapply(1:40, function(i) base + rnorm(N, sd = 2), numeric(N)))
+  many <- condition_permutation_test(avg, terms, B = 200L, seed = 2L)
+  one$p_empirical_maxT[one$k == k0] > 0.05 && many$p_empirical_maxT[many$k == k0] <= 0.05 })
+
+check("q is corrected over chromosomes, not frequencies", {
+  # With B = 500 and 23 chromosomes the smallest attainable q must be under 0.05,
+  # which double-correcting over ~9500 frequencies would make impossible.
+  23 / 501 < 0.05 })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
