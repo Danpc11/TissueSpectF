@@ -54,6 +54,10 @@ ui <- fluidPage(
   hr(),
   fileInput("query", "Counts file (TSV: gene id column, then one column per sample)",
             accept = c(".tsv", ".txt", ".csv", ".gz")),
+  selectInput("unit", "What the values are",
+              choices = c("Raw counts" = "counts", "TPM" = "tpm", "CPM" = "cpm",
+                          "Already log/asinh transformed" = "logged"),
+              selected = "counts"),
   checkboxInput("show_all", "Show every class, not just the top five", FALSE),
 
   uiOutput("result"),
@@ -139,15 +143,22 @@ server <- function(input, output, session) {
     out <- lapply(value_cols, function(col) {
       # fingerprint_query builds the observed positions from the genes this file
       # actually contains. Genes it lacks are absent, never zero.
-      fq <- fingerprint_query(q[[col]], ids, r)
+      fq <- fingerprint_query(q[[col]], ids, r, unit = input$unit)
       if (is.null(fq)) return(NULL)
       proj <- project_to_reference(fq$vector, r)
-      res <- match_query(r$model, proj$vector)
+      # Coverage is checked BEFORE scoring. Computing a classification and then
+      # warning about it invites the reader to take the number anyway.
+      if (fq$coverage < 0.2 || proj$feature_coverage < 0.5) {
+        return(list(name = col, result = NULL, coverage = fq$coverage,
+                    feature_coverage = proj$feature_coverage,
+                    id_type = fq$id_type, collapsed = fq$collapsed))
+      }
+      res <- match_query(r$model, proj$vector, proj$available)
       if (is.null(res)) return(NULL)
       res <- apply_rejection(res, r$validation$calibration)
       list(name = col, result = res, coverage = fq$coverage,
-           id_type = fq$id_type, n_shared = proj$n_shared,
-           n_features = proj$n_features)
+           feature_coverage = proj$feature_coverage, id_type = fq$id_type,
+           collapsed = fq$collapsed, n_features_used = res$n_features_used)
     })
     out[!vapply(out, is.null, logical(1))]
   })
@@ -166,17 +177,22 @@ server <- function(input, output, session) {
     }
 
     blocks <- lapply(matches, function(m) {
+      if (is.null(m$result)) {
+        return(tagList(h4(m$name),
+          div(class = "banner bad",
+              strong("LOW COVERAGE — not scored."), br(),
+              sprintf("%.1f%% of the reference grid and %.1f%% of the features
+                       the model uses are present in this file. Below 20%% and
+                       50%% respectively, a similarity would be computed over so
+                       little of the spectrum that it would not mean anything.",
+                      100 * m$coverage, 100 * m$feature_coverage))))
+      }
       res <- m$result
       s <- res$scores
       if (!isTRUE(input$show_all)) s <- utils::head(s, 5)
 
       verdict <- NULL
-      if (m$coverage < 0.2) {
-        verdict <- div(class = "banner bad",
-                       sprintf("Only %.1f%% of the reference grid is present in
-                                this file. Too little to score reliably.",
-                               100 * m$coverage))
-      } else if (identical(res$decision, "UNKNOWN")) {
+      if (identical(res$decision, "UNKNOWN")) {
         verdict <- div(class = "banner bad",
                        strong("UNKNOWN — outside the domain of this reference."),
                        br(),
@@ -208,9 +224,11 @@ server <- function(input, output, session) {
         ),
         p(class = "muted",
           sprintf("Margin %.3f | p against a shuffled query %.3f | grid coverage
-                   %.1f%% (%s ids) | %d of %d reference features present",
+                   %.1f%% (%s ids) | %d model features used (%.0f%%)%s",
                   res$margin, res$p_shuffle, 100 * m$coverage, m$id_type,
-                  m$n_shared, m$n_features))
+                  m$n_features_used, 100 * m$feature_coverage,
+                  if (m$collapsed > 0)
+                    sprintf(" | %d duplicate row(s) summed", m$collapsed) else ""))
       )
     })
     tagList(blocks)
