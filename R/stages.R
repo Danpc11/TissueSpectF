@@ -5,7 +5,14 @@
 # datasets, cond, branch and force, and each returns a short summary the caller
 # can print or aggregate.
 
-stage_names <- c("ingest", "spectra", "maxt", "stability", "peaks", "compare")
+stage_names <- c("ingest", "spectra", "maxt", "condition", "stability",
+                 "peaks", "compare")
+
+# Stages that can be skipped on a small machine. `maxt` is per sample and costs
+# hours; `condition` answers the primary question at ~1/n of the cost, so a run
+# with --from=condition --to=compare is a complete analysis minus the
+# per-sample reproducibility figures.
+optional_stages <- c("maxt")
 
 #' Resolve which datasets a stage should run over.
 stage_datasets <- function(opt) {
@@ -74,6 +81,37 @@ stage_maxt <- function(project, opt) {
   sprintf("%d computed, %d reused", computed, reused)
 }
 
+# --- condition-level test ---------------------------------------------------
+stage_condition <- function(project, opt) {
+  n_sig <- 0L
+  for (id in stage_datasets(opt)) {
+    inp <- tsf_stage_inputs(project, id, need = "maxt")
+    n_cores <- maxt_cores(inp$chrom_idx)
+    tsf_log(id, ": condition-level test (B = ",
+            project$maxt$condition_B %||% project$maxt$B, ", ", n_cores, " core(s))")
+    for (cond in tsf_conditions(inp$conditions, opt)) {
+      for (branch in opt$branches) {
+        mi <- inp$maxt[[cond]]
+        if (is.null(mi)) {
+          tsf_log("  ", cond, ": no per-sample maxT; Stouffer will be omitted")
+        }
+        cs <- condition_significance(inp$dataset, cond, inp$chrom_idx, project$maxt,
+                                     branch = branch, maxt_individual = mi,
+                                     n_cores = n_cores)
+        if (is.null(cs)) { tsf_warn("  ", cond, "/", branch, ": no result"); next }
+        write_tsv_tsf(cs, file.path(inp$paths$base, "condition",
+                                    sprintf("condition_significance_%s_%s.tsv",
+                                            branch, cond)))
+        hit <- sum(cs$q_condition <= 0.05, na.rm = TRUE)
+        n_sig <- n_sig + hit
+        tsf_log("  ", cond, "/", branch, ": ", hit, " peak(s) at q <= 0.05 of ",
+                nrow(cs), " frequencies")
+      }
+    }
+  }
+  sprintf("%d condition-level peak(s) at q <= 0.05", n_sig)
+}
+
 # --- 04 stability ------------------------------------------------------------
 stage_stability <- function(project, opt) {
   total_stable <- 0L
@@ -83,7 +121,22 @@ stage_stability <- function(project, opt) {
             ", stable_frac = ", project$maxt$stable_frac, ")")
     for (cond in tsf_conditions(inp$conditions, opt)) {
       m <- inp$maxt[[cond]]
-      if (is.null(m)) { tsf_warn("  ", cond, ": no maxT file; run the maxt stage"); next }
+      if (is.null(m)) {
+        # No per-sample maxT: fall back to the condition-level result alone.
+        st <- stability_from_condition(inp$paths, cond, opt$branches[1])
+        if (is.null(st)) {
+          tsf_warn("  ", cond, ": neither maxT nor a condition test; run one of them")
+          next
+        }
+        write_tsv_tsf(st, p_stability(inp$paths, cond))
+        tsf_log("  ", cond, ": ", sum(st$is_stable), " selected (condition test only)")
+        total_stable <- total_stable + sum(st$is_stable)
+        for (branch in opt$branches) {
+          pk <- condition_peak_table(st, inp$spectra[[cond]], branch)
+          if (!is.null(pk)) write_tsv_tsf(pk, p_peaks(inp$paths, branch, cond))
+        }
+        next
+      }
       expected <- read_tsv_tsf(file.path(inp$paths$maxt,
                                          sprintf("expected_samples_%s.tsv", cond)),
                                required = FALSE)
@@ -91,6 +144,8 @@ stage_stability <- function(project, opt) {
       st <- stable_peaks_maxt(m, expected_samples,
                               alpha = project$maxt$alpha,
                               stable_frac = project$maxt$stable_frac)
+      st <- attach_condition_test(st, inp$paths, cond, opt$branches[1],
+                                  project$stability_criterion %||% "condition")
       write_tsv_tsf(st, p_stability(inp$paths, cond))
       tsf_log("  ", cond, ": ", sum(st$is_stable), " stable of ", nrow(st), " peaks")
       total_stable <- total_stable + sum(st$is_stable)
@@ -271,9 +326,11 @@ stage_window <- function(project, opt) {
 }
 
 stage_functions <- list(
+  fetch     = stage_fetch,
   ingest    = stage_ingest,
   spectra   = stage_spectra,
   maxt      = stage_maxt,
+  condition = stage_condition,
   stability = stage_stability,
   peaks     = stage_peaks,
   compare   = stage_compare,
