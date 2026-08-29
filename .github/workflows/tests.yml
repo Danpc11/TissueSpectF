@@ -28,6 +28,16 @@ jobs:
       # End-to-end run on synthetic data with a known injected peak: catches
       # regressions that unit tests cannot, such as a stage writing a schema the
       # next stage does not read.
+      # Every stage is invoked through the real CLI, not through the test
+      # harness: a module missing from the load path fails here and nowhere
+      # else, because the unit tests source what they need explicitly.
+      - name: CLI reaches every stage
+        run: |
+          ./tsf --help > /dev/null
+          for s in ingest spectra maxt condition consensus clean stability peaks compare; do
+            ./tsf run --to "$s" --dry-run > /dev/null || exit 1
+          done
+
       - name: Self-check
         env:
           TSF_MAXT_B: '100'
