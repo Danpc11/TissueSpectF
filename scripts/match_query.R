@@ -45,19 +45,29 @@ run_match <- function(project, opt) {
   }
   cat(strrep("-", 72), "\n\n", sep = "")
 
+  unit <- opt$input_unit %||% "counts"
+  min_cov <- 0.2
+  min_feature_cov <- 0.5
+
   for (col in value_cols) {
-    fq <- fingerprint_query(q[[col]], ids, ref)
+    fq <- fingerprint_query(q[[col]], ids, ref, unit = unit)
     if (is.null(fq)) {
       tsf_warn(col, ": no usable positions on the reference grid")
       next
     }
-    if (fq$coverage < 0.2) {
-      cat(col, ": only ", round(100 * fq$coverage, 1),
-          "% of the reference grid is present. Too little to score.\n", sep = "")
+    if (fq$coverage < min_cov) {
+      cat(col, ": LOW COVERAGE -- only ", round(100 * fq$coverage, 1),
+          "% of the reference grid is present. Not scored.\n\n", sep = "")
       next
     }
     proj <- project_to_reference(fq$vector, ref)
-    res <- match_query(ref$model, proj$vector)
+    if (proj$feature_coverage < min_feature_cov) {
+      cat(col, ": LOW COVERAGE -- only ", round(100 * proj$feature_coverage, 1),
+          "% of the features the model selects are present (grid coverage was ",
+          round(100 * fq$coverage, 1), "%). Not scored.\n\n", sep = "")
+      next
+    }
+    res <- match_query(ref$model, proj$vector, proj$available)
     if (is.null(res)) { tsf_warn(col, ": could not be scored"); next }
     res <- apply_rejection(res, calib)
 
@@ -72,9 +82,9 @@ run_match <- function(project, opt) {
       cat(sprintf("  %-14s similarity %.3f\n",
                   res$scores$class[i], res$scores$similarity[i]))
     }
-    cat(sprintf("  margin %.3f | p(shuffled) %.3f | grid coverage %.1f%% (%s ids) | %d/%d features\n",
-                res$margin, res$p_shuffle, 100 * fq$coverage, fq$id_type,
-                proj$n_shared, proj$n_features))
+    cat(sprintf("  margin %.3f | p(shuffled) %.3f | grid coverage %.1f%% (%s ids, %s) | %d model features used (%.0f%%)\n",
+                res$margin, res$p_shuffle, 100 * fq$coverage, fq$id_type, unit,
+                res$n_features_used, 100 * proj$feature_coverage))
 
     if (is.null(ref$validation)) {
       cat("  -> Uncalibrated reference: a suggestion, not an identification.\n")
