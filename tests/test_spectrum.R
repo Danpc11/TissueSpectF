@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/grid.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
+source("R/grid.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
 source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
@@ -130,10 +130,63 @@ check("chromosomes with few genes keep the same columns", {
     all(is.na(b$p_empirical_maxT_block50)) &&
     !is.null(rbind(a, b)) })
 
+check("blocks come from the grid, not from the observed list", {
+  # Observed positions 1, 100, 101, 102 with block_size 10: a list-index block
+  # would put 1 and 100 in the same block; a grid block must not.
+  t <- c(1L, 100L, 101L, 102L); N <- 200L
+  terms <- gls_prepare(t, N)
+  blocks <- split(seq_along(terms$t_index), ceiling(terms$t_index / 10))
+  # grid blocks: ceiling(c(1,100,101,102)/10) = 1, 10, 11, 11 -> three blocks,
+  # and positions 1 and 100 are never grouped together
+  !any(vapply(blocks, function(i) all(c(1L, 2L) %in% i), logical(1))) &&
+    length(blocks) == 3L &&
+    any(vapply(blocks, function(i) identical(as.integer(i), c(3L, 4L)), logical(1))) })
+
+check("block permutation keeps the observed positions fixed", {
+  set.seed(31); N <- 400L; t <- sort(sample.int(N, 200))
+  terms <- gls_prepare(t, N)
+  m <- permutation_gls_test(rnorm(200), terms, B = 20L, seed = 2L,
+                            block_sizes = 20L)
+  # Same grid length and same number of observed genes as the data
+  all(m$N == N) && all(m$n_observed == 200L) })
+
+check("primary_scheme = all is stricter than full", {
+  set.seed(32); N <- 300L; t <- sort(sample.int(N, 180))
+  y <- rnorm(180)
+  terms <- gls_prepare(t, N)
+  a <- permutation_gls_test(y, terms, B = 100L, seed = 5L, primary_scheme = "full")
+  b <- permutation_gls_test(y, terms, B = 100L, seed = 5L, primary_scheme = "all")
+  all(b$p_empirical_maxT >= a$p_empirical_maxT, na.rm = TRUE) &&
+    identical(a$p_empirical_maxT_full, b$p_empirical_maxT_full) })
+
+check("a block scheme with too few blocks is skipped, not silently vetoing", {
+  # N = 200 with block 50 gives 4 blocks: too few orderings for a small p.
+  set.seed(33); N <- 200L; t <- 1:N
+  y <- 2 * cos(2 * pi * 6 * (t - 1) / N) + rnorm(N, sd = 0.3)
+  m <- permutation_gls_test(y, gls_prepare(t, N), B = 100L, seed = 6L,
+                            block_sizes = c(10L, 50L), primary_scheme = "all")
+  all(is.na(m$p_empirical_maxT_block50)) &&
+    identical(unique(m$block_schemes_skipped), "50") &&
+    m$p_empirical_maxT[m$k == 6] <= 0.05 })
+
+check("an unknown primary scheme is refused", {
+  inherits(tryCatch(permutation_gls_test(rnorm(50), gls_prepare(1:50, 50),
+                                         B = 10L, primary_scheme = "blocky"),
+                    error = function(e) e), "error") })
+
+check("partial NA gene lengths do not poison the filter", {
+  m <- matrix(c(10, 20, 30, 40, 50, 60), nrow = 3)
+  e <- counts_to_expression(m, c(1000, NA, 1000))
+  f <- filter_expressed(e, 1, 0.2)
+  !any(is.na(f)) })
+
 check("a skipped block scheme is recorded", {
+  # N = 60 with block 50 gives 2 blocks, well under MIN_PERMUTATION_BLOCKS
   b <- permutation_gls_test(rnorm(30), gls_prepare(sort(sample.int(60, 30)), 60),
-                            B = 20L, seed = 1L, block_sizes = c(10L, 50L))
-  identical(unique(b$block_schemes_skipped), "50") })
+                            B = 20L, seed = 1L, block_sizes = c(5L, 50L))
+  identical(unique(b$block_schemes_skipped), "50") &&
+    all(is.na(b$p_empirical_maxT_block50)) &&
+    !all(is.na(b$p_empirical_maxT_block5)) })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
