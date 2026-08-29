@@ -76,11 +76,17 @@ circular_sd <- function(phase) {
 #' prevalence does not depend on library depth or on how strong the sample is
 #' overall. When per-sample maxT results are available, significance is the
 #' better definition and is used instead.
-prevalence_from_rank <- function(power_norm, sample_id, quantile_cut = 0.95) {
-  by_sample <- split(seq_along(power_norm), sample_id)
-  thr <- vapply(by_sample, function(i)
+prevalence_from_rank <- function(power_norm, sample_id, chr, quantile_cut = 0.95) {
+  # The threshold is per sample AND per chromosome. Pooling chromosomes would
+  # make them compete: chromosomes differ in length, coverage and total power,
+  # so a short chromosome whose spectrum is flatter would never clear a
+  # threshold set mostly by a long one, and prevalence would encode chromosome
+  # identity instead of how much a frequency stands out.
+  grp <- paste(sample_id, chr, sep = "\r")
+  by_group <- split(seq_along(power_norm), grp)
+  thr <- vapply(by_group, function(i)
     stats::quantile(power_norm[i], quantile_cut, na.rm = TRUE), numeric(1))
-  power_norm > thr[sample_id]
+  power_norm > thr[grp]
 }
 
 #' Consensus spectrum for one condition, from its per-sample spectra.
@@ -110,7 +116,7 @@ consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
     out[is.na(out)] <- FALSE
     out
   } else {
-    prevalence_from_rank(d$pnorm, d$sample, quantile_cut)
+    prevalence_from_rank(d$pnorm, d$sample, d$chr, quantile_cut)
   }
 
   key <- paste(d$chr, d$N, d$k, sep = "|")
