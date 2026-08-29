@@ -98,6 +98,7 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
   mat <- normalise_fingerprints(mat)
 
   rows <- list()
+  excluded <- list(samples = 0L, classes = 0L, labels = character(0))
   for (held in ids) {
     tr <- lab$dataset_id != held
     te <- !tr
@@ -109,35 +110,122 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
     }
     keep_tr <- tr & lab[[target]] %in% shared
     keep_te <- te & lab[[target]] %in% shared
+    dropped <- lab[[target]][te & !(lab[[target]] %in% shared)]
+    excluded$samples <- excluded$samples + length(dropped)
+    excluded$labels <- unique(c(excluded$labels, dropped))
+    excluded$classes <- length(excluded$labels)
     model <- fit_centroids(mat[keep_tr, , drop = FALSE], lab[[target]][keep_tr],
                            n_features)
-    pred <- vapply(which(keep_te), function(i) {
-      sc <- score_query(model, mat[i, ])
-      if (is.null(sc)) NA_character_ else sc$class[1]
-    }, character(1))
+    scored <- lapply(which(keep_te), function(i) score_query(model, mat[i, ]))
+    pred <- vapply(scored, function(sc) if (is.null(sc)) NA_character_ else sc$class[1],
+                   character(1))
+    sim <- vapply(scored, function(sc) if (is.null(sc)) NA_real_ else sc$similarity[1],
+                  numeric(1))
+    margin <- vapply(scored, function(sc)
+      if (is.null(sc) || nrow(sc) < 2) NA_real_ else sc$similarity[1] - sc$similarity[2],
+      numeric(1))
     truth <- lab[[target]][keep_te]
+
+    # Baseline: the majority class OF THE TRAINING FOLD, evaluated on the
+    # held-out cohort. Taking the majority of the held-out truth would let the
+    # baseline see the test labels, which is exactly what the held-out design
+    # exists to prevent, and it flatters or punishes the model at random
+    # depending on how the class mix differs between cohorts.
+    majority_tr <- names(sort(table(lab[[target]][keep_tr]), decreasing = TRUE))[1]
     rows[[held]] <- data.frame(held_out = held, sample_id = lab$sample_id[keep_te],
                                truth = truth, predicted = pred,
+                               similarity = sim, margin = margin,
+                               baseline_prediction = majority_tr,
                                stringsAsFactors = FALSE)
   }
   if (!length(rows)) return(NULL)
   pred_all <- do.call(rbind, rows)
 
   acc <- mean(pred_all$truth == pred_all$predicted, na.rm = TRUE)
-  # Baseline: always guess the commonest class of the test set.
-  baseline <- max(table(pred_all$truth)) / nrow(pred_all)
+  baseline <- mean(pred_all$truth == pred_all$baseline_prediction, na.rm = TRUE)
   cm <- table(truth = pred_all$truth, predicted = pred_all$predicted)
 
   tsf_log("Out-of-cohort accuracy (", target, "): ", round(100 * acc, 1),
-          "% vs ", round(100 * baseline, 1), "% for always guessing the ",
-          "commonest class")
+          "% vs ", round(100 * baseline, 1), "% for the training-fold ",
+          "majority class")
+  if (excluded$samples > 0L) {
+    tsf_log("Excluded from validation: ", excluded$samples, " sample(s) in ",
+            excluded$classes, " class(es) not shared across cohorts (",
+            paste(excluded$labels, collapse = ", "), ")")
+  }
+
+  calib <- calibrate_rejection(pred_all)
   list(target = target, predictions = pred_all, accuracy = acc,
-       baseline = baseline, confusion = cm,
-       n_datasets = length(ids), datasets = ids)
+       baseline = baseline, confusion = cm, excluded = excluded,
+       calibration = calib, n_datasets = length(ids), datasets = ids)
+}
+
+#' Calibrate a rejection rule from the out-of-cohort predictions.
+#'
+#' A nearest-centroid matcher always returns a class. Nothing so far tells you
+#' whether the query belongs to ANY class of the reference: a brain sample can
+#' score \"liver F3\" with a comfortable margin simply because that centroid is
+#' the least distant one. The fixed 0.02 margin and the shuffled-query test do
+#' not address this -- the first is arbitrary, the second only asks whether the
+#' query has any spectral shape at all.
+#'
+#' What can be calibrated from held-out data is the similarity a CORRECT match
+#' typically reaches. Queries below that are reported as UNKNOWN. Per class,
+#' because classes differ in how tight their centroids are.
+#'
+#' Honest limitation: this is calibrated on in-domain samples only. It bounds
+#' how often a true member is wrongly rejected (that is the quantile), but it
+#' cannot bound how often an out-of-domain sample is wrongly accepted, because
+#' no out-of-domain sample was ever seen. Genuine open-set specificity needs
+#' negatives in the validation -- for a tissue reference, other tissues.
+calibrate_rejection <- function(pred_all, quantile_correct = 0.05) {
+  ok <- !is.na(pred_all$similarity) & !is.na(pred_all$predicted)
+  if (!any(ok)) return(NULL)
+  correct <- ok & pred_all$truth == pred_all$predicted
+  wrong <- ok & pred_all$truth != pred_all$predicted
+
+  per_class <- do.call(rbind, lapply(sort(unique(pred_all$predicted[correct])), function(cl) {
+    s <- pred_all$similarity[correct & pred_all$predicted == cl]
+    if (length(s) < 3) return(NULL)
+    data.frame(class = cl, n_correct = length(s),
+               threshold = unname(stats::quantile(s, quantile_correct)),
+               median_correct = stats::median(s), stringsAsFactors = FALSE)
+  }))
+
+  global <- if (any(correct))
+    unname(stats::quantile(pred_all$similarity[correct], quantile_correct)) else NA_real_
+
+  # How separable correct from incorrect matches are on similarity alone.
+  auc <- if (any(correct) && any(wrong)) {
+    a <- pred_all$similarity[correct]; b <- pred_all$similarity[wrong]
+    mean(outer(a, b, ">") + 0.5 * outer(a, b, "=="))
+  } else NA_real_
+
+  list(per_class = per_class, global_threshold = global,
+       quantile = quantile_correct,
+       expected_false_rejection = quantile_correct,
+       separability_auc = auc,
+       median_correct = if (any(correct)) stats::median(pred_all$similarity[correct]) else NA_real_,
+       median_incorrect = if (any(wrong)) stats::median(pred_all$similarity[wrong]) else NA_real_)
+}
+
+#' Apply the calibrated rule to one match.
+apply_rejection <- function(res, calibration) {
+  if (is.null(calibration)) {
+    res$decision <- "UNCALIBRATED"
+    return(res)
+  }
+  thr <- calibration$global_threshold
+  pc <- calibration$per_class
+  if (!is.null(pc) && res$best %in% pc$class) thr <- pc$threshold[pc$class == res$best]
+  res$threshold <- thr
+  res$decision <- if (is.na(thr) || res$similarity >= thr) res$best else "UNKNOWN"
+  res
 }
 
 #' Build the reference: fingerprints, validation, and a model fitted on all data.
-build_reference <- function(fps, target = "condition", n_features = 500L) {
+build_reference <- function(fps, target = "condition", n_features = 500L,
+                            grid = NULL, params = list()) {
   common <- Reduce(intersect, lapply(fps, function(f) colnames(f$matrix)))
   mat <- normalise_fingerprints(
     do.call(rbind, lapply(fps, function(f) f$matrix[, common, drop = FALSE])))
@@ -146,8 +234,21 @@ build_reference <- function(fps, target = "condition", n_features = 500L) {
   validation <- validate_across_datasets(fps, target = target, n_features = n_features)
   model <- fit_centroids(mat, lab[[target]], n_features)
 
+  # SELF-CONTAINED. A reference must carry everything needed to fingerprint a
+  # query: the grid with its identifiers, the frequency ceiling, the feature
+  # representation, and the normalisation. Reconstructing that from whatever
+  # dataset happens to be configured locally would silently allow a query to be
+  # scored on a different grid from the one the reference was built on.
+  if (is.null(grid)) tsf_abort("build_reference needs the grid it was built on")
   list(model = model, labels = lab, target = target,
        feature_space = common, validation = validation,
+       grid = grid[, intersect(c("gene_id", "entrez_id", "chr", "start",
+                                 "grid_index", "grid_N"), colnames(grid))],
+       params = utils::modifyList(
+         list(k_max = 64L, features = "amplitude", n_features = n_features,
+              expression_unit = "asinh(CPM)", normalisation = "per-sample z-score",
+              annotation = NA_character_, gene_universe = NA_character_,
+              chrom_levels = NA_character_), params),
        built = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
        version = TSF_VERSION)
 }
