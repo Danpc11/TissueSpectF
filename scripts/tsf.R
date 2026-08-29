@@ -16,7 +16,7 @@ if (!dir.exists("R") || !dir.exists("config")) {
 }
 suppressPackageStartupMessages({
   for (f in c("utils_io", "config", "labels", "fetch", "ingest", "paths", "grid", "spectrum",
-              "maxt", "condition_test", "stability", "peaks_genes", "compare",
+              "maxt", "condition_test", "clean", "stability", "peaks_genes", "compare",
               "stages")) {
     source(file.path("R", paste0(f, ".R")))
   }
@@ -35,6 +35,7 @@ Commands:
   spectra     FFT per chromosome, per sample and per condition
   maxt        per-sample permutation test              [the slow stage]
   condition   condition-level test on the summary signal  [~1/n the cost]
+  clean       CLEAN decomposition: components by EBIC, no threshold
   stability   stable peaks per condition + peak tables
   peaks       gene-level reconstruction of every stable peak
   compare     constant signature, transitions, cross-dataset replication
