@@ -216,9 +216,6 @@ stage_compare <- function(project, opt) {
     tsf_warn("Comparison needs at least two datasets; skipped")
     return("skipped")
   }
-  compare_dir <- file.path(project$results_dir, "comparison")
-  ensure_dir(compare_dir)
-
   loaded <- lapply(ids, function(id) {
     inp <- tsf_stage_inputs(project, id, need = c("stability", "maxt"))
     inp$peaks <- stats::setNames(lapply(c("average", "median"), function(br)
@@ -238,19 +235,34 @@ stage_compare <- function(project, opt) {
     paste(cfg$tissue %||% "unknown", cfg$vocabulary_spec$id, sep = "/")
   }, character(1))
   groups <- split(ids, keys)
-  if (length(groups) > 1) {
-    tsf_log("Comparison groups: ", paste(names(groups), collapse = " | "))
-  }
   singles <- names(groups)[lengths(groups) < 2]
   if (length(singles)) {
     tsf_warn("Only one dataset in: ", paste(singles, collapse = ", "),
              " -- no cross-dataset replication possible there")
   }
-  group_now <- groups[[which.max(lengths(groups))]]
-  if (length(groups) > 1) {
-    tsf_log("Comparing: ", paste(group_now, collapse = ", "))
+  groups <- groups[lengths(groups) >= 2]
+  if (!length(groups)) {
+    tsf_warn("No tissue/vocabulary group has two datasets; nothing to compare")
+    return("nothing to compare")
   }
-  loaded <- loaded[group_now]; ids <- group_now
+  tsf_log("Comparison groups: ", paste(names(groups), collapse = " | "))
+
+  # EVERY group is processed, each into its own directory. Taking only the
+  # largest group would silently drop, say, the lung datasets whenever the liver
+  # ones outnumbered them.
+  results <- vapply(names(groups), function(gname) {
+    compare_one_group(project, loaded[groups[[gname]]], groups[[gname]],
+                      gname, opt)
+  }, character(1))
+  return(paste(results, collapse = "; "))
+}
+
+#' Compare the datasets of one tissue/vocabulary group.
+compare_one_group <- function(project, loaded, ids, group_name, opt) {
+  compare_dir <- file.path(project$results_dir, "comparison", group_name)
+  ensure_dir(compare_dir)
+  tsf_log("=== group ", group_name, ": ", paste(ids, collapse = ", "), " ===")
+  n_replicated <- 0L
 
   voc <- load_dataset_config(ids[1])$vocabulary_spec
   common <- comparable_conditions(lapply(loaded, function(x) x$conditions),
@@ -325,7 +337,7 @@ stage_compare <- function(project, opt) {
                                            sprintf("transitions_shared_%s.tsv", branch)))
     }
   }
-  sprintf("%d replicated transition peak(s)", n_replicated)
+  sprintf("%s: %d replicated", group_name, n_replicated)
 }
 
 # --- reference library -------------------------------------------------------
@@ -345,8 +357,19 @@ stage_reference <- function(project, opt) {
   }
   if (!length(fps)) tsf_abort("No fingerprints could be built")
 
+  # The grid the reference is built on travels with it, so a query is never
+  # scored against a grid rebuilt from whatever happens to be configured here.
+  grid_inp <- tsf_stage_inputs(project, ids[1])
   ref <- build_reference(fps, target = project$fingerprint$target %||% "condition",
-                         n_features = project$fingerprint$n_features %||% 500L)
+                         n_features = project$fingerprint$n_features %||% 500L,
+                         grid = grid_inp$dataset$genes,
+                         params = list(
+                           k_max = project$fingerprint$k_max %||% 64L,
+                           features = project$fingerprint$features %||% "amplitude",
+                           gene_universe = project$gene_universe %||% "all",
+                           annotation = project$annotation_file,
+                           chrom_levels = paste(project$chrom_levels, collapse = ","),
+                           datasets = paste(ids, collapse = ",")))
   ensure_dir(file.path(project$results_dir, "reference"))
   path <- file.path(project$results_dir, "reference", "reference.rds")
   saveRDS(ref, path)
