@@ -357,19 +357,28 @@ stage_reference <- function(project, opt) {
   }
   if (!length(fps)) tsf_abort("No fingerprints could be built")
 
-  # The grid the reference is built on travels with it, so a query is never
-  # scored against a grid rebuilt from whatever happens to be configured here.
-  grid_inp <- tsf_stage_inputs(project, ids[1])
+  # The CANONICAL annotation grid travels with the reference -- not the genes
+  # the first dataset happened to observe. Using genes.tsv would drop genes seen
+  # only in the other cohorts, make query coverage look better than it is, and
+  # make the reference depend on the order of `ids`.
+  grids <- stats::setNames(lapply(names(fps), function(id) load_grid(id, project)),
+                           names(fps))
+  canonical_grid <- assert_compatible_grids(grids)
+  prov <- grids[[1]]$provenance
   ref <- build_reference(fps, target = project$fingerprint$target %||% "condition",
                          n_features = project$fingerprint$n_features %||% 500L,
-                         grid = grid_inp$dataset$genes,
+                         grid = canonical_grid,
                          params = list(
                            k_max = project$fingerprint$k_max %||% 64L,
                            features = project$fingerprint$features %||% "amplitude",
-                           gene_universe = project$gene_universe %||% "all",
-                           annotation = project$annotation_file,
+                           gene_universe = prov$gene_universe %||% "all",
+                           annotation = prov$annotation_file %||% project$annotation_file,
+                           species = prov$species %||% NA_character_,
+                           genome_build = prov$genome_build %||% NA_character_,
+                           annotation_release = prov$annotation_release %||% NA_character_,
+                           grid_digest = prov$grid_digest %||% NA_character_,
                            chrom_levels = paste(project$chrom_levels, collapse = ","),
-                           datasets = paste(ids, collapse = ",")))
+                           datasets = paste(names(fps), collapse = ",")))
   ensure_dir(file.path(project$results_dir, "reference"))
   path <- file.path(project$results_dir, "reference", "reference.rds")
   saveRDS(ref, path)
