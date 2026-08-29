@@ -171,7 +171,7 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   write_tsv_tsf(labels, file.path(out_dir, "label_audit.tsv"))
   audit <- audit_labels(labels, cfg)
   samples <- labels[labels$keep, , drop = FALSE]
-  samples$condition <- factor(samples$condition, levels = TSF_CONDITION_LEVELS)
+  samples$condition <- factor(samples$condition, levels = tsf_levels(cfg$vocabulary_spec))
 
   # ---- counts and annotation ------------------------------------------------
   counts <- read_counts(file.path(project$geo_dir, cfg$counts_file), cfg$count_id_type)
@@ -284,13 +284,18 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
 }
 
 #' Load a previously ingested dataset in the common format.
-load_dataset <- function(dataset_id, project) {
+load_dataset <- function(dataset_id, project, dataset_dir = "config/datasets") {
   dir <- file.path(project$interim_dir, dataset_id)
   samples <- read_tsv_tsf(file.path(dir, "samples.tsv"))
   genes   <- read_tsv_tsf(file.path(dir, "genes.tsv"))
   expr    <- read_tsv_tsf(file.path(dir, "expression.tsv"))
   mat <- as.matrix(expr[, setdiff(colnames(expr), "gene_id"), drop = FALSE])
   rownames(mat) <- expr$gene_id
-  samples$condition <- factor(samples$condition, levels = TSF_CONDITION_LEVELS)
-  list(id = dataset_id, samples = samples, genes = genes, expression = mat)
+  # Condition order comes from the dataset's vocabulary, so transitions follow
+  # the declared progression rather than alphabetical order.
+  lv <- tryCatch(tsf_levels(load_dataset_config(dataset_id, dataset_dir)$vocabulary_spec),
+                 error = function(e) sort(unique(samples$condition)))
+  samples$condition <- factor(samples$condition, levels = lv[lv %in% samples$condition])
+  list(id = dataset_id, samples = samples, genes = genes, expression = mat,
+       tissue = if ("tissue" %in% colnames(samples)) samples$tissue[1] else NA_character_)
 }
