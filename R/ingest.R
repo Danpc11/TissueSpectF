@@ -316,6 +316,7 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
                 file.path(out_dir, "grid_coverage.tsv"))
 
   # ---- write the common format ---------------------------------------------
+  # (expression unit is known by now: see counts_to_expression above)
   # The CANONICAL grid, i.e. the whole annotation universe, is written out
   # separately from genes.tsv. genes.tsv holds only the genes this dataset
   # observed; a reference built from it would silently inherit one cohort's
@@ -323,13 +324,13 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   write_tsv_tsf(grid, file.path(out_dir, "grid.tsv"))
   write_tsv_tsf(data.frame(
     key = c("species", "genome_build", "annotation_release", "gene_universe",
-            "annotation_file", "grid_genes", "grid_digest"),
+            "annotation_file", "grid_genes", "grid_digest", "expression_unit"),
     value = c(project$species %||% NA_character_,
               project$genome_build %||% NA_character_,
               project$annotation_release %||% NA_character_,
               project$gene_universe %||% "all",
               project$annotation_file,
-              nrow(grid), grid_digest(grid)),
+              nrow(grid), grid_digest(grid), unit),
     stringsAsFactors = FALSE),
     file.path(out_dir, "grid_provenance.tsv"))
 
@@ -364,10 +365,45 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
 #' annotation file names would pass for two different releases with the same
 #' name and fail for the same release stored under different names.
 grid_digest <- function(grid) {
-  key <- paste(grid$gene_id, grid$chr, grid$grid_index, grid$grid_N,
-               sep = "|", collapse = ";")
-  sprintf("%d-%d", nrow(grid),
-          sum(utf8ToInt(key) * seq_along(utf8ToInt(key))) %% .Machine$integer.max)
+  # Canonical serialisation: sorted by chromosome then grid index, so the digest
+  # cannot depend on row order.
+  g <- grid[order(as.character(grid$chr), grid$grid_index, grid$gene_id), ]
+  key <- paste(g$gene_id, g$chr, g$grid_index, g$grid_N, sep = "|", collapse = "\n")
+
+  # SHA-256 where available. The algorithm is recorded in the value, so two
+  # digests are only ever compared when they were produced the same way; a
+  # mismatch of algorithm falls back to comparing the grids themselves.
+  if (requireNamespace("openssl", quietly = TRUE)) {
+    return(paste0("sha256:", as.character(openssl::sha256(key))))
+  }
+  if (requireNamespace("digest", quietly = TRUE)) {
+    return(paste0("sha256:", digest::digest(key, algo = "sha256", serialize = FALSE)))
+  }
+  tmp <- tempfile(); on.exit(unlink(tmp), add = TRUE)
+  writeLines(key, tmp)
+  sha <- suppressWarnings(tryCatch(
+    system2("sha256sum", tmp, stdout = TRUE, stderr = FALSE), error = function(e) NULL))
+  if (length(sha) && nzchar(sha[1])) {
+    return(paste0("sha256:", sub("\\s.*$", "", sha[1])))
+  }
+  paste0("md5:", unname(tools::md5sum(tmp)))
+}
+
+#' Do two grids describe the same axis?
+#'
+#' Digests settle it when they were computed with the same algorithm; otherwise
+#' the grids are compared directly rather than declared incompatible over a
+#' missing package.
+grids_identical <- function(ga, gb, digest_a = NULL, digest_b = NULL) {
+  algo <- function(d) if (is.null(d) || is.na(d)) NA_character_ else sub(":.*$", "", d)
+  if (!is.na(algo(digest_a)) && identical(algo(digest_a), algo(digest_b))) {
+    return(identical(as.character(digest_a), as.character(digest_b)))
+  }
+  key <- function(g) {
+    o <- g[order(as.character(g$chr), g$grid_index, g$gene_id), ]
+    paste(o$gene_id, o$chr, o$grid_index, o$grid_N, sep = "|")
+  }
+  identical(key(ga), key(gb))
 }
 
 #' Read the canonical grid and its provenance for an ingested dataset.
@@ -393,7 +429,11 @@ assert_compatible_grids <- function(grids) {
   ref <- grids[[1]]$provenance
   for (id in ids[-1]) {
     p <- grids[[id]]$provenance
-    for (f in fields) {
+    if (!grids_identical(grids[[1]]$grid, grids[[id]]$grid,
+                         ref$grid_digest, p$grid_digest)) {
+      tsf_abort("Datasets ", ids[1], " and ", id, " do not share the same grid.")
+    }
+    for (f in setdiff(fields, "grid_digest")) {
       a <- ref[[f]] %||% NA_character_; b <- p[[f]] %||% NA_character_
       if (!identical(as.character(a), as.character(b))) {
         tsf_abort("Datasets ", ids[1], " and ", id, " disagree on ", f, " (",
