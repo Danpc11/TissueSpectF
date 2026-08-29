@@ -41,17 +41,35 @@ fit_centroids <- function(mat, labels, n_features = 500L) {
        n_train = as.integer(table(cls)))
 }
 
-#' Cosine similarity of a query to every centroid.
-score_query <- function(model, query_vec) {
-  v <- query_vec[model$features]
-  v[!is.finite(v)] <- 0
-  if (all(v == 0)) return(NULL)
+#' Cosine similarity of a query to every centroid, over shared features only.
+#'
+#' `available` names the features the query actually observed. Both sides are
+#' restricted to those and re-standardised over that same subset before the
+#' cosine, so query and centroid are on one scale and neither is padded with
+#' zeros. Padding would be doubly wrong: an unobserved frequency is not the
+#' mean, and a padded query contributes over a subset while the centroid keeps
+#' its norm over everything, which shifts similarities between classes by
+#' different amounts.
+score_query <- function(model, query_vec, available = NULL) {
+  sel <- model$features
+  if (!is.null(available)) sel <- intersect(sel, available)
+  sel <- intersect(sel, names(query_vec))
+  if (length(sel) < 3) return(NULL)
+
+  zs <- function(x) {
+    s <- stats::sd(x)
+    if (!is.finite(s) || s == 0) return(x - mean(x))
+    (x - mean(x)) / s
+  }
+  v <- zs(query_vec[sel])
+  if (all(!is.finite(v)) || all(v == 0)) return(NULL)
+
   cos_sim <- function(a, b) {
     d <- sqrt(sum(a^2)) * sqrt(sum(b^2))
     if (!is.finite(d) || d == 0) return(NA_real_)
     sum(a * b) / d
   }
-  s <- apply(model$centroids, 1, function(c) cos_sim(v, c))
+  s <- apply(model$centroids[, sel, drop = FALSE], 1, function(c) cos_sim(v, zs(c)))
   ord <- order(-s)
   data.frame(class = names(s)[ord], similarity = unname(s[ord]),
              stringsAsFactors = FALSE)
@@ -63,21 +81,27 @@ score_query <- function(model, query_vec) {
 #' compares the best similarity against the distribution obtained by randomly
 #' permuting the query's own feature values -- a query with no spectral shape at
 #' all should not beat that. It is a sanity floor, not a class-membership test.
-match_query <- function(model, query_vec, n_shuffle = 200L, seed = 1L) {
-  s <- score_query(model, query_vec)
+match_query <- function(model, query_vec, available = NULL,
+                        n_shuffle = 200L, seed = 1L) {
+  s <- score_query(model, query_vec, available)
   if (is.null(s)) return(NULL)
-  v <- query_vec[model$features]; v[!is.finite(v)] <- 0
+  sel <- intersect(intersect(model$features, names(query_vec)),
+                   available %||% names(query_vec))
+  v <- query_vec[sel]
   set.seed(seed)
   null_best <- vapply(seq_len(n_shuffle), function(i) {
-    max(score_query(model, stats::setNames(sample(v), model$features))$similarity,
-        na.rm = TRUE)
+    sc <- score_query(model, stats::setNames(sample(v), sel), sel)
+    if (is.null(sc)) NA_real_ else max(sc$similarity, na.rm = TRUE)
   }, numeric(1))
+  null_best <- null_best[is.finite(null_best)]
+  if (!length(null_best)) null_best <- -Inf
   best <- s$similarity[1]
   list(scores = s,
        best = s$class[1],
        similarity = best,
        margin = if (nrow(s) > 1) best - s$similarity[2] else NA_real_,
-       p_shuffle = (1 + sum(null_best >= best)) / (n_shuffle + 1))
+       p_shuffle = (1 + sum(null_best >= best)) / (length(null_best) + 1),
+       n_features_used = length(sel))
 }
 
 #' Leave-one-dataset-out validation. The only number worth reporting.
@@ -116,7 +140,7 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
     excluded$classes <- length(excluded$labels)
     model <- fit_centroids(mat[keep_tr, , drop = FALSE], lab[[target]][keep_tr],
                            n_features)
-    scored <- lapply(which(keep_te), function(i) score_query(model, mat[i, ]))
+    scored <- lapply(which(keep_te), function(i) score_query(model, mat[i, ], NULL))
     pred <- vapply(scored, function(sc) if (is.null(sc)) NA_character_ else sc$class[1],
                    character(1))
     sim <- vapply(scored, function(sc) if (is.null(sc)) NA_real_ else sc$similarity[1],
