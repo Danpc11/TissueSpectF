@@ -321,8 +321,26 @@ question, and the interface answers it before showing the result:
 - if a randomly shuffled copy of the query scores as well, it says there is no
   usable spectral shape in the file
 
+- a query below the **calibrated rejection threshold** is reported `UNKNOWN`
+  rather than assigned to the least distant centroid
+
 `./tsf reference` writes `out_of_cohort_predictions.tsv` and
 `confusion_matrix.tsv` so the validation can be inspected rather than trusted.
+
+The reference is **self-contained**: it carries its own grid, gene identifiers,
+frequency ceiling and feature representation, so a `reference.rds` is portable
+to a machine that has never seen the cohorts it was built from, and a query can
+never be scored on a grid other than the one the reference was built with.
+
+A query is fingerprinted on **the genes it actually contains**. Genes the file
+lacks are absent from the observed positions, never zero-filled — the same rule
+that governs unmeasured genes everywhere else here.
+
+The rejection threshold is calibrated on the similarity that correct held-out
+matches reach, per class. It bounds how often a true member is wrongly rejected.
+It does **not** bound how often an out-of-domain sample is wrongly accepted:
+no out-of-domain sample was in the validation. Open-set specificity needs
+negatives — for a tissue reference, other tissues.
 
 ## What changed from the original scripts
 
