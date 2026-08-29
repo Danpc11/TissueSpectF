@@ -434,12 +434,24 @@ along the chromosome, telling you a 200-gene structure exists but not where its
 crest falls; phase anchors the structure to genomic coordinates. For tissue
 identity, phase is plausibly the more discriminative half.
 
-**The decisive experiment**, which the pipeline does not yet implement: train on
-one cohort's fingerprints and predict the other cohort's labels, with no tuning
-against the second. Internal cross-validation cannot substitute for this — with
+**The decisive experiment**, implemented in `R/reference.R` as leave-one-cohort-
+out validation: train on one cohort's fingerprints and predict the other
+cohort's labels, with no tuning against the second. Internal cross-validation cannot substitute for this — with
 thousands of features and hundreds of samples, a classifier will achieve a high
 internal AUC by learning batch, library protocol and sequencing depth. Batch
 does not transfer between studies; a real spectral signature does.
+
+The fingerprint is built by `R/fingerprint.R` (log-amplitude, optionally
+amplitude-weighted phase, per `(chromosome, k)` up to `k_max`), normalised per
+sample so that library depth cannot drive a match, and classified by nearest
+centroid on features selected from training data only. The model is deliberately
+inflexible: with thousands of features, anything richer would fit cohort
+idiosyncrasy and the out-of-cohort number would stop meaning anything.
+
+`reference_status()` turns the validation into one sentence, and both the CLI
+and the app print it above every result. A reference that does not beat the
+majority-class baseline is reported as carrying no information, rather than
+silently returning a confident label.
 
 Anticipated outcome worth naming in advance: classifying *tissue* is likely to
 work far better than classifying *stage*, because the identity of a tissue is a
