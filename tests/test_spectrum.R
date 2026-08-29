@@ -2,7 +2,7 @@
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
 source("R/grid.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
-source("R/condition_test.R"); source("R/clean.R"); source("R/fingerprint.R"); source("R/reference.R"); source("R/peaks_genes.R"); source("R/compare.R")
+source("R/condition_test.R"); source("R/clean.R"); source("R/fingerprint.R"); source("R/reference.R"); source("R/consensus.R"); source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
 check <- function(label, expr) {
@@ -386,6 +386,116 @@ check("the input unit changes the transform", {
   !isTRUE(all.equal(query_signal(v, "counts"), query_signal(v, "tpm"))) &&
     identical(query_signal(v, "logged"), v) &&
     inherits(tryCatch(query_signal(v, "rpkm"), error = function(e) e), "error") })
+
+# --- consensus spectrum ------------------------------------------------------
+check("PLV is 1 for aligned phases and near 0 for scattered ones", {
+  set.seed(81)
+  a <- phase_locking(rep(0.7, 20))[["plv"]]
+  b <- phase_locking(runif(200, -pi, pi))[["plv"]]
+  abs(a - 1) < 1e-12 && b < 0.2 })
+
+check("the Rayleigh p-value is calibrated under uniform phases", {
+  set.seed(82)
+  p <- vapply(1:300, function(i) phase_locking(runif(12, -pi, pi))[["rayleigh_p"]],
+              numeric(1))
+  abs(mean(p <= 0.05) - 0.05) < 0.04 })
+
+check("consensus finds what the mean profile cancels", {
+  # Every sample carries the same frequency; the phase differs between samples.
+  # The mean profile's spectrum loses it to cancellation; the consensus sees a
+  # strong, prevalent component with low PLV -- present but not phase-locked.
+  set.seed(83); N <- 200L; t <- 1:N; k0 <- 9L
+  phases <- runif(12, -pi, pi)
+  sig <- vapply(phases, function(ph)
+    2 * cos(2 * pi * k0 * (t - 1) / N + ph) + rnorm(N, sd = 0.3), numeric(N))
+  mean_spec <- run_fft(rowMeans(sig))
+  amp_mean <- mean_spec$amplitude[mean_spec$k == k0]
+  per_sample <- do.call(rbind, lapply(seq_along(phases), function(i) {
+    r <- run_fft(sig[, i]); r$sample <- paste0("S", i); r$chr <- "1"; r
+  }))
+  cs <- consensus_spectrum(per_sample, n_boot = 50L)
+  row <- cs[cs$chr == "1" & cs$k == k0, ]
+  amp_mean < 0.6 && nrow(row) == 1 && row$prevalence == 1 && row$plv < 0.6 &&
+    row$median_amplitude > 1.5 })
+
+check("consensus scores an aligned component above a scattered one", {
+  set.seed(84); N <- 200L; t <- 1:N
+  mk <- function(k, ph) do.call(rbind, lapply(1:12, function(i) {
+    r <- run_fft(2 * cos(2 * pi * k * (t - 1) / N + ph[i]) + rnorm(N, sd = 0.3))
+    r$sample <- paste0("S", i); r$chr <- "1"; r }))
+  aligned <- mk(9L, rep(0.4, 12))
+  scattered <- mk(9L, runif(12, -pi, pi))
+  ca <- consensus_spectrum(aligned, n_boot = 50L)
+  cb <- consensus_spectrum(scattered, n_boot = 50L)
+  ca$consensus_score[ca$k == 9] > cb$consensus_score[cb$k == 9] })
+
+check("bootstrap intervals bracket the point estimate", {
+  set.seed(85); N <- 200L; t <- 1:N
+  per_sample <- do.call(rbind, lapply(1:10, function(i) {
+    r <- run_fft(2 * cos(2 * pi * 7 * (t - 1) / N + 0.3) + rnorm(N, sd = 0.5))
+    r$sample <- paste0("S", i); r$chr <- "1"; r }))
+  cs <- consensus_spectrum(per_sample, n_boot = 100L)
+  row <- cs[cs$k == 7, ]
+  row$consensus_score >= row$consensus_score_ci_lower &&
+    row$consensus_score <= row$consensus_score_ci_upper })
+
+# --- coverage-band calibration -----------------------------------------------
+check("simulated loss drops whole blocks, not scattered features", {
+  feats <- c(paste0("chr1_k", 1:40), paste0("chr2_k", 1:40))
+  kept <- simulate_feature_loss(feats, 0.5, "chromosome")
+  chrs <- unique(sub("_.*$", "", kept))
+  length(chrs) == 1 })
+
+check("coverage bands are assigned correctly", {
+  identical(vapply(c(0.95, 0.8, 0.6, 0.3), coverage_band, character(1)),
+            c("90-100%", "75-90%", "50-75%", "<50%")) })
+
+check("a partial query does not reuse the full-coverage threshold", {
+  cal <- list(global_threshold = 0.95, per_class = NULL, quantile = 0.05,
+              bands = NULL)
+  full <- apply_rejection(list(best = "A", similarity = 0.96), cal, coverage = 0.95)
+  part <- apply_rejection(list(best = "A", similarity = 0.96), cal, coverage = 0.6)
+  identical(full$decision, "A") && identical(part$decision, "UNCALIBRATED_COVERAGE") })
+
+check("a band threshold is used when one exists", {
+  cal <- list(global_threshold = 0.95, per_class = NULL, quantile = 0.05,
+              bands = data.frame(band = "50-75%", threshold = 0.4,
+                                 stringsAsFactors = FALSE))
+  r <- apply_rejection(list(best = "A", similarity = 0.5), cal, coverage = 0.6)
+  identical(r$decision, "A") && identical(r$threshold_source, "band") })
+
+check("below 50% coverage nothing is classified", {
+  cal <- list(global_threshold = 0.2, per_class = NULL, quantile = 0.05,
+              bands = data.frame(band = "<50%", threshold = 0.1,
+                                 stringsAsFactors = FALSE))
+  identical(apply_rejection(list(best = "A", similarity = 0.9), cal,
+                            coverage = 0.3)$decision, "LOW_COVERAGE") })
+
+# --- duplicates that are all NA, and units -----------------------------------
+check("duplicate rows that are all NA stay unmeasured, not zero", {
+  r <- collapse_duplicate_ids(c(NA, NA, 4), c("g1", "g1", "g2"))
+  is.na(r$values[r$ids == "g1"]) && r$values[r$ids == "g2"] == 4 && r$all_na == 1L })
+
+check("a partly-NA duplicate group sums the finite values", {
+  r <- collapse_duplicate_ids(c(NA, 3, 4), c("g1", "g1", "g2"))
+  r$values[r$ids == "g1"] == 3 })
+
+check("a TPM query is refused against a CPM reference", {
+  ref <- list(params = list(expression_unit = "asinh(CPM)"))
+  inherits(tryCatch(assert_unit_compatible(ref, "tpm"), error = function(e) e),
+           "error") &&
+    !inherits(tryCatch(assert_unit_compatible(ref, "cpm"), error = function(e) e),
+              "error") })
+
+check("counts are accepted against a CPM reference", {
+  ref <- list(params = list(expression_unit = "asinh(CPM)"))
+  !inherits(tryCatch(assert_unit_compatible(ref, "counts"), error = function(e) e),
+            "error") })
+
+check("a TPM reference accepts a TPM query only", {
+  ref <- list(params = list(expression_unit = "asinh(TPM)"))
+  !inherits(tryCatch(assert_unit_compatible(ref, "tpm"), error = function(e) e), "error") &&
+    inherits(tryCatch(assert_unit_compatible(ref, "cpm"), error = function(e) e), "error") })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
