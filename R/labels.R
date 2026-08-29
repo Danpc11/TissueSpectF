@@ -21,7 +21,19 @@
 # then runs only over conditions present on both sides (see compare layer).
 # ---------------------------------------------------------------------------
 
-TSF_CONDITION_LEVELS <- c("Control", paste0("F", 0:4))
+# Default vocabulary, used when a dataset config names none. Nothing in the
+# pipeline may assume these particular levels: the vocabulary is data, loaded
+# from config/vocabularies/, so a new tissue or design needs a config file and
+# no code change. See load_vocabulary() in config.R.
+TSF_DEFAULT_VOCABULARY <- "liver_fibrosis"
+
+#' Levels of a dataset's vocabulary, in order.
+tsf_levels <- function(x) {
+  if (is.character(x)) return(x)
+  if (!is.null(x$levels)) return(x$levels)
+  if (!is.null(x$condition_levels)) return(x$condition_levels)
+  tsf_abort("No condition levels declared")
+}
 
 #' Numeric fibrosis stage from a raw phenotype value.
 #'
@@ -128,7 +140,9 @@ harmonize_conditions <- function(pheno, dataset_config) {
     rule_used[take] <- rule$id
   }
 
-  bad <- !is.na(condition) & !(condition %in% TSF_CONDITION_LEVELS)
+  levels_now <- tsf_levels(dataset_config$vocabulary_spec %||%
+                             dataset_config$condition_levels)
+  bad <- !is.na(condition) & !(condition %in% levels_now)
   if (any(bad)) {
     tsf_warn(sum(bad), " sample(s) resolved to a label outside the vocabulary (",
               paste(unique(condition[bad]), collapse = ", "), "); dropped.")
@@ -136,9 +150,11 @@ harmonize_conditions <- function(pheno, dataset_config) {
     rule_used[bad] <- NA_character_
   }
 
-  if (isFALSE(dataset_config$has_control_cohort) && any(condition %in% "Control", na.rm = TRUE)) {
+  baseline <- (dataset_config$vocabulary_spec %||% list())$baseline %||% "Control"
+  if (isFALSE(dataset_config$has_control_cohort) &&
+      !is.null(baseline) && any(condition %in% baseline, na.rm = TRUE)) {
     tsf_abort("Dataset ", dataset_config$id, " declares has_control_cohort = FALSE ",
-               "but a rule assigned Control. Fix the config, not the data.")
+               "but a rule assigned ", baseline, ". Fix the config, not the data.")
   }
 
   stage_col <- find_pheno_column(pheno, dataset_config$fibrosis_column)
@@ -158,13 +174,16 @@ harmonize_conditions <- function(pheno, dataset_config) {
   data.frame(
     sample_id      = clean_pheno_value(pheno[[dataset_config$sample_id_column %||% "geo_accession"]]),
     dataset_id     = dataset_config$id,
+    tissue         = dataset_config$tissue %||% NA_character_,
+    vocabulary     = (dataset_config$vocabulary_spec %||% list())$id %||% NA_character_,
     condition      = condition,
     fibrosis_stage = ifelse(is.na(implied), fibrosis_stage, implied),
     fibrosis_stage_reported = fibrosis_stage,
     label_rule     = rule_used,
     label_mismatch = mismatch,
     cohort         = ifelse(is.na(condition), NA_character_,
-                            ifelse(condition == "Control", "control", "disease")),
+                            ifelse(!is.null(baseline) & condition == baseline,
+                                   "control", "disease")),
     keep           = !is.na(condition),
     stringsAsFactors = FALSE
   )
@@ -173,10 +192,12 @@ harmonize_conditions <- function(pheno, dataset_config) {
 #' Summarise labelling and refuse to continue on a bad parse.
 audit_labels <- function(labels, dataset_config, max_unresolved_frac = 0.05,
                          min_n_per_condition = 5L) {
+  levels_now <- tsf_levels(dataset_config$vocabulary_spec %||%
+                             dataset_config$condition_levels)
   n <- nrow(labels)
   unresolved <- sum(!labels$keep)
   tsf_log("Labels for ", dataset_config$id, ": ", n - unresolved, "/", n, " resolved")
-  tab <- table(factor(labels$condition[labels$keep], levels = TSF_CONDITION_LEVELS))
+  tab <- table(factor(labels$condition[labels$keep], levels = levels_now))
   for (cnd in names(tab)) tsf_log("  ", cnd, ": ", tab[[cnd]])
 
   if (unresolved / max(n, 1L) > max_unresolved_frac) {
@@ -203,9 +224,9 @@ audit_labels <- function(labels, dataset_config, max_unresolved_frac = 0.05,
 #'
 #' Replaces the silent Reduce(intersect) failure: if a condition is missing on
 #' one side, that is reported here rather than showing up as an empty signature.
-comparable_conditions <- function(present_by_dataset) {
+comparable_conditions <- function(present_by_dataset, levels_now = NULL) {
   common <- Reduce(intersect, present_by_dataset)
-  common <- TSF_CONDITION_LEVELS[TSF_CONDITION_LEVELS %in% common]
+  if (!is.null(levels_now)) common <- levels_now[levels_now %in% common]
   for (nm in names(present_by_dataset)) {
     missing <- setdiff(unlist(present_by_dataset), present_by_dataset[[nm]])
     if (length(missing)) {
