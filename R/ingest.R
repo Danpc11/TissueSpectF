@@ -88,6 +88,10 @@ read_gene_annotation <- function(path, chrom_levels) {
 
   gene_id <- sub("\\..*$", "", as.character(annot$EnsemblGeneID))
   chr <- unname(ncbi_to_chr[trimws(as.character(annot$ChrAcc))])
+  if (all(is.na(chr)) && "Chromosome" %in% colnames(annot)) {
+    chr <- normalise_chrom_names(annot$Chromosome)
+  }
+  chr <- normalise_chrom_names(chr)
   start <- suppressWarnings(as.numeric(annot$ChrStart))
 
   out <- data.frame(gene_id = gene_id,
@@ -312,6 +316,23 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
                 file.path(out_dir, "grid_coverage.tsv"))
 
   # ---- write the common format ---------------------------------------------
+  # The CANONICAL grid, i.e. the whole annotation universe, is written out
+  # separately from genes.tsv. genes.tsv holds only the genes this dataset
+  # observed; a reference built from it would silently inherit one cohort's
+  # coverage as if it were the annotation.
+  write_tsv_tsf(grid, file.path(out_dir, "grid.tsv"))
+  write_tsv_tsf(data.frame(
+    key = c("species", "genome_build", "annotation_release", "gene_universe",
+            "annotation_file", "grid_genes", "grid_digest"),
+    value = c(project$species %||% NA_character_,
+              project$genome_build %||% NA_character_,
+              project$annotation_release %||% NA_character_,
+              project$gene_universe %||% "all",
+              project$annotation_file,
+              nrow(grid), grid_digest(grid)),
+    stringsAsFactors = FALSE),
+    file.path(out_dir, "grid_provenance.tsv"))
+
   write_tsv_tsf(samples, file.path(out_dir, "samples.tsv"))
   write_tsv_tsf(genes_out, file.path(out_dir, "genes.tsv"))
   write_tsv_tsf(data.frame(gene_id = rownames(count_mat), count_mat[, sample_cols, drop = FALSE],
@@ -334,6 +355,58 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   tsf_log("Wrote common format to ", out_dir)
   invisible(list(dir = out_dir, samples = samples, genes = genes_out,
                  expression = expr_mat, audit = audit))
+}
+
+#' Fingerprint of a grid: same genes, same order, same N.
+#'
+#' Two datasets may only be combined into one reference if this matches. It is
+#' cheap and it is the thing that actually has to be identical -- comparing
+#' annotation file names would pass for two different releases with the same
+#' name and fail for the same release stored under different names.
+grid_digest <- function(grid) {
+  key <- paste(grid$gene_id, grid$chr, grid$grid_index, grid$grid_N,
+               sep = "|", collapse = ";")
+  sprintf("%d-%d", nrow(grid),
+          sum(utf8ToInt(key) * seq_along(utf8ToInt(key))) %% .Machine$integer.max)
+}
+
+#' Read the canonical grid and its provenance for an ingested dataset.
+load_grid <- function(dataset_id, project) {
+  dir <- file.path(project$interim_dir, dataset_id)
+  grid <- read_tsv_tsf(file.path(dir, "grid.tsv"), required = FALSE)
+  if (is.null(grid)) {
+    tsf_abort("No grid.tsv for ", dataset_id, " -- re-run the ingest stage. ",
+              "The reference needs the annotation grid, not just the genes this ",
+              "dataset observed.")
+  }
+  prov <- read_tsv_tsf(file.path(dir, "grid_provenance.tsv"), required = FALSE)
+  p <- if (is.null(prov)) list() else
+    stats::setNames(as.list(prov$value), prov$key)
+  list(grid = grid, provenance = p)
+}
+
+#' Refuse to build one reference from incompatible grids.
+assert_compatible_grids <- function(grids) {
+  ids <- names(grids)
+  fields <- c("species", "genome_build", "annotation_release", "gene_universe",
+              "grid_digest")
+  ref <- grids[[1]]$provenance
+  for (id in ids[-1]) {
+    p <- grids[[id]]$provenance
+    for (f in fields) {
+      a <- ref[[f]] %||% NA_character_; b <- p[[f]] %||% NA_character_
+      if (!identical(as.character(a), as.character(b))) {
+        tsf_abort("Datasets ", ids[1], " and ", id, " disagree on ", f, " (",
+                  a, " vs ", b, "). They cannot share a reference: a feature ",
+                  "named chrX_k7 would mean different things in each.")
+      }
+    }
+  }
+  tsf_log("Grid compatibility: ", length(ids), " dataset(s) share ",
+          nrow(grids[[1]]$grid), " grid genes (",
+          ref$genome_build %||% "build unknown", ", ",
+          ref$gene_universe %||% "all", ")")
+  grids[[1]]$grid
 }
 
 #' Load a previously ingested dataset in the common format.
