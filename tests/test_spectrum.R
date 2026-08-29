@@ -2,7 +2,7 @@
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
 source("R/grid.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
-source("R/condition_test.R"); source("R/peaks_genes.R"); source("R/compare.R")
+source("R/condition_test.R"); source("R/clean.R"); source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
 check <- function(label, expr) {
@@ -220,6 +220,55 @@ check("q is corrected over chromosomes, not frequencies", {
   # With B = 500 and 23 chromosomes the smallest attainable q must be under 0.05,
   # which double-correcting over ~9500 frequencies would make impossible.
   23 / 501 < 0.05 })
+
+# --- CLEAN + EBIC ------------------------------------------------------------
+check("CLEAN recovers two injected components", {
+  set.seed(51); N <- 600L; t <- sort(sample.int(N, 400))
+  y <- 2 * cos(2 * pi * 7 * (t - 1) / N + 0.3) +
+    1.2 * cos(2 * pi * 31 * (t - 1) / N - 1.0) + rnorm(400, sd = 0.4)
+  cp <- clean_decompose(y, gls_prepare(t, N))
+  all(c(7L, 31L) %in% cp$k) && nrow(cp) <= 4 &&
+    abs(cp$amplitude[cp$k == 7] - 2) < 0.2 })
+
+check("CLEAN does not report a sidelobe as a component", {
+  # 50% coverage: the raw periodogram's top-5 contains several false maxima
+  # alongside the real one. CLEAN must return the real one only.
+  set.seed(52); N <- 600L; t <- sort(sample.int(N, 300))
+  y <- 3 * cos(2 * pi * 11 * (t - 1) / N + 0.8) + rnorm(300, sd = 0.3)
+  terms <- gls_prepare(t, N)
+  top5 <- gls_spectrum(y, terms)$k[order(-gls_spectrum(y, terms)$power)][1:5]
+  cp <- clean_decompose(y, terms)
+  length(setdiff(top5, 11L)) >= 3 && nrow(cp) == 1L && cp$k[1] == 11L })
+
+check("EBIC selects nothing from pure noise", {
+  set.seed(53); N <- 600L; t <- sort(sample.int(N, 300))
+  is.null(clean_decompose(rnorm(300), gls_prepare(t, N))) })
+
+check("false positive rate under the null stays low", {
+  set.seed(54); N <- 600L; terms <- gls_prepare(sort(sample.int(N, 300)), N)
+  fp <- vapply(1:30, function(i) {
+    c4 <- clean_decompose(rnorm(300), terms); if (is.null(c4)) 0L else nrow(c4)
+  }, integer(1))
+  mean(fp > 0) <= 0.1 })
+
+check("plain BIC would have selected noise (why EBIC)", {
+  # Same null, selection cost switched off: components appear in most draws.
+  # Measured over replicates rather than one draw, since the failure is a rate.
+  # gamma = 0 selects something in ~65% of null draws; gamma = 1 in none.
+  # Kept as a test so nobody 'simplifies' the penalty away.
+  set.seed(53); N <- 600L; terms <- gls_prepare(sort(sample.int(N, 300)), N)
+  rate <- function(g) mean(vapply(1:20, function(i) {
+    c4 <- clean_decompose(rnorm(300), terms, ebic_gamma = g)
+    !is.null(c4)
+  }, logical(1)))
+  rate(0) > 0.4 && rate(1) < 0.1 })
+
+check("variance explained accumulates and BIC drops each step", {
+  set.seed(55); N <- 600L; t <- sort(sample.int(N, 400))
+  y <- 2 * cos(2 * pi * 7 * (t - 1) / N) + 1.2 * cos(2 * pi * 31 * (t - 1) / N) +
+    rnorm(400, sd = 0.4)
+  cp <- clean_decompose(y, gls_prepare(t, N))
+  all(diff(cp$var_explained_cumulative) > 0) && all(cp$bic_drop > 0) })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
