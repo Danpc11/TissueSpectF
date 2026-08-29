@@ -15,8 +15,9 @@ if (!dir.exists("R") || !dir.exists("config")) {
        call. = FALSE)
 }
 suppressPackageStartupMessages({
-  for (f in c("utils_io", "config", "labels", "ingest", "paths", "grid", "spectrum",
-              "maxt", "stability", "peaks_genes", "compare", "stages")) {
+  for (f in c("utils_io", "config", "labels", "fetch", "ingest", "paths", "grid", "spectrum",
+              "maxt", "condition_test", "stability", "peaks_genes", "compare",
+              "stages")) {
     source(file.path("R", paste0(f, ".R")))
   }
 })
@@ -28,10 +29,12 @@ Usage:
   ./tsf <command> [<dataset>...] [options]
 
 Commands:
+  fetch       download the GEO inputs the configs declare
   check       verify the GEO inputs are where the configs expect them
   ingest      GEO -> common format (labels, expression, genes)
   spectra     FFT per chromosome, per sample and per condition
-  maxt        permutation test for peak significance   [the slow stage]
+  maxt        per-sample permutation test              [the slow stage]
+  condition   condition-level test on the summary signal  [~1/n the cost]
   stability   stable peaks per condition + peak tables
   peaks       gene-level reconstruction of every stable peak
   compare     constant signature, transitions, cross-dataset replication
@@ -80,7 +83,7 @@ parse_cli <- function(args) {
 opt <- parse_cli(commandArgs(trailingOnly = TRUE))
 if (opt$help || opt$command %in% c("help", "--help")) { cat(USAGE); quit(status = 0L) }
 
-known <- c(stage_names, "check", "run", "status", "selfcheck", "window")
+known <- c(stage_names, "check", "run", "status", "selfcheck", "window", "fetch")
 if (!opt$command %in% known) {
   cat(USAGE)
   tsf_abort("Unknown command: ", opt$command)
