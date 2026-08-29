@@ -51,6 +51,16 @@ list(
     per_sample     = FALSE   # TRUE gives one fingerprint per sample (slower)
   ),
 
+  # Fingerprints for the matcher. These are NOT the significant peaks: matching
+  # does not require any component to be individually significant, and filtering
+  # by q first would discard what makes classes separable.
+  fingerprint = list(
+    k_max      = 64L,          # frequency indices kept per chromosome
+    features   = "amplitude",  # or "amplitude_phase" to keep the phase
+    n_features = 500L,         # features the centroid model selects, on train only
+    target     = "condition"   # or "tissue" for a cross-tissue reference
+  ),
+
   # What decides which peaks go downstream.
   #   "condition"   condition-level permutation test, q <= 0.05  (default)
   #   "consistency" >= stable_frac of samples individually significant
