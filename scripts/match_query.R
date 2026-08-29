@@ -46,6 +46,7 @@ run_match <- function(project, opt) {
   cat(strrep("-", 72), "\n\n", sep = "")
 
   unit <- opt$input_unit %||% "counts"
+  assert_unit_compatible(ref, unit)
   min_cov <- 0.2
   min_feature_cov <- 0.5
 
@@ -69,9 +70,14 @@ run_match <- function(project, opt) {
     }
     res <- match_query(ref$model, proj$vector, proj$available)
     if (is.null(res)) { tsf_warn(col, ": could not be scored"); next }
-    res <- apply_rejection(res, calib)
+    res <- apply_rejection(res, calib, coverage = proj$feature_coverage)
 
     cat(col, "\n")
+    if (identical(res$decision, "UNCALIBRATED_COVERAGE")) {
+      cat("  NOT SCORED -- no threshold was calibrated for the ", res$coverage_band,
+          " coverage band, and the full-coverage threshold does not apply here.\n",
+          sep = "")
+    }
     if (identical(res$decision, "UNKNOWN")) {
       cat("  UNKNOWN -- outside the domain of this reference.\n")
       cat(sprintf("  Closest class was %s at similarity %.3f, below the %.3f
