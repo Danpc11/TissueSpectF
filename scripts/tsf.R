@@ -229,8 +229,17 @@ if (opt$command == "app") {
               "  Rscript -e 'install.packages(\"shiny\")'\n",
               "Everything else in TissueSpectF works without it.")
   }
-  if (!file.exists(file.path(project$results_dir, "reference", "reference.rds"))) {
-    tsf_warn("No reference yet -- the app will say so. Build one with ./tsf reference")
+  # Hand the resolved path to the app, so --results-dir / --reference on the
+  # command line reach it. The app must not re-read config/project.R: doing so
+  # made it look on the cluster default while the CLI pointed elsewhere.
+  ref_path <- opt$reference %||%
+    file.path(project$results_dir, "reference", "reference.rds")
+  Sys.setenv(TSF_APP_REFERENCE = normalizePath(ref_path, mustWork = FALSE))
+  if (!file.exists(ref_path)) {
+    tsf_warn("No reference at ", ref_path,
+             " -- the app will say so. Build one with ./tsf reference")
+  } else {
+    tsf_log("Reference: ", ref_path)
   }
   tsf_log("Starting the app. It runs locally; nothing leaves this machine.")
   shiny::runApp("app", launch.browser = TRUE)
