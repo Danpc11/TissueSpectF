@@ -76,7 +76,11 @@ list(
     k_max      = 64L,          # frequency indices kept per chromosome
     features   = "amplitude",  # or "amplitude_phase" to keep the phase
     n_features = 500L,         # features the centroid model selects, on train only
-    target     = "condition"   # or "tissue" for a cross-tissue reference
+    target     = "condition",  # or "tissue" for a cross-tissue reference
+    # Masks per (fold, coverage level, loss mode) in the coverage calibration.
+    # One mask would calibrate against a single accidental choice of which
+    # regions went missing.
+    n_masks    = 25L
   ),
 
   # What decides which peaks go downstream.
