@@ -360,13 +360,32 @@ $e^{-n} n_f$: below roughly $\log(n_f/q)$ samples, about 9 for 5,000
 frequencies, perfect alignment could not pass. The stage says so and falls back
 to prevalence and score rather than returning an empty signature.
 
-A component is **confirmed** only if its bootstrap lower bound clears a
-label-permuted null: $n$ samples drawn at random from the whole dataset,
-ignoring condition, scored the same way, at the 95th percentile of the best
-score obtained. Clearing zero is not evidence — the score is a product of
-non-negative quantities, so any signal at all clears it. Clearing the null means
-the component belongs to *this condition* rather than to any group of samples of
-that size, which is the confound that matters: tissue-wide structure has high
+Prevalence has two definitions and both are reported, never interchanged. The
+**rank** definition — above this sample's own 95th percentile for this
+chromosome — needs nothing but the spectra. The **maxT** definition — significant
+in that sample — is stronger evidence but exists only where the per-sample
+permutation test was run, which a permuted null cannot assume. Comparing an
+observed score built on one against a null built on the other is not a
+permutation test, whatever the direction of the bias, so
+`consensus_score_rank` is used on both sides of the permuted comparison and
+`consensus_score_maxt` is reported beside it as confirmatory evidence.
+
+The null draws $n$ samples at random from the whole dataset, ignoring condition,
+and scores them the same way. Two summaries of it are kept:
+
+- **per component**, an empirical p-value at each $(\mathrm{chr}, k)$ against
+  its own null, BH-adjusted across components. This is what `confirmed` rests
+  on, and it is what lets a signature be *localised*.
+- **global maximum**, the 95th percentile of the best score over all frequencies
+  of each draw. This controls error over the whole signature and is very strict;
+  in practice it confirms almost nothing, which is the right answer to "is there
+  any component at all" and useless for "which ones". Kept as
+  `beats_global_null`.
+
+Clearing zero is not evidence: the score is a product of non-negative
+quantities, so any signal at all clears it. Clearing the null means the
+component belongs to *this condition* rather than to any group of samples of
+that size — the confound that matters, since tissue-wide structure has high
 prevalence and high phase locking too. Everything else is **exploratory**.
 
 The score is a **ranking statistic, not a test**. Bootstrap intervals over
@@ -529,7 +548,10 @@ is the most realistic: coverage loss is not independent of expression, and the
 genes that drop out cluster in the tissue-specific families that carry much of
 the between-condition signal.
 
-Two thresholds are computed per band and both rejection rates are reported: the
+Thresholds are calibrated per band **and per predicted class** where a class has
+enough correct held-out matches to support one, since classes differ in how
+tight their centroids are; the band-level threshold is the fallback. Two
+band-level thresholds are computed and both rejection rates are reported: the
 pooled quantile over all masks, and a conservative one at the 90th percentile of
 the per-mask thresholds. Which is applied is declared in
 `fingerprint$threshold_policy`. The default is pooled, because with gene-level
