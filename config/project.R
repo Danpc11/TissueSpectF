@@ -77,10 +77,23 @@ list(
     features   = "amplitude",  # or "amplitude_phase" to keep the phase
     n_features = 500L,         # features the centroid model selects, on train only
     target     = "condition",  # or "tissue" for a cross-tissue reference
-    # Masks per (fold, coverage level, loss mode) in the coverage calibration.
-    # One mask would calibrate against a single accidental choice of which
-    # regions went missing.
-    n_masks    = 25L
+    # Coverage calibration. Loss is simulated on GENES of the grid and the
+    # fingerprint is recomputed, because that is what a real query loses;
+    # masking spectral features instead would measure an easier, wrong quantity.
+    # Cost is one GLS fingerprint per (sample, level, mode, mask), hence the cap.
+    n_masks              = 10L,
+    max_queries_per_mask = 25L,
+    # Which per-band threshold is applied.
+    #   "pooled"       the quantile over all masks of a band. By construction it
+    #                  rejects about `quantile_correct` of true members.
+    #   "conservative" the 90th percentile of the per-mask thresholds, so an
+    #                  unlucky pattern of missing regions is not judged against
+    #                  a lucky mask.
+    # Both are computed and both rejection rates are reported. The default is
+    # "pooled" because with gene-level masking the conservative threshold was
+    # measured to reject 46-79% of true members, which trades far too much
+    # sensitivity for its extra safety. Switch only with that number in view.
+    threshold_policy     = "pooled"
   ),
 
   # What decides which peaks go downstream.
