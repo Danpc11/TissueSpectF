@@ -92,14 +92,18 @@ write_synthetic_geo <- function(dir, amplitude_by_condition) {
                list(paste0("disease: ", ifelse(conds1 == "Control", "Control", "NAFLD")),
                     paste0("fibrosis stage: ", ifelse(conds1 == "Control", "0", conds1))))
 
-  conds2 <- c(rep("N", 6), rep("F0", 5), rep("F1", 5), rep("F2", 5),
+  # F0 is deliberately the largest group here: the condition-specific component
+  # is injected into it, and confirming phase alignment needs roughly
+  # log(n_frequencies / q) samples. With five it could not be confirmed however
+  # clean the signal -- the floor, not the data, would decide.
+  conds2 <- c(rep("N", 6), rep("F0", 12), rep("F1", 5), rep("F2", 5),
               rep("F3", 5), rep("F4", 5))
   make_dataset("GSE162694", conds2,
                sprintf("Liver %s %d", conds2, seq_along(conds2)),
                list(paste0("fibrosis stage: ",
                            ifelse(conds2 == "N", "normal liver histology",
                                   substr(conds2, 2, 2)))),
-               specific_here = TRUE, specific_levels = c("N", "F0"))
+               specific_here = TRUE, specific_levels = c("F0"))
   invisible(dir)
 }
 
@@ -142,7 +146,13 @@ run_selfcheck <- function() {
   check("GSE135251 has a Control group", sum(s1$condition == "Control") == 6)
   check("GSE135251 keeps F0 separate from Control", sum(s1$condition == "F0") == 5)
   check("GSE162694 has no Control", !any(s2$condition == "Control"))
-  check("GSE162694 normal histology lands in F0", sum(s2$condition == "F0") == 11)
+  check("GSE162694 normal histology is its own class, not F0", {
+    sum(s2$condition == "Normal_histology") == 6 && sum(s2$condition == "F0") == 12 })
+  check("the two healthy states share a state but not a class", {
+    ids <- unique(s1$class_id[s1$condition == "Control"])
+    ids2 <- unique(s2$class_id[s2$condition == "Normal_histology"])
+    startsWith(ids, "liver::healthy::") && startsWith(ids2, "liver::healthy::") &&
+      !identical(ids, ids2) })
 
   sig <- read_tsv_tsf(file.path(project$results_dir, "GSE135251", "comparison",
                                 "constant_signature_average.tsv"), required = FALSE)
