@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ml.baselines import format_summary, run_baselines            # noqa: E402
 from ml.dataset import apply_normalisation, build_tensor, normalisation_stats  # noqa: E402
-from ml.splits import describe_folds, leave_one_cohort_out        # noqa: E402
+from ml.splits import (describe_folds, format_class_report,               # noqa: E402
+                       leave_one_cohort_out)
 from ml.utils import set_seed, software_versions                  # noqa: E402
 
 
@@ -62,6 +63,8 @@ def main() -> int:
         pd.DataFrame(result["folds"]).to_csv(out / "baseline_folds.tsv",
                                              sep="\t", index=False)
         pd.DataFrame(result["summary"]).T.to_csv(out / "baseline_summary.tsv", sep="\t")
+        pd.DataFrame(result["class_report"]).to_csv(out / "class_evaluation.tsv",
+                                                    sep="\t", index=False)
         (out / "provenance.json").write_text(json.dumps(
             {"seed": args.seed, "data": str(args.data),
              "software": software_versions(),
