@@ -15,8 +15,13 @@ library(shiny)
 
 # Only what a query needs. No ingest, no stages: the reference is
 # self-contained, so the app never rebuilds a grid from local config.
+#
+# Two layouts are supported without a switch: the repository (app/ beside R/)
+# and a distributed bundle, where R/ and reference.rds sit next to this file.
+# The bundle is what `./tsf bundle` produces and depends on nothing else.
+.module_dir <- if (dir.exists("R")) "R" else file.path("..", "R")
 for (f in c("utils_io", "grid", "fingerprint", "reference")) {
-  source(file.path("..", "R", paste0(f, ".R")))
+  source(file.path(.module_dir, paste0(f, ".R")))
 }
 
 # The reference path comes from the caller (`./tsf app --results-dir ...` sets
@@ -25,6 +30,9 @@ for (f in c("utils_io", "grid", "fingerprint", "reference")) {
 # while the user had pointed the CLI somewhere else entirely. It can also be
 # changed from the interface.
 initial_ref_path <- Sys.getenv("TSF_APP_REFERENCE", "")
+if (!nzchar(initial_ref_path) && file.exists("reference.rds")) {
+  initial_ref_path <- normalizePath("reference.rds")   # bundle layout
+}
 
 ui <- fluidPage(
   tags$head(tags$style(HTML("
