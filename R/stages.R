@@ -138,28 +138,30 @@ stage_consensus <- function(project, opt) {
                                seed = project$maxt$seed,
                                quantile_cut = project$consensus$quantile_cut %||% 0.95)
       if (is.null(cs)) { tsf_warn("  ", cond, ": no consensus"); next }
-      write_tsv_tsf(cs, file.path(inp$paths$base, "consensus",
-                                  sprintf("consensus_spectrum_%s.tsv", cond)))
 
       n_here <- length(unique(sp$sample))
       key <- as.character(n_here)
-      if (is.null(pool)) {
-        null_score <- NA_real_
-      } else {
+      null_dist <- NULL
+      if (!is.null(pool)) {
         if (is.null(null_cache[[key]])) {
           t0 <- Sys.time()
-          null_cache[[key]] <- null_consensus_scores(
+          null_cache[[key]] <- list(d = null_consensus_distribution(
             pool, n_here, n_null = project$consensus$n_null %||% 50L,
             seed = project$maxt$seed,
-            quantile_cut = project$consensus$quantile_cut %||% 0.95)
-          tsf_log("  null for n = ", n_here, ": q95 = ",
-                  signif(null_cache[[key]], 3), " (",
+            quantile_cut = project$consensus$quantile_cut %||% 0.95))
+          tsf_log("  null for n = ", n_here, ": global q95 = ",
+                  signif(null_cache[[key]]$d$global %||% NA, 3), " over ",
+                  null_cache[[key]]$d$n_null %||% 0, " draws (",
                   round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 2),
                   " min)")
         }
-        null_score <- null_cache[[key]]
+        null_dist <- null_cache[[key]]$d
       }
-      sig <- consensus_signature(cs, null_score = null_score,
+      cs <- null_component_pvalues(cs, null_dist)
+      write_tsv_tsf(cs, file.path(inp$paths$base, "consensus",
+                                  sprintf("consensus_spectrum_%s.tsv", cond)))
+      sig <- consensus_signature(cs,
+                                 null_q = project$consensus$null_q %||% 0.05,
                                  max_components = project$consensus$max_components %||% 50L,
                                  min_prevalence = project$consensus$min_prevalence %||% 0.5,
                                  plv_q = project$consensus$plv_q %||% 0.05)
