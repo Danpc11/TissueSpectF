@@ -160,7 +160,22 @@ check("the two new cohort configs load and declare their restrictions", {
   a <- load_dataset_config("GSE276114"); b <- load_dataset_config("GSE142530")
   identical(a$keep_conditions, c("F3", "F4")) && isFALSE(a$has_control_cohort) &&
     identical(b$keep_conditions, "Control") && isTRUE(b$has_control_cohort) &&
-    length(a$sample_filter) == 1 && length(b$sample_filter) == 1 })
+    # GSE276114 needs two filters: etiology, and dropping the F0-2 bin, which
+    # spans three classes and resolves to none of them.
+    length(a$sample_filter) == 2 && length(b$sample_filter) == 1 })
+
+check("an etiology filter is not fooled by a similarly named column", {
+  # "^disease" would match "disease group:ch1" before "disease:ch1" and filter
+  # on the stage bin while believing it filtered on etiology. The anchor with
+  # the colon is what prevents it.
+  ph <- data.frame(geo_accession = c("G1", "G2"),
+                   `disease group:ch1` = c("F4", "F4"),
+                   `disease:ch1` = c("MASLD", "CVH"),
+                   check.names = FALSE, stringsAsFactors = FALSE)
+  cfg <- list(id = "X", sample_filter = list(
+    list(column = "^disease:", values = "MASLD")))
+  lab <- data.frame(condition = "F4", keep = c(TRUE, TRUE), stringsAsFactors = FALSE)
+  identical(apply_sample_filter(lab, ph, cfg)$keep, c(TRUE, FALSE)) })
 
 # --- input schemas and vocabularies without a baseline -----------------------
 tmp_v <- file.path(tempdir(), "voc"); tmp_d <- file.path(tempdir(), "ds")
