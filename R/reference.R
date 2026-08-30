@@ -195,6 +195,11 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
                              grid_size = grid_size)
   }
   calib$bands <- summarise_bands(band_pred, policy = threshold_policy)
+  calib$bands_by_class <- attr(calib$bands, "per_class")
+  if (!is.null(calib$bands_by_class)) {
+    tsf_log("Per-class thresholds calibrated for ",
+            nrow(calib$bands_by_class), " band-class combination(s)")
+  }
   if (!is.null(calib$bands)) {
     tsf_log("Accuracy by query coverage band:")
     for (i in seq_len(nrow(calib$bands))) {
@@ -273,16 +278,26 @@ mask_grid_genes <- function(chrom_idx, target_coverage,
         start:min(n, start + m - 1L)
       },
       missing_blocks = {
-        # Several disjoint intervals removed, rather than everything outside one
-        # window kept: a capture kit misses regions, it does not target a single
-        # contiguous stretch of a chromosome.
+        # Several intervals removed, rather than everything outside one window
+        # kept: a capture kit misses regions, it does not target a single
+        # contiguous stretch. Intervals are drawn until the target number of
+        # genes is actually gone -- drawing them independently lets them overlap,
+        # so fewer genes are removed than intended and the mode quietly becomes
+        # milder than its name.
         drop_total <- n - m
         keep <- rep(TRUE, n)
-        nb <- max(1L, min(n_blocks, floor(drop_total / 2)))
-        sizes <- diff(c(0, sort(sample.int(max(drop_total, 1L), nb - 1L)), drop_total))
-        for (sz in sizes[sizes > 0]) {
+        nb <- max(1L, min(n_blocks, max(1L, floor(drop_total / 2))))
+        guard <- 0L
+        while (sum(!keep) < drop_total && guard < 200L) {
+          guard <- guard + 1L
+          remaining <- drop_total - sum(!keep)
+          sz <- max(1L, min(remaining, ceiling(drop_total / nb)))
           start <- sample.int(max(1L, n - sz + 1L), 1L)
-          keep[start:min(n, start + sz - 1L)] <- FALSE
+          span <- start:min(n, start + sz - 1L)
+          # Only positions still kept count toward the target; an interval that
+          # lands on already-removed genes is redrawn.
+          if (all(!keep[span])) next
+          keep[span] <- FALSE
         }
         which(keep)
       },
@@ -490,7 +505,36 @@ summarise_bands <- function(band_pred, quantile_correct = 0.05,
                           out$unknown_rate_conservative),
     pooled = out$unknown_rate_at_threshold)
   out$policy <- policy
+  attr(out, "per_class") <- summarise_bands_by_class(band_pred, quantile_correct)
   out
+}
+
+#' Per band AND predicted class, where there is enough data to support one.
+#'
+#' Classes differ in how tight their centroids are, so one threshold per band
+#' over-rejects the diffuse classes and under-rejects the tight ones. The
+#' full-coverage calibration already had per-class thresholds; partial bands
+#' were left with a single number. This fills that in, and the band-level
+#' threshold stays as the fallback wherever a class has too few correct matches
+#' to calibrate on its own.
+summarise_bands_by_class <- function(band_pred, quantile_correct = 0.05,
+                                     min_correct = 8L) {
+  if (is.null(band_pred)) return(NULL)
+  d <- band_pred[band_pred$truth == band_pred$predicted, , drop = FALSE]
+  if (!nrow(d)) return(NULL)
+  grp <- split(seq_len(nrow(d)), paste(d$band, d$predicted, sep = "\r"))
+  rows <- lapply(names(grp), function(g) {
+    i <- grp[[g]]
+    if (length(i) < min_correct) return(NULL)
+    parts <- strsplit(g, "\r", fixed = TRUE)[[1]]
+    data.frame(band = parts[1], class = parts[2], n_correct = length(i),
+               threshold = unname(stats::quantile(d$similarity[i], quantile_correct)),
+               median_similarity = stats::median(d$similarity[i]),
+               stringsAsFactors = FALSE)
+  })
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (!length(rows)) return(NULL)
+  do.call(rbind, rows)
 }
 
 #' Calibrate a rejection rule from the out-of-cohort predictions.
@@ -564,7 +608,16 @@ apply_rejection <- function(res, calibration, coverage = NA_real_) {
   }
 
   thr <- NA_real_; source <- "none"
-  if (!is.na(band) && !is.null(calibration$bands)) {
+  # Most specific first: this band and this class, then this band, then the
+  # class at full coverage, then global.
+  bc <- calibration$bands_by_class
+  if (!is.na(band) && !is.null(bc)) {
+    hit <- bc[bc$band == band & bc$class == res$best, , drop = FALSE]
+    if (nrow(hit) && !is.na(hit$threshold[1])) {
+      thr <- hit$threshold[1]; source <- "band+class"
+    }
+  }
+  if (is.na(thr) && !is.na(band) && !is.null(calibration$bands)) {
     b <- calibration$bands[calibration$bands$band == band, , drop = FALSE]
     col <- if ("threshold_applied" %in% colnames(b)) "threshold_applied" else "threshold"
     if (nrow(b) && !is.na(b[[col]][1])) {
