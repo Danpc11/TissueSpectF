@@ -212,16 +212,43 @@ consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
 #' A component of a real condition has to beat that. Prevalence and phase
 #' locking both survive in the null when they reflect tissue-wide structure
 #' rather than the condition, which is exactly the confound worth removing.
+#' @param blocks optional named vector mapping sample id -> block. When given,
+#'   draws are made of whole blocks rather than of individual samples.
+#'
+#' Blocking matters whenever samples are not independent: several biopsies from
+#' one subject, longitudinal measurements, technical batches, tumour-normal
+#' pairs, multiple regions of one organ. Drawing samples freely from such a
+#' dataset builds a null in which a subject's own correlated samples rarely
+#' land together, while the observed condition may consist largely of them. The
+#' null then looks more variable than the data and the test is anti-conservative
+#' in exactly the situation where independence fails.
 null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
                                         seed = 42L, quantile_cut = 0.95,
-                                        q_global = 0.95) {
+                                        q_global = 0.95, blocks = NULL) {
   samples <- unique(spectra_all$sample)
   if (length(samples) <= n_samples || n_null < 10L) return(NULL)
   set.seed(seed)
 
+  draw <- if (is.null(blocks)) {
+    function() sample(samples, n_samples)
+  } else {
+    blk <- blocks[samples]
+    blk[is.na(blk)] <- paste0("_singleton_", which(is.na(blk)))
+    by_block <- split(samples, blk)
+    function() {
+      picked <- character(0)
+      order_b <- sample(names(by_block))
+      for (b in order_b) {
+        if (length(picked) >= n_samples) break
+        picked <- c(picked, by_block[[b]])
+      }
+      utils::head(picked, n_samples)
+    }
+  }
+
   per_key <- list(); best <- numeric(0)
   for (b in seq_len(n_null)) {
-    pick <- sample(samples, n_samples)
+    pick <- draw()
     sub <- spectra_all[spectra_all$sample %in% pick, , drop = FALSE]
     cs <- tryCatch(consensus_spectrum(sub, n_boot = 0L, seed = seed + b,
                                       quantile_cut = quantile_cut),
@@ -240,7 +267,7 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
   rownames(mat) <- keys
 
   list(per_key = mat, global = unname(stats::quantile(best, q_global)),
-       n_null = ncol(mat), n_samples = n_samples)
+       global_max_draws = best, n_null = ncol(mat), n_samples = n_samples)
 }
 
 #' Empirical p-value per component against its own null, then BH.
@@ -251,8 +278,9 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
 #' Keeping the per-(chr, k) null as well gives a p-value per component; BH over
 #' those is the intermediate that lets a signature be localised. Both are
 #' reported, and which one a claim rests on is a stated choice.
-null_component_pvalues <- function(cs, null_dist) {
+null_component_pvalues <- function(cs, null_dist, null_q = 0.05) {
   if (is.null(null_dist)) {
+    cs$p_null_fwer <- NA_real_
     cs$p_null <- NA_real_; cs$q_null <- NA_real_
     cs$beats_global_null <- NA
     return(cs)
@@ -266,6 +294,35 @@ null_component_pvalues <- function(cs, null_dist) {
     (1 + sum(row >= cs$consensus_score_rank[i])) / (length(row) + 1)
   }, numeric(1))
   cs$q_null <- stats::p.adjust(cs$p_null, method = "BH")
+
+  # PRIMARY: the maxT-style p-value against the distribution of the null's
+  # global maximum. Comparing an observed score against the largest score any
+  # random draw produced anywhere controls the family-wise error rate across all
+  # frequencies by construction, so nothing is adjusted afterwards and the floor
+  # is 1/(n_null+1) -- reachable with 50 draws.
+  #
+  # The pointwise p-value above cannot be used this way. Its own floor is also
+  # 1/(n_null+1), but BH across ~n_f frequencies pushes the smallest reachable q
+  # to n_f/(n_null+1): with 297 frequencies and 50 draws that is 5.8, so no
+  # component could ever be confirmed however strong. Confirming on it would
+  # need n_null >= n_f/null_q, which is thousands of draws for one chromosome
+  # and far more for a genome. It is kept as a secondary, localising statistic,
+  # with the reachability warning below.
+  gmax <- null_dist$global_max_draws
+  cs$p_null_fwer <- if (is.null(gmax) || !length(gmax)) NA_real_ else
+    vapply(cs$consensus_score_rank, function(x)
+      (1 + sum(gmax >= x)) / (length(gmax) + 1), numeric(1))
+
+  reachable_q <- nrow(cs) / (n_b + 1)
+  if (reachable_q > null_q) {
+    tsf_log("Pointwise null: with ", n_b, " draws over ", nrow(cs),
+            " frequencies the smallest reachable BH q is ", signif(reachable_q, 2),
+            " > ", null_q, ", so q_null cannot confirm anything. ",
+            "Confirmation uses the family-wise p_null_fwer instead; raise ",
+            "consensus$n_null above ", ceiling(nrow(cs) / null_q),
+            " if you want the pointwise route.")
+  }
+
   cs$beats_global_null <- cs$consensus_score_ci_lower > null_dist$global
   cs$null_global_q95 <- null_dist$global
   cs$n_null <- n_b
@@ -287,7 +344,7 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
   # perfect the alignment, and the signature comes back empty for a reason that
   # has nothing to do with the data. Same shape of problem as the permutation
   # floor in condition_test.R -- say so rather than returning an empty table.
-  has_null <- "q_null" %in% colnames(cs) && any(is.finite(cs$q_null))
+  has_null <- "p_null_fwer" %in% colnames(cs) && any(is.finite(cs$p_null_fwer))
   n_min <- min(cs$n_samples_valid, na.rm = TRUE)
   reachable <- exp(-n_min) * nrow(cs)
   if (reachable > plv_q) {
@@ -314,8 +371,10 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
   # kept as the strict flag: it controls error over the whole signature and
   # confirms only components that dominate every frequency of every random
   # draw. Without any null, the strongest available statement is exploratory.
-  beats_null <- if (has_null) !is.na(hit$q_null) & hit$q_null <= null_q else
-    rep(FALSE, nrow(hit))
+  # Family-wise by construction: no further adjustment, and the floor is
+  # reachable with the default number of draws.
+  beats_null <- if (has_null)
+    !is.na(hit$p_null_fwer) & hit$p_null_fwer <= null_q else rep(FALSE, nrow(hit))
   hit$signature_class <- ifelse(beats_null & hit$plv_rayleigh_q <= plv_q,
                                 "confirmed", "exploratory")
   if (!has_null) {
