@@ -7,6 +7,9 @@ list(
   id       = "case_control",
   tissue   = NA_character_,     # set per dataset
   levels   = c("Control", "Case"),
+  states   = c(Control = "healthy", Case = "disease"),
+  conditions = c(Control = "Control", Case = "Case"),
+  progression = NULL,
   ordered  = FALSE,
   baseline = "Control",
   description = "Two-group design with no intermediate states"
