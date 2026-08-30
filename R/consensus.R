@@ -208,6 +208,7 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
     hit <- cs[cs$prevalence >= min_prevalence, , drop = FALSE]
     if (!nrow(hit)) return(NULL)
     hit$phase_alignment_testable <- FALSE
+    hit$signature_class <- "exploratory"
     hit <- hit[order(-hit$consensus_score_ci_lower), ]
     return(utils::head(hit, max_components))
   }
@@ -216,6 +217,13 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
   hit <- cs[keep, , drop = FALSE]
   if (!nrow(hit)) return(NULL)
   hit$phase_alignment_testable <- TRUE
+  # "confirmed" means all three held: prevalence above the floor, a bootstrap
+  # lower bound above zero, and phase alignment unlikely under uniform phases.
+  # Anything else is "exploratory" and must be reported as such -- a component
+  # from a five-sample condition is a lead, not a signature.
+  hit$signature_class <- ifelse(
+    hit$consensus_score_ci_lower > 0 & hit$plv_rayleigh_q <= plv_q,
+    "confirmed", "exploratory")
   hit <- hit[order(-hit$consensus_score_ci_lower), ]
   utils::head(hit, max_components)
 }
