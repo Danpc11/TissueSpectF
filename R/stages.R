@@ -126,6 +126,23 @@ stage_consensus <- function(project, opt) {
     # same size share it. Without this the same permutation set is recomputed
     # once per condition, which dominates the stage's cost on real data.
     null_cache <- list()
+    # Samples are not always independent. When the metadata names a blocking
+    # variable, the null draws whole blocks so its dependence structure matches
+    # the data's.
+    block_col <- project$consensus$permutation_block %||% NULL
+    blocks <- NULL
+    if (!is.null(block_col)) {
+      if (block_col %in% colnames(inp$dataset$samples)) {
+        blocks <- stats::setNames(as.character(inp$dataset$samples[[block_col]]),
+                                  inp$dataset$samples$sample_id)
+        tsf_log("  null blocked by '", block_col, "': ",
+                length(unique(blocks)), " block(s) over ", length(blocks), " samples")
+      } else {
+        tsf_warn("  consensus$permutation_block names '", block_col,
+                 "', which is not a column of samples.tsv; the null will treat ",
+                 "samples as independent")
+      }
+    }
     for (cond in tsf_conditions(inp$conditions, opt)) {
       sp <- read_tsv_tsf(p_spectra_samples(inp$paths, cond), required = FALSE)
       if (is.null(sp) || !nrow(sp)) {
@@ -148,7 +165,8 @@ stage_consensus <- function(project, opt) {
           null_cache[[key]] <- list(d = null_consensus_distribution(
             pool, n_here, n_null = project$consensus$n_null %||% 50L,
             seed = project$maxt$seed,
-            quantile_cut = project$consensus$quantile_cut %||% 0.95))
+            quantile_cut = project$consensus$quantile_cut %||% 0.95,
+            blocks = blocks))
           tsf_log("  null for n = ", n_here, ": global q95 = ",
                   signif(null_cache[[key]]$d$global %||% NA, 3), " over ",
                   null_cache[[key]]$d$n_null %||% 0, " draws (",
@@ -157,7 +175,8 @@ stage_consensus <- function(project, opt) {
         }
         null_dist <- null_cache[[key]]$d
       }
-      cs <- null_component_pvalues(cs, null_dist)
+      cs <- null_component_pvalues(cs, null_dist,
+                                   null_q = project$consensus$null_q %||% 0.05)
       write_tsv_tsf(cs, file.path(inp$paths$base, "consensus",
                                   sprintf("consensus_spectrum_%s.tsv", cond)))
       sig <- consensus_signature(cs,
