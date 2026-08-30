@@ -4,6 +4,11 @@
 # without anyone hand-copying files. Downloads only what the configs name, skips
 # what is already present, and never deletes.
 
+#' Candidate URLs for a supplementary file.
+#'
+#' GEO names RNA-seq count tables inconsistently across series (raw_counts_GRCh38,
+#' norm_counts_TPM, or the bare accession), so the config names the file and
+#' this only builds the location.
 geo_series_url <- function(gse, file) {
   stub <- paste0(substr(gse, 1, nchar(gse) - 3), "nnn")
   if (grepl("series_matrix", file)) {
