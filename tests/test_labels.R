@@ -26,7 +26,8 @@ pheno_135 <- data.frame(
 lab135 <- harmonize_conditions(pheno_135, cfg_135)
 
 check("quoted accessions are cleaned", identical(lab135$sample_id[1], "GSM1"))
-check("non-disease cohort -> Control", identical(lab135$condition[1], "Control"))
+check("non-disease cohort -> Control_disease_cohort",
+      identical(lab135$condition[1], "Control_disease_cohort"))
 check("NAFLD with stage 0 -> F0, not Control", identical(lab135$condition[2], "F0"))
 check("stage 3 -> F3", identical(lab135$condition[3], "F3"))
 check("unparseable stage -> NA, never 'FNA'",
@@ -47,11 +48,14 @@ lab162 <- harmonize_conditions(pheno_162, cfg_162)
 check("title token N -> Normal_histology, not F0 and not Control",
       identical(lab162$condition[1], "Normal_histology"))
 check("no Control label is ever produced", !any(lab162$condition %in% "Control"))
-check("the healthy states get different class_ids under one state", {
-  a <- tsf_class_id("liver", "Control", cfg_135$vocabulary_spec)
-  b <- tsf_class_id("liver", "Normal_histology", cfg_135$vocabulary_spec)
-  identical(a, "liver::healthy::Control") &&
-    identical(b, "liver::healthy::Normal_histology") })
+check("the three healthy states are distinct classes under one state", {
+  # Merging them would assume what is worth testing: that a healthy liver looks
+  # the same whichever study recruited it.
+  ids <- vapply(c("Control_disease_cohort", "Control_external_study",
+                  "Normal_histology"),
+                function(c) tsf_class_id("liver", c, cfg_135$vocabulary_spec),
+                character(1))
+  all(startsWith(ids, "liver::healthy::")) && length(unique(ids)) == 3L })
 check("a stage becomes a disease class", {
   identical(tsf_class_id("liver", "F2", cfg_135$vocabulary_spec),
             "liver::disease::NAFLD_fibrosis_F2") })
@@ -76,7 +80,7 @@ check("config with has_control_cohort=FALSE rejects a Control rule",
         bad <- cfg_162
         bad$condition_rules <- list(list(id = "x", type = "column_match",
                                          column = "title", values = c("Liver N 01"),
-                                         assign = "Control"))
+                                         assign = "Control_disease_cohort"))
         harmonize_conditions(pheno_162, bad); FALSE
       }, error = function(e) e), "error"))
 
@@ -159,7 +163,8 @@ check("keep_conditions restricts what a dataset contributes", {
 check("the two new cohort configs load and declare their restrictions", {
   a <- load_dataset_config("GSE276114"); b <- load_dataset_config("GSE142530")
   identical(a$keep_conditions, c("F3", "F4")) && isFALSE(a$has_control_cohort) &&
-    identical(b$keep_conditions, "Control") && isTRUE(b$has_control_cohort) &&
+    identical(b$keep_conditions, "Control_external_study") &&
+    isTRUE(b$has_control_cohort) &&
     # GSE276114 needs two filters: etiology, and dropping the F0-2 bin, which
     # spans three classes and resolves to none of them.
     length(a$sample_filter) == 2 && length(b$sample_filter) == 1 })
