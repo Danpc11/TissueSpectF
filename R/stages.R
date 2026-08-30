@@ -360,6 +360,9 @@ compare_one_group <- function(project, loaded, ids, group_name, opt) {
   common <- comparable_conditions(lapply(loaded, function(x) x$conditions),
                                   levels_now = tsf_levels(voc))
   ordered_voc <- isTRUE(voc$ordered)
+  # Transitions run over the declared progression only, intersected with what
+  # is actually present. Healthy states are compared as classes, never as steps.
+  progression <- intersect(tsf_progression(voc), common)
   if (!ordered_voc) {
     tsf_log("Vocabulary '", voc$id, "' is unordered: reporting per-level ",
             "comparisons, no transitions")
@@ -389,14 +392,15 @@ compare_one_group <- function(project, loaded, ids, group_name, opt) {
       }))
 
       trans <- list()
-      for (i in if (ordered_voc) seq_len(length(common) - 1L) else integer(0)) {
-        t <- transition_table(common[i], common[i + 1L], x$peaks[[branch]],
+      for (i in if (ordered_voc) seq_len(max(0L, length(progression) - 1L)) else integer(0)) {
+        t <- transition_table(progression[i], progression[i + 1L], x$peaks[[branch]],
                               x$stability, x$maxt, branch)
         if (is.null(t)) {
-          tsf_log("  ", id, ": ", common[i], " -> ", common[i + 1L], ": no shared stable peak")
+          tsf_log("  ", id, ": ", progression[i], " -> ", progression[i + 1L],
+                  ": no shared stable peak")
           next
         }
-        tsf_log("  ", id, ": ", common[i], " -> ", common[i + 1L], ": ", nrow(t),
+        tsf_log("  ", id, ": ", progression[i], " -> ", progression[i + 1L], ": ", nrow(t),
                 " shared, ", sum(t$p_power_fdr <= 0.05, na.rm = TRUE),
                 " with a significant power change")
         trans[[length(trans) + 1]] <- t
