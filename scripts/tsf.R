@@ -42,6 +42,9 @@ Commands:
   match       identify one expression profile against the reference
   app         open the local desktop app in a browser (needs shiny)
   bundle      package the app + reference into a folder anyone can run
+
+TissueSpect-AE (the learned layer; see ml/ and requirements-ml.txt):
+  ae-prepare  export per-sample spectra + manifest for the model
   run         all of the above, in order
   status      what each dataset has on disk
   selfcheck   run the full pipeline on synthetic data with a known peak
@@ -112,7 +115,8 @@ OPTION_ALIASES <- c(
   kmax = "k_max", k_max = "k_max", target = "target",
   cores = "cores",
   inputunit = "input_unit", input_unit = "input_unit", unit = "input_unit",
-  out = "out"
+  out = "out", outputdir = "output_dir", output_dir = "output_dir",
+  kmax = "k_max", k_max = "k_max", seed = "seed"
 )
 
 FLAG_ALIASES <- c(force = "force", dryrun = "dry_run", dry_run = "dry_run",
@@ -195,7 +199,7 @@ opt <- parse_cli(commandArgs(trailingOnly = TRUE))
 if (opt$help || opt$command %in% c("help", "--help")) { cat(USAGE); quit(status = 0L) }
 
 known <- c(stage_names, "check", "run", "status", "selfcheck", "window",
-           "fetch", "reference", "match", "app", "bundle")
+           "fetch", "reference", "match", "app", "bundle", "ae-prepare")
 if (!opt$command %in% known) {
   cat(USAGE)
   tsf_abort("Unknown command: ", opt$command)
@@ -223,6 +227,12 @@ if (opt$command == "status") {
   st <- pipeline_status(project, opt)
   tsf_log("results_dir: ", project$results_dir)
   print(st, row.names = FALSE)
+  quit(status = 0L)
+}
+
+if (opt$command == "ae-prepare") {
+  source("scripts/prepare_ae_data.R")
+  prepare_ae_data(project, opt)
   quit(status = 0L)
 }
 
