@@ -109,7 +109,8 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
                                      n_features = 500L, n_masks = 10L,
                                      datasets = NULL, ref_params = list(),
                                      max_queries_per_mask = 25L,
-                                     threshold_policy = "pooled") {
+                                     threshold_policy = "pooled",
+                                     grid_size = NULL) {
   target <- match.arg(target)
   ids <- unique(unlist(lapply(fps, function(f) f$labels$dataset_id)))
   if (length(ids) < 2) {
@@ -190,7 +191,8 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
   } else {
     calibrate_coverage_bands(datasets, fps, lab, ids, target, n_features,
                              ref_params = ref_params, n_masks = n_masks,
-                             max_queries_per_mask = max_queries_per_mask)
+                             max_queries_per_mask = max_queries_per_mask,
+                             grid_size = grid_size)
   }
   calib$bands <- summarise_bands(band_pred, policy = threshold_policy)
   if (!is.null(calib$bands)) {
@@ -231,11 +233,24 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
 #'   random      scattered genes, a shallower library
 #'   block       contiguous runs of grid positions, a capture kit
 #'   chromosome  whole chromosomes, a targeted panel
+#'   random              scattered genes, a shallower library
+#'   retained_block      one contiguous run kept per chromosome, a concentrated panel
+#'   missing_blocks      several disjoint intervals removed, the usual capture kit
+#'   chromosome          whole chromosomes, a targeted panel
+#'   expression_dropout  the least expressed genes go first, a shallow library
+#'
+#' `expression_dropout` needs the sample's values, so it falls back to `random`
+#' when none are supplied. It is the most realistic of the five: real coverage
+#' loss is not independent of expression, and genes that drop out cluster in the
+#' tissue-specific families that carry much of the between-condition signal.
 mask_grid_genes <- function(chrom_idx, target_coverage,
-                            mode = c("random", "block", "chromosome"), seed = 1L) {
+                            mode = c("random", "retained_block", "missing_blocks",
+                                     "chromosome", "expression_dropout"),
+                            seed = 1L, values = NULL, n_blocks = 4L) {
   mode <- match.arg(mode)
   set.seed(seed)
   chrs <- names(chrom_idx)
+  if (identical(mode, "expression_dropout") && is.null(values)) mode <- "random"
 
   if (mode == "chromosome") {
     order_chr <- sample(chrs)
@@ -252,15 +267,37 @@ mask_grid_genes <- function(chrom_idx, target_coverage,
   out <- lapply(chrom_idx, function(ci) {
     n <- length(ci$t)
     m <- max(1L, floor(target_coverage * n))
-    sel <- if (mode == "block") {
-      start <- sample.int(max(1L, n - m + 1L), 1L)
-      start:min(n, start + m - 1L)
-    } else {
-      sort(sample.int(n, m))
-    }
+    sel <- switch(mode,
+      retained_block = {
+        start <- sample.int(max(1L, n - m + 1L), 1L)
+        start:min(n, start + m - 1L)
+      },
+      missing_blocks = {
+        # Several disjoint intervals removed, rather than everything outside one
+        # window kept: a capture kit misses regions, it does not target a single
+        # contiguous stretch of a chromosome.
+        drop_total <- n - m
+        keep <- rep(TRUE, n)
+        nb <- max(1L, min(n_blocks, floor(drop_total / 2)))
+        sizes <- diff(c(0, sort(sample.int(max(drop_total, 1L), nb - 1L)), drop_total))
+        for (sz in sizes[sizes > 0]) {
+          start <- sample.int(max(1L, n - sz + 1L), 1L)
+          keep[start:min(n, start + sz - 1L)] <- FALSE
+        }
+        which(keep)
+      },
+      expression_dropout = {
+        # Lowest expressed go first, with noise so it is not a clean cut.
+        v <- values[ci$rows]
+        score <- rank(v, ties.method = "random") + stats::rnorm(n, sd = n / 20)
+        sort(order(-score)[seq_len(m)])
+      },
+      sort(sample.int(n, m)))
+    if (!length(sel)) return(NULL)
     list(rows = ci$rows[sel], t = ci$t[sel], N = ci$N,
          coverage = length(sel) / ci$N)
   })
+  out <- out[!vapply(out, is.null, logical(1))]
   # A chromosome left with too few genes is dropped, exactly as ingest would.
   out[vapply(out, function(ci) length(ci$t) >= 8L, logical(1))]
 }
@@ -298,9 +335,11 @@ coverage_band <- function(coverage) {
 calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features,
                                      ref_params,
                                      coverage_levels = c(0.95, 0.8, 0.6, 0.4),
-                                     modes = c("random", "block", "chromosome"),
+                                     modes = c("random", "retained_block",
+                                               "missing_blocks", "chromosome",
+                                               "expression_dropout"),
                                      n_masks = 10L, max_queries_per_mask = 25L,
-                                     seed = 7L) {
+                                     seed = 7L, grid_size = NULL) {
   common <- Reduce(intersect, lapply(fps, function(f) colnames(f$matrix)))
   full_mat <- normalise_fingerprints(
     do.call(rbind, lapply(fps, function(f) f$matrix[, common, drop = FALSE])))
@@ -320,22 +359,37 @@ calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features
     te_idx <- te_idx[lab$sample_id[te_idx] %in% colnames(ds$dataset$expression)]
     if (!length(te_idx)) next
 
+    n_observed_dataset <- sum(vapply(ds$chrom_idx, function(ci) length(ci$t),
+                                     integer(1)))
+    grid_n <- grid_size %||% n_observed_dataset
+    baseline_cov <- n_observed_dataset / grid_n
+    tsf_log("  ", held, ": covers ", round(100 * baseline_cov, 1),
+            "% of the reference grid before any masking")
+
     for (lev in coverage_levels) {
       for (md in modes) {
         for (m in seq_len(n_masks)) {
           mask_seed <- seed + 1000L * m + 17L * match(md, modes) +
             as.integer(round(100 * lev)) + 7L * match(held, ids)
-          masked <- mask_grid_genes(ds$chrom_idx, lev, md, mask_seed)
-          if (!length(masked)) next
-          gene_cov <- sum(vapply(masked, function(ci) length(ci$t), integer(1))) /
-            sum(vapply(ds$chrom_idx, function(ci) length(ci$t), integer(1)))
-
           set.seed(mask_seed)
           pick <- if (length(te_idx) > max_queries_per_mask)
             sample(te_idx, max_queries_per_mask) else te_idx
 
           for (i in pick) {
             y <- ds$dataset$expression[, lab$sample_id[i]]
+            masked <- mask_grid_genes(ds$chrom_idx, lev, md, mask_seed,
+                                      values = y)
+            if (!length(masked)) next
+            n_kept <- sum(vapply(masked, function(ci) length(ci$t), integer(1)))
+
+            # COVERAGE IS RELATIVE TO THE CANONICAL GRID, not to what this
+            # dataset happened to observe. A held-out cohort covering 70% of the
+            # grid, masked to keep 80% of its own genes, has 56% coverage of the
+            # reference -- band 50-75%, not 75-90%. Calibrating on the dataset's
+            # own denominator would systematically place samples in a band that
+            # is easier than the one a real query of that size would fall in.
+            mask_retention <- n_kept / n_observed_dataset
+            gene_cov <- n_kept / grid_n
             fp <- fingerprint_masked(y, masked, ref_params$k_max,
                                      ref_params$features)
             if (is.null(fp)) next
@@ -346,6 +400,10 @@ calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features
             rows[[length(rows) + 1]] <- data.frame(
               held_out = held, mask = m, mode = md,
               gene_coverage = gene_cov,
+              absolute_reference_coverage = gene_cov,
+              baseline_dataset_coverage = baseline_cov,
+              mask_retention = mask_retention,
+              target_retention = lev,
               feature_coverage = length(avail) / length(model$features),
               band = coverage_band(gene_cov),
               truth = lab[[target]][i], predicted = sc$class[1],
@@ -550,7 +608,8 @@ build_reference <- function(fps, target = "condition", n_features = 500L,
                                          n_masks = n_masks, datasets = datasets,
                                          ref_params = params,
                                          max_queries_per_mask = max_queries_per_mask,
-                                         threshold_policy = threshold_policy)
+                                         threshold_policy = threshold_policy,
+                                         grid_size = if (is.null(grid)) NULL else nrow(grid))
   model <- fit_centroids(mat, lab[[target]], n_features)
 
   # SELF-CONTAINED. A reference must carry everything needed to fingerprint a
