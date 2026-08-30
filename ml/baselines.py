@@ -16,7 +16,8 @@ import numpy as np
 
 from .evaluate import evaluate_fold
 from .prototypes import assign, build_prototypes, prototype_probabilities
-from .splits import assert_no_cohort_leak, leave_one_cohort_out
+from .splits import (assert_no_cohort_leak, class_evaluation_report,
+                     leave_one_cohort_out)
 
 
 def flatten(x: np.ndarray, mask: np.ndarray, channels=(0, 1, 2, 3)) -> np.ndarray:
@@ -140,11 +141,17 @@ def run_baselines(x: np.ndarray, mask: np.ndarray, class_ids, dataset_ids,
             for k in vals[0] if isinstance(vals[0][k], (int, float))
         }
         summary[name]["n_folds"] = len(vals)
-    return {"folds": rows, "summary": summary}
+    return {"folds": rows, "summary": summary,
+            "class_report": class_evaluation_report(folds, dataset_ids, class_ids)}
 
 
 def format_summary(result: dict) -> str:
-    """A table you can paste into a decision, not a dict you have to squint at."""
+    """A table you can paste into a decision, not a dict you have to squint at.
+
+    The per-class report is printed with it, always. Every average below is over
+    the classes that were evaluated out of cohort, and which those are is not
+    obvious from the number.
+    """
     keys = ["balanced_accuracy", "accuracy", "majority_baseline",
             "lift_over_baseline", "macro_f1", "stage_mae"]
     header = f"{'model':<18}" + "".join(f"{k[:14]:>16}" for k in keys)
@@ -153,4 +160,7 @@ def format_summary(result: dict) -> str:
                           key=lambda kv: -kv[1].get("balanced_accuracy", 0)):
         lines.append(f"{name:<18}" + "".join(
             f"{s.get(k, float('nan')):>16.3f}" for k in keys))
+    if "class_report" in result:
+        from .splits import format_class_report
+        lines += ["", format_class_report(result["class_report"])]
     return "\n".join(lines)
