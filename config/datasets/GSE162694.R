@@ -8,6 +8,8 @@
 # branch fired, and "Healthy" meant something different from GSE135251's Healthy.
 list(
   id            = "GSE162694",
+  tissue      = "liver",
+  vocabulary  = "liver_fibrosis",
   description   = "NAFLD liver biopsies, single cohort, no non-disease controls",
   counts_file   = "GSE162694.tsv.gz",
   series_matrix = "GSE162694_series_matrix.txt.gz",
