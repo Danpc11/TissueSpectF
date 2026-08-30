@@ -89,6 +89,40 @@ check("comparable_conditions is the ordered intersection",
       identical(comparable_conditions(list(a = c("F0","F1","Control"), b = c("F1","F0"))),
                 c("F0", "F1")))
 
+check("a compound rule needs every sub-condition to hold", {
+  ph <- data.frame(
+    geo_accession = paste0("GSM", 1:5),
+    `steatosis grade` = c("steatosis grade: 0", "steatosis grade: 0",
+                          "steatosis grade: 1", "steatosis grade: 0",
+                          "steatosis grade: 0"),
+    `cytological ballooning grade` = paste0("cytological ballooning grade: ",
+                                            c(0, 1, 0, 0, 0)),
+    `fibrosis stage` = paste0("fibrosis stage: ", c(0, 0, 0, 2, 0)),
+    check.names = FALSE, stringsAsFactors = FALSE)
+  rule <- list(id = "nh", type = "compound", assign = "Normal_histology",
+               all_of = list(list(column = "steatosis grade", values = "0"),
+                             list(column = "cytological ballooning grade", values = "0"),
+                             list(column = "fibrosis stage", values = "0")))
+  got <- apply_condition_rule(rule, ph)
+  # Only samples 1 and 5 satisfy all three: 2 has ballooning, 3 has steatosis,
+  # 4 has fibrosis. A liver with fibrosis is not histologically normal whatever
+  # its steatosis score.
+  identical(got, c("Normal_histology", NA, NA, NA, "Normal_histology")) })
+
+check("a compound rule with a missing column does not fire", {
+  ph <- data.frame(geo_accession = "GSM1", `steatosis grade` = "0",
+                   check.names = FALSE, stringsAsFactors = FALSE)
+  rule <- list(id = "nh", type = "compound", assign = "Normal_histology",
+               all_of = list(list(column = "steatosis grade", values = "0"),
+                             list(column = "absent column", values = "0")))
+  all(is.na(apply_condition_rule(rule, ph))) })
+
+check("the compound rule is ordered before the stage rule", {
+  cfg <- load_dataset_config("GSE130970")
+  ids <- vapply(cfg$condition_rules, function(r) r$id, character(1))
+  identical(ids[1], "normal_histology_scores") &&
+    identical(ids[2], "biopsy_fibrosis_stage") })
+
 # --- input schemas and vocabularies without a baseline -----------------------
 tmp_v <- file.path(tempdir(), "voc"); tmp_d <- file.path(tempdir(), "ds")
 dir.create(tmp_v, showWarnings = FALSE); dir.create(tmp_d, showWarnings = FALSE)
