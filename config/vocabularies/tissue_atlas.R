@@ -11,6 +11,9 @@ list(
   id       = "tissue_atlas",
   tissue   = NA_character_,
   levels   = NULL,          # dataset config supplies condition_levels
+  states   = NULL,          # every level is its own state: healthy by default
+  conditions = NULL,
+  progression = NULL,
   ordered  = FALSE,
   baseline = NULL,
   description = "One level per tissue; no ordering, no transitions"
