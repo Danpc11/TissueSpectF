@@ -143,13 +143,14 @@ run_selfcheck <- function() {
 
   s1 <- read_tsv_tsf(file.path(project$interim_dir, "GSE135251", "samples.tsv"))
   s2 <- read_tsv_tsf(file.path(project$interim_dir, "GSE162694", "samples.tsv"))
-  check("GSE135251 has a Control group", sum(s1$condition == "Control") == 6)
-  check("GSE135251 keeps F0 separate from Control", sum(s1$condition == "F0") == 5)
-  check("GSE162694 has no Control", !any(s2$condition == "Control"))
+  check("GSE135251 has a Control group",
+        sum(s1$condition == "Control_disease_cohort") == 6)
+  check("GSE135251 keeps F0 separate from its controls", sum(s1$condition == "F0") == 5)
+  check("GSE162694 has no Control", !any(grepl("^Control", s2$condition)))
   check("GSE162694 normal histology is its own class, not F0", {
     sum(s2$condition == "Normal_histology") == 6 && sum(s2$condition == "F0") == 12 })
   check("the two healthy states share a state but not a class", {
-    ids <- unique(s1$class_id[s1$condition == "Control"])
+    ids <- unique(s1$class_id[s1$condition == "Control_disease_cohort"])
     ids2 <- unique(s2$class_id[s2$condition == "Normal_histology"])
     startsWith(ids, "liver::healthy::") && startsWith(ids2, "liver::healthy::") &&
       !identical(ids, ids2) })
