@@ -1,34 +1,334 @@
-Hallazgo estadístico principal
-1. El consenso observado y su nulo no utilizan exactamente la misma estadística
-El consenso observado se calcula con:
-consensus_spectrum(sp, maxt = inp$maxt[[cond]])
-Por tanto, su prevalencia significa “fracción de muestras donde la frecuencia fue significativa mediante maxT”.
-El nulo se calcula en null_consensus_scores() sin resultados maxT:
-consensus_spectrum(sub, n_boot = 0L)
-En ese caso, la prevalencia significa “frecuencia por encima del percentil 95 dentro de cada espectro”.
-Así, el score observado y el score nulo combinan definiciones diferentes de prevalencia. Compararlos directamente no constituye una prueba de permutación válida, aunque probablemente sea conservador.
-Hay dos soluciones posibles:
-- usar prevalencia por ranking tanto en observado como en nulo para decidir signature_class;
-- o construir una tabla maxT conjunta y pasar al nulo los p-valores correspondientes a las muestras seleccionadas.
-Prefiero la primera: mantener dos scores explícitos.
-consensus_score_rank
-consensus_score_maxt
-Usar consensus_score_rank para la prueba permutada y consensus_score_maxt como evidencia confirmatoria secundaria.
-2. El nulo devuelve un único máximo global
-Cada permutación conserva sólo:
-max(cs$consensus_score)
-Esto controla aproximadamente el máximo sobre todas las frecuencias y cromosomas, lo cual es muy estricto. En selfcheck, los umbrales nulos quedaron alrededor de 0.93–0.94, y ninguna condición fue confirmada.
-No es necesariamente incorrecto, pero conviene distinguir:
-- nulo global maxT: controla errores sobre toda la firma;
-- nulo por frecuencia o cromosoma: permite localizar componentes;
-- q ajustado por BH sobre p-valores empíricos: opción intermedia.
-Guardaría la distribución nula por (chr, k), calcularía un p-valor empírico por componente y después aplicaría BH. El máximo global podría conservarse como criterio “muy estricto”.
-3. missing_blocks no garantiza bloques disjuntos
-En mask_grid_genes(), los intervalos eliminados se seleccionan independientemente y pueden solaparse. Si se solapan, se eliminan menos genes que drop_total.
-La cobertura real se calcula posteriormente, por lo que las bandas no quedan falseadas, pero el nombre y comentario “disjoint intervals” no siempre son ciertos.
-Debe seleccionar nuevos intervalos solamente entre posiciones aún conservadas o repetir hasta alcanzar el número objetivo de genes eliminados.
-4. La validación por cobertura continúa siendo global, no por clase
-Cada banda obtiene un solo umbral para todas las condiciones. Sin embargo, las clases pueden tener dispersiones muy distintas. La calibración de cobertura completa sí contempla umbrales por clase, pero las bandas parciales no.
-Cuando haya suficientes aciertos, generaría:
-band × predicted_class × threshold
-y usaría el umbral global de la banda sólo como fallback.
+# consensus.R -- the characteristic spectrum of a condition, built from the
+# per-sample spectra rather than from the spectrum of the mean profile.
+#
+# WHY NOT THE SPECTRUM OF THE MEAN
+# --------------------------------
+# Averaging the profiles and transforming once is not the same as transforming
+# each sample and summarising. The transform is linear, so the spectrum of the
+# mean equals the mean of the complex coefficients -- a VECTOR mean. Components
+# present in every sample at the same frequency but with scattered phases cancel
+# in that sum and disappear from the condition spectrum, however reproducible
+# they are. Conversely one extreme sample can carry a peak that no other sample
+# has.
+#
+# So a condition is summarised here on three axes that the mean profile cannot
+# separate:
+#
+#   how strong   median power across samples (robust to one outlier sample)
+#   how common   prevalence: in what fraction of samples the frequency stands
+#                out within that sample's own spectrum
+#   how aligned  PLV = |mean(exp(i*phase))|, the phase-locking value: 1 when
+#                every sample puts the crest in the same place, ~0 when phases
+#                are scattered
+#
+# A frequency that is strong, common AND phase-locked is a candidate signature
+# of the condition. Strong but not locked means each sample has structure at
+# that scale in a different place -- real, but not a shared signature, and
+# invisible in the spectrum of the mean.
+#
+# WHAT THE SCORE IS AND IS NOT
+# ----------------------------
+#   consensus_score = median_power_normalised * prevalence * PLV
+#
+# A product, so a component must satisfy all three: any factor near zero sends
+# the score to zero. Normalised power (each frequency's share of its own
+# sample-chromosome spectrum) rather than raw power, because raw power differs
+# by orders of magnitude between chromosomes and the score would otherwise rank
+# chromosomes instead of components.
+#
+# The score is a RANKING statistic, not a test. It has no null distribution and
+# no error rate. Bootstrap intervals say how stable it is under resampling of
+# samples; the Rayleigh p-value says whether the phase alignment alone is
+# unlikely under uniform phases. Neither makes the score a significance claim --
+# use condition_test.R for that.
+
+#' Phase-locking value and its Rayleigh p-value.
+#'
+#' Under uniformly random phases E[PLV] is about sqrt(pi)/(2*sqrt(n)), NOT zero:
+#' with 8 samples a PLV of 0.3 is unremarkable. The Rayleigh test is what turns
+#' a PLV into a statement, and it is reported alongside so nobody reads a raw
+#' PLV as evidence of alignment.
+phase_locking <- function(phase) {
+  p <- phase[is.finite(phase)]
+  n <- length(p)
+  if (n < 2L) return(c(plv = NA_real_, rayleigh_p = NA_real_, n = n))
+  plv <- abs(mean(exp(1i * p)))
+  # Rayleigh: R = n*plv^2; the standard small-sample correction of Zar (1999).
+  z <- n * plv^2
+  p_val <- exp(-z) * (1 + (2 * z - z^2) / (4 * n) -
+                        (24 * z - 132 * z^2 + 76 * z^3 - 9 * z^4) / (288 * n^2))
+  c(plv = plv, rayleigh_p = min(max(p_val, 0), 1), n = n)
+}
+
+#' Circular standard deviation, the natural heterogeneity measure for phase.
+circular_sd <- function(phase) {
+  p <- phase[is.finite(phase)]
+  if (length(p) < 2L) return(NA_real_)
+  r <- abs(mean(exp(1i * p)))
+  if (r <= 0) return(Inf)
+  sqrt(-2 * log(r))
+}
+
+#' Prevalence: in what fraction of samples this frequency stands out.
+#'
+#' "Stands out" is defined within each sample against its own spectrum for that
+#' chromosome (above the given quantile of that sample's normalised power), so
+#' prevalence does not depend on library depth or on how strong the sample is
+#' overall. When per-sample maxT results are available, significance is the
+#' better definition and is used instead.
+prevalence_from_rank <- function(power_norm, sample_id, chr, quantile_cut = 0.95) {
+  # The threshold is per sample AND per chromosome. Pooling chromosomes would
+  # make them compete: chromosomes differ in length, coverage and total power,
+  # so a short chromosome whose spectrum is flatter would never clear a
+  # threshold set mostly by a long one, and prevalence would encode chromosome
+  # identity instead of how much a frequency stands out.
+  grp <- paste(sample_id, chr, sep = "\r")
+  by_group <- split(seq_along(power_norm), grp)
+  thr <- vapply(by_group, function(i)
+    stats::quantile(power_norm[i], quantile_cut, na.rm = TRUE), numeric(1))
+  power_norm > thr[grp]
+}
+
+#' Consensus spectrum for one condition, from its per-sample spectra.
+#'
+#' @param spectra_samples the spectra stage output for this condition
+#' @param maxt optional per-sample maxT table; when present, prevalence is the
+#'   fraction of samples in which the frequency is significant
+consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
+                               alpha = 0.05, seed = 42L, quantile_cut = 0.95) {
+  d <- spectra_samples
+  needed <- c("chr", "N", "k", "sample", "power", "amplitude", "phase")
+  missing <- setdiff(needed, colnames(d))
+  if (length(missing)) tsf_abort("consensus needs columns: ",
+                                 paste(missing, collapse = ", "))
+  if ("power_normalised" %in% colnames(d)) {
+    d$pnorm <- d$power_normalised
+  } else {
+    tot <- stats::ave(d$power, paste(d$sample, d$chr), FUN = function(x) sum(x, na.rm = TRUE))
+    d$pnorm <- d$power / pmax(tot, .Machine$double.eps)
+  }
+
+  # TWO prevalences, always both, never one standing in for the other.
+  #
+  # The rank definition ("above this sample's own 95th percentile for this
+  # chromosome") needs nothing but the spectra, so it can be computed for the
+  # observed data and for any permuted draw alike. The maxT definition
+  # ("significant in that sample") is stronger evidence but exists only where
+  # per-sample maxT was run, which the permutation null cannot assume.
+  #
+  # Mixing them would compare an observed score built on one statistic against a
+  # null built on another: not a permutation test, whatever the direction of the
+  # bias. So the permuted comparison uses consensus_score_rank on both sides,
+  # and consensus_score_maxt is reported next to it as confirmatory evidence.
+  d$stands_out_rank <- prevalence_from_rank(d$pnorm, d$sample, d$chr, quantile_cut)
+  has_maxt <- !is.null(maxt) && "p_empirical_maxT" %in% colnames(maxt)
+  d$stands_out_maxt <- if (has_maxt) {
+    key_d <- paste(d$chr, d$N, d$k, d$sample)
+    key_m <- paste(maxt$chr, maxt$N, maxt$k, maxt$sample)
+    sig <- maxt$p_empirical_maxT <= alpha
+    out <- sig[match(key_d, key_m)]
+    out[is.na(out)] <- FALSE
+    out
+  } else rep(NA, nrow(d))
+
+  key <- paste(d$chr, d$N, d$k, sep = "|")
+  groups <- split(seq_len(nrow(d)), key)
+  n_samples_total <- length(unique(d$sample))
+  set.seed(seed)
+
+  rows <- lapply(names(groups), function(g) {
+    i <- groups[[g]]
+    ok <- is.finite(d$power[i]) & is.finite(d$phase[i])
+    i <- i[ok]
+    n_valid <- length(unique(d$sample[i]))
+    if (n_valid < 2L) return(NULL)
+
+    pl <- phase_locking(d$phase[i])
+    med_p <- stats::median(d$pnorm[i], na.rm = TRUE)
+    prev_rank <- mean(d$stands_out_rank[i], na.rm = TRUE)
+    prev_maxt <- if (has_maxt) mean(d$stands_out_maxt[i], na.rm = TRUE) else NA_real_
+    score_rank <- med_p * prev_rank * pl[["plv"]]
+    score_maxt <- if (has_maxt) med_p * prev_maxt * pl[["plv"]] else NA_real_
+
+    # Bootstrap over SAMPLES (skipped when n_boot = 0, as in the null): the unit of replication is the sample, not the
+    # frequency, so resampling anything else would understate the uncertainty.
+    samples_here <- unique(d$sample[i])
+    boot <- if (n_boot < 1L) matrix(NA_real_, nrow = 3, ncol = 1) else
+      vapply(seq_len(n_boot), function(b) {
+      pick <- sample(samples_here, replace = TRUE)
+      idx <- unlist(lapply(pick, function(s) i[d$sample[i] == s]), use.names = FALSE)
+      if (!length(idx)) return(c(NA_real_, NA_real_, NA_real_))
+      mp <- stats::median(d$pnorm[idx], na.rm = TRUE)
+      pv <- abs(mean(exp(1i * d$phase[idx])))
+      c(mp, pv, mp * mean(d$stands_out_rank[idx], na.rm = TRUE) * pv)
+    }, numeric(3))
+
+    qs <- function(v) stats::quantile(v, c(0.025, 0.975), na.rm = TRUE)
+    ci_p <- qs(boot[1, ]); ci_v <- qs(boot[2, ]); ci_s <- qs(boot[3, ])
+
+    parts <- strsplit(g, "|", fixed = TRUE)[[1]]
+    data.frame(
+      chr = parts[1], N = as.integer(parts[2]), k = as.integer(parts[3]),
+      freq = as.integer(parts[3]) / as.integer(parts[2]),
+      period = as.integer(parts[2]) / as.integer(parts[3]),
+      n_samples_valid = n_valid, n_samples_total = n_samples_total,
+      median_power = stats::median(d$power[i], na.rm = TRUE),
+      median_power_normalised = med_p,
+      median_amplitude = stats::median(d$amplitude[i], na.rm = TRUE),
+      prevalence = if (has_maxt) prev_maxt else prev_rank,
+      prevalence_rank = prev_rank, prevalence_maxt = prev_maxt,
+      plv = pl[["plv"]], plv_rayleigh_p = pl[["rayleigh_p"]],
+      mean_phase = Arg(mean(exp(1i * d$phase[i]))),
+      power_heterogeneity = stats::mad(d$pnorm[i], na.rm = TRUE) /
+        max(med_p, .Machine$double.eps),
+      phase_heterogeneity = circular_sd(d$phase[i]),
+      consensus_score = if (has_maxt) score_maxt else score_rank,
+      consensus_score_rank = score_rank,
+      consensus_score_maxt = score_maxt,
+      consensus_score_ci_lower = unname(ci_s[1]),
+      consensus_score_ci_upper = unname(ci_s[2]),
+      median_power_ci_lower = unname(ci_p[1]),
+      median_power_ci_upper = unname(ci_p[2]),
+      plv_ci_lower = unname(ci_v[1]), plv_ci_upper = unname(ci_v[2]),
+      stringsAsFactors = FALSE)
+  })
+
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (!length(rows)) return(NULL)
+  out <- do.call(rbind, rows)
+  out$plv_rayleigh_q <- stats::p.adjust(out$plv_rayleigh_p, method = "BH")
+  out[order(-out$consensus_score_rank), ]
+}
+
+#' Null distribution of the consensus score, by permuting condition labels.
+#'
+#' `consensus_score_ci_lower > 0` is nearly automatic: the score is a product of
+#' non-negative quantities, so any signal at all clears zero. It says the score
+#' is stable under resampling, not that it is larger than what an arbitrary
+#' group of samples of the same size would produce.
+#'
+#' The null here is the right one for the question: draw n samples at random
+#' from the whole dataset, ignoring condition, and compute the consensus score.
+#' A component of a real condition has to beat that. Prevalence and phase
+#' locking both survive in the null when they reflect tissue-wide structure
+#' rather than the condition, which is exactly the confound worth removing.
+null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
+                                        seed = 42L, quantile_cut = 0.95,
+                                        q_global = 0.95) {
+  samples <- unique(spectra_all$sample)
+  if (length(samples) <= n_samples || n_null < 10L) return(NULL)
+  set.seed(seed)
+
+  per_key <- list(); best <- numeric(0)
+  for (b in seq_len(n_null)) {
+    pick <- sample(samples, n_samples)
+    sub <- spectra_all[spectra_all$sample %in% pick, , drop = FALSE]
+    cs <- tryCatch(consensus_spectrum(sub, n_boot = 0L, seed = seed + b,
+                                      quantile_cut = quantile_cut),
+                   error = function(e) NULL)
+    if (is.null(cs) || !nrow(cs)) next
+    key <- paste(cs$chr, cs$N, cs$k, sep = "|")
+    per_key[[b]] <- stats::setNames(cs$consensus_score_rank, key)
+    best <- c(best, max(cs$consensus_score_rank, na.rm = TRUE))
+  }
+  per_key <- per_key[!vapply(per_key, is.null, logical(1))]
+  if (!length(per_key)) return(NULL)
+
+  keys <- Reduce(union, lapply(per_key, names))
+  mat <- vapply(per_key, function(v) v[keys], numeric(length(keys)))
+  if (is.null(dim(mat))) mat <- matrix(mat, nrow = length(keys))
+  rownames(mat) <- keys
+
+  list(per_key = mat, global = unname(stats::quantile(best, q_global)),
+       n_null = ncol(mat), n_samples = n_samples)
+}
+
+#' Empirical p-value per component against its own null, then BH.
+#'
+#' The global maximum null controls the error rate over the whole signature and
+#' is very strict -- in practice nothing is confirmed under it, which is correct
+#' for "is there any component at all" and useless for "which components".
+#' Keeping the per-(chr, k) null as well gives a p-value per component; BH over
+#' those is the intermediate that lets a signature be localised. Both are
+#' reported, and which one a claim rests on is a stated choice.
+null_component_pvalues <- function(cs, null_dist) {
+  if (is.null(null_dist)) {
+    cs$p_null <- NA_real_; cs$q_null <- NA_real_
+    cs$beats_global_null <- NA
+    return(cs)
+  }
+  key <- paste(cs$chr, cs$N, cs$k, sep = "|")
+  n_b <- null_dist$n_null
+  cs$p_null <- vapply(seq_len(nrow(cs)), function(i) {
+    row <- null_dist$per_key[key[i], ]
+    row <- row[is.finite(row)]
+    if (!length(row)) return(NA_real_)
+    (1 + sum(row >= cs$consensus_score_rank[i])) / (length(row) + 1)
+  }, numeric(1))
+  cs$q_null <- stats::p.adjust(cs$p_null, method = "BH")
+  cs$beats_global_null <- cs$consensus_score_ci_lower > null_dist$global
+  cs$null_global_q95 <- null_dist$global
+  cs$n_null <- n_b
+  cs
+}
+
+#' The characteristic signature of a condition.
+#'
+#' Selection is by the lower bootstrap bound rather than the point estimate, so
+#' a component ranks on what survives resampling of the samples, and by phase
+#' alignment that is unlikely under uniform phases.
+consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
+                                plv_q = 0.05, null_q = 0.05) {
+  if (is.null(cs) || !nrow(cs)) return(NULL)
+
+  # The Rayleigh p-value cannot fall below exp(-n) (attained at PLV = 1), so
+  # after BH over n_freq frequencies the smallest reachable q is
+  # exp(-n) * n_freq. With few samples that exceeds the threshold no matter how
+  # perfect the alignment, and the signature comes back empty for a reason that
+  # has nothing to do with the data. Same shape of problem as the permutation
+  # floor in condition_test.R -- say so rather than returning an empty table.
+  has_null <- "q_null" %in% colnames(cs) && any(is.finite(cs$q_null))
+  n_min <- min(cs$n_samples_valid, na.rm = TRUE)
+  reachable <- exp(-n_min) * nrow(cs)
+  if (reachable > plv_q) {
+    tsf_warn("With ", n_min, " sample(s) and ", nrow(cs), " frequencies the ",
+             "smallest reachable phase-alignment q is ", signif(reachable, 2),
+             " > ", plv_q, ": perfect alignment could not pass. About ",
+             ceiling(log(nrow(cs) / plv_q)), " samples are needed for this ",
+             "condition. Reporting by prevalence and score only.")
+    hit <- cs[cs$prevalence >= min_prevalence, , drop = FALSE]
+    if (!nrow(hit)) return(NULL)
+    hit$phase_alignment_testable <- FALSE
+    hit$signature_class <- "exploratory"
+    hit <- hit[order(-hit$consensus_score_ci_lower), ]
+    return(utils::head(hit, max_components))
+  }
+  keep <- cs$prevalence >= min_prevalence &
+    !is.na(cs$plv_rayleigh_q) & cs$plv_rayleigh_q <= plv_q
+  hit <- cs[keep, , drop = FALSE]
+  if (!nrow(hit)) return(NULL)
+  hit$phase_alignment_testable <- TRUE
+  # "confirmed" needs the component to beat its OWN permuted null (BH-adjusted
+  # across components), not merely to clear zero, which a product of
+  # non-negative quantities does automatically. The global-maximum null is
+  # kept as the strict flag: it controls error over the whole signature and
+  # confirms only components that dominate every frequency of every random
+  # draw. Without any null, the strongest available statement is exploratory.
+  beats_null <- if (has_null) !is.na(hit$q_null) & hit$q_null <= null_q else
+    rep(FALSE, nrow(hit))
+  hit$signature_class <- ifelse(beats_null & hit$plv_rayleigh_q <= plv_q,
+                                "confirmed", "exploratory")
+  if (!has_null) {
+    tsf_warn("No permutation null was computed, so no component can be ",
+             "confirmed: clearing zero is not evidence. Set consensus$n_null.")
+  }
+  hit <- hit[order(-hit$consensus_score_ci_lower), ]
+  utils::head(hit, max_components)
+}
+
+#' Feature names of a signature, in the fingerprint's naming scheme.
+signature_features <- function(sig, features = "amplitude") {
+  if (is.null(sig) || !nrow(sig)) return(character(0))
+  nm <- paste0("chr", sig$chr, "_k", sig$k)
+  if (identical(features, "amplitude")) nm else c(paste0(nm, "_c"), paste0(nm, "_s"))
+}
