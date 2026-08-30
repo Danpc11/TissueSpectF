@@ -138,6 +138,55 @@ def balanced_sample_weights(dataset_ids, class_ids, idx=None,
     return weights / total if total > 0 else weights
 
 
+def class_evaluation_report(folds: list[Fold], dataset_ids, class_ids):
+    """Which classes were actually evaluated, by how many cohorts, and what fell out.
+
+    A single macro-F1 presents every class as if it had been tested equally, and
+    with these cohorts it never is: a class present in one series alone is
+    dropped from every fold and contributes nothing, while F0 is tested three
+    times. Reporting the mean without this table is a claim the data does not
+    support.
+    """
+    class_ids = np.asarray(class_ids)
+    dataset_ids = np.asarray(dataset_ids)
+    rows = []
+    for c in sorted(set(class_ids.tolist())):
+        m = class_ids == c
+        cohorts = sorted(set(dataset_ids[m].tolist()))
+        evaluated_in = [f.held_out for f in folds if c in f.shared_classes]
+        dropped_in = [f.held_out for f in folds if c in f.dropped_classes]
+        n_tested = sum(int((class_ids[f.test_idx] == c).sum()) for f in folds
+                       if c in f.shared_classes)
+        rows.append({
+            "class_id": c,
+            "n_samples": int(m.sum()),
+            "n_cohorts": len(cohorts),
+            "cohorts": ",".join(cohorts),
+            "n_folds_evaluated": len(evaluated_in),
+            "folds_evaluated": ",".join(evaluated_in),
+            "folds_dropped": ",".join(dropped_in),
+            "n_samples_tested": n_tested,
+            "evaluated_out_of_cohort": len(evaluated_in) > 0,
+        })
+    return rows
+
+
+def format_class_report(rows) -> str:
+    header = (f"{'class':<42}{'n':>5}{'cohorts':>9}{'folds':>7}{'tested':>8}  status")
+    lines = [header, "-" * len(header)]
+    for r in rows:
+        status = ("evaluated" if r["evaluated_out_of_cohort"]
+                  else "NEVER EVALUATED OUT OF COHORT")
+        lines.append(f"{r['class_id']:<42}{r['n_samples']:>5}{r['n_cohorts']:>9}"
+                     f"{r['n_folds_evaluated']:>7}{r['n_samples_tested']:>8}  {status}")
+    never = [r for r in rows if not r["evaluated_out_of_cohort"]]
+    if never:
+        lines.append("")
+        lines.append(f"{len(never)} class(es) contribute nothing to any reported "
+                     "average: they exist in one cohort only.")
+    return "\n".join(lines)
+
+
 def describe_folds(folds: list[Fold], dataset_ids, class_ids) -> str:
     """A human-readable summary, printed before training rather than after."""
     lines = []
