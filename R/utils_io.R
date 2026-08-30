@@ -5,6 +5,9 @@
 # run manifest records what was written, so two runs can never be interleaved
 # without leaving a trace.
 
+#' Default for NULL. Defined here so any module works when sourced alone.
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
 tsf_log <- function(..., level = "INFO") {
   cat(sprintf("[%s] %-5s %s\n", format(Sys.time(), "%H:%M:%S"), level,
               paste0(..., collapse = "")))
