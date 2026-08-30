@@ -59,7 +59,11 @@ list(
     # Cost is one consensus spectrum per draw, cached per sample size, so
     # conditions of equal size share a null.
     n_null         = 50L,
-    null_q         = 0.05,   # BH-adjusted empirical p against the per-component null
+    null_q         = 0.05,   # family-wise p against the permuted null
+    # Column of samples.tsv identifying non-independent samples (subject, batch,
+    # tumour-normal pair). When set, the null draws whole blocks. NULL treats
+    # samples as independent, which is only right when they are.
+    permutation_block = NULL,
     max_components = 50L
   ),
 
