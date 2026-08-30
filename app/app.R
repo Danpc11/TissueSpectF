@@ -203,6 +203,30 @@ server <- function(input, output, session) {
       s <- res$scores
       if (!isTRUE(input$show_all)) s <- utils::head(s, 5)
 
+      # Decisions that mean "not classified" suppress the class table entirely,
+      # as the CLI does. Showing the top class next to a warning invites the
+      # reader to take the number anyway.
+      not_classified <- res$decision %in% c("UNCALIBRATED_COVERAGE", "LOW_COVERAGE")
+      if (identical(res$decision, "UNCALIBRATED_COVERAGE")) {
+        return(tagList(h4(m$name),
+          div(class = "banner bad",
+              strong("NOT CLASSIFIED — no threshold for this coverage."), br(),
+              sprintf("This query falls in the %s coverage band, and no
+                       rejection threshold was calibrated for it. The
+                       full-coverage threshold does not apply: the similarity
+                       distribution shifts as coverage falls, so reusing it
+                       would be the wrong number rather than a rough one.",
+                      res$coverage_band %||% "unknown"))))
+      }
+      if (identical(res$decision, "LOW_COVERAGE")) {
+        return(tagList(h4(m$name),
+          div(class = "banner bad",
+              strong("NOT CLASSIFIED — coverage below 50%."), br(),
+              sprintf("Gene coverage %.1f%%. Below half the grid the similarity
+                       is computed over too little of the spectrum to mean
+                       anything.", 100 * m$coverage))))
+      }
+
       verdict <- NULL
       if (identical(res$decision, "UNKNOWN")) {
         verdict <- div(class = "banner bad",
