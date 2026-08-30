@@ -439,12 +439,84 @@ check("bootstrap intervals bracket the point estimate", {
   row$consensus_score >= row$consensus_score_ci_lower &&
     row$consensus_score <= row$consensus_score_ci_upper })
 
+check("prevalence is judged within a chromosome, not across chromosomes", {
+  # chr2 has systematically lower normalised power than chr1. Pooling the two
+  # would let chr1 set the threshold and no chr2 frequency would ever count as
+  # prevalent, even the one that dominates chr2's own spectrum.
+  pn <- c(rep(0.020, 39), 0.300,     # chr1: high power throughout
+          rep(0.0001, 39), 0.005)     # chr2: much weaker, one clear peak of its own
+  chr <- c(rep("1", 40), rep("2", 40))
+  smp <- rep("S1", 80)
+  per_chr <- prevalence_from_rank(pn, smp, chr, 0.95)
+  pooled <- prevalence_from_rank(pn, smp, rep("1", 80), 0.95)
+  per_chr[40] && per_chr[80] && !pooled[80] })
+
 # --- coverage-band calibration -----------------------------------------------
-check("simulated loss drops whole blocks, not scattered features", {
-  feats <- c(paste0("chr1_k", 1:40), paste0("chr2_k", 1:40))
-  kept <- simulate_feature_loss(feats, 0.5, "chromosome")
-  chrs <- unique(sub("_.*$", "", kept))
-  length(chrs) == 1 })
+check("masking removes genes, not frequencies", {
+  # A gene mask leaves the GLS able to estimate nearly every frequency, so
+  # feature coverage stays high while gene coverage falls. A feature mask
+  # cannot reproduce that, which is why it calibrates the wrong quantity.
+  ci <- list("1" = list(rows = 1:200, t = 1:200, N = 200L, coverage = 1))
+  masked <- mask_grid_genes(ci, 0.5, "random", seed = 1L)
+  gene_cov <- length(masked[["1"]]$t) / length(ci[["1"]]$t)
+  set.seed(9); y <- rnorm(200)
+  fp_full <- fingerprint_masked(y, ci, 40L, "amplitude")
+  fp_part <- fingerprint_masked(y[masked[["1"]]$t], masked, 40L, "amplitude")
+  feat_cov <- length(intersect(names(fp_part), names(fp_full))) / length(fp_full)
+  abs(gene_cov - 0.5) < 0.02 && feat_cov > 0.9 })
+
+check("a chromosome mask drops whole chromosomes", {
+  ci <- stats::setNames(lapply(1:4, function(i)
+    list(rows = 1:100, t = 1:100, N = 100L, coverage = 1)), as.character(1:4))
+  masked <- mask_grid_genes(ci, 0.5, "chromosome", seed = 3L)
+  length(masked) < 4 && all(vapply(masked, function(m) length(m$t) == 100L, logical(1))) })
+
+check("a block mask keeps contiguous grid positions", {
+  ci <- list("1" = list(rows = 1:200, t = 1:200, N = 200L, coverage = 1))
+  t <- mask_grid_genes(ci, 0.5, "block", seed = 4L)[["1"]]$t
+  all(diff(t) == 1L) })
+
+check("a chromosome left too short is dropped", {
+  ci <- list("1" = list(rows = 1:20, t = 1:20, N = 20L, coverage = 1))
+  length(mask_grid_genes(ci, 0.2, "random", seed = 5L)) == 0L })
+
+check("different mask seeds give different masks, the same seed repeats", {
+  ci <- stats::setNames(lapply(1:8, function(i)
+    list(rows = 1:100, t = 1:100, N = 100L, coverage = 1)), as.character(1:8))
+  masks <- lapply(1:6, function(s) sort(names(mask_grid_genes(ci, 0.5, "chromosome", seed = s))))
+  repeated <- sort(names(mask_grid_genes(ci, 0.5, "chromosome", seed = 1L)))
+  length(unique(masks)) > 1 && identical(masks[[1]], repeated) })
+
+check("the applied threshold follows the declared policy", {
+  bp <- data.frame(band = "50-75%", held_out = "A", mode = "random",
+                   mask = rep(1:4, each = 10),
+                   truth = "X", predicted = "X",
+                   similarity = c(runif(10, .5, .6), runif(10, .7, .8),
+                                  runif(10, .8, .9), runif(10, .9, .95)),
+                   stringsAsFactors = FALSE)
+  pooled <- summarise_bands(bp, policy = "pooled")
+  cons <- summarise_bands(bp, policy = "conservative")
+  cons$threshold_applied > pooled$threshold_applied &&
+    cons$expected_rejection_of_members >= pooled$expected_rejection_of_members })
+
+check("both rejection rates are reported whichever policy is applied", {
+  bp <- data.frame(band = "50-75%", held_out = "A", mode = "random",
+                   mask = rep(1:4, each = 10), truth = "X", predicted = "X",
+                   similarity = runif(40, .5, .95), stringsAsFactors = FALSE)
+  b <- summarise_bands(bp, policy = "pooled")
+  all(c("unknown_rate_at_threshold", "unknown_rate_conservative",
+        "threshold_applied", "policy") %in% colnames(b)) })
+
+check("signatures are labelled confirmed or exploratory", {
+  # Two samples: exp(-2) * n_freq exceeds the q threshold, so phase alignment
+  # is not testable and the component can only be exploratory.
+  cs <- data.frame(chr = "1", N = 200L, k = 6L, freq = 0.03, period = 33,
+                   n_samples_valid = 2L, prevalence = 1,
+                   plv = 1, plv_rayleigh_p = 0.0067, plv_rayleigh_q = 1,
+                   consensus_score = 0.2, consensus_score_ci_lower = 0.1,
+                   stringsAsFactors = FALSE)
+  sig <- consensus_signature(cs)
+  identical(sig$signature_class, "exploratory") && !sig$phase_alignment_testable })
 
 check("coverage bands are assigned correctly", {
   identical(vapply(c(0.95, 0.8, 0.6, 0.3), coverage_band, character(1)),
@@ -462,7 +534,7 @@ check("a band threshold is used when one exists", {
               bands = data.frame(band = "50-75%", threshold = 0.4,
                                  stringsAsFactors = FALSE))
   r <- apply_rejection(list(best = "A", similarity = 0.5), cal, coverage = 0.6)
-  identical(r$decision, "A") && identical(r$threshold_source, "band") })
+  identical(r$decision, "A") && startsWith(r$threshold_source, "band") })
 
 check("below 50% coverage nothing is classified", {
   cal <- list(global_threshold = 0.2, per_class = NULL, quantile = 0.05,
