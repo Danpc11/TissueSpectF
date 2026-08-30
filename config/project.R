@@ -59,6 +59,7 @@ list(
     # Cost is one consensus spectrum per draw, cached per sample size, so
     # conditions of equal size share a null.
     n_null         = 50L,
+    null_q         = 0.05,   # BH-adjusted empirical p against the per-component null
     max_components = 50L
   ),
 
