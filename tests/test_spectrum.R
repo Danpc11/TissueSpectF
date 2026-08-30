@@ -471,10 +471,27 @@ check("a chromosome mask drops whole chromosomes", {
   masked <- mask_grid_genes(ci, 0.5, "chromosome", seed = 3L)
   length(masked) < 4 && all(vapply(masked, function(m) length(m$t) == 100L, logical(1))) })
 
-check("a block mask keeps contiguous grid positions", {
+check("retained_block keeps one contiguous run", {
   ci <- list("1" = list(rows = 1:200, t = 1:200, N = 200L, coverage = 1))
-  t <- mask_grid_genes(ci, 0.5, "block", seed = 4L)[["1"]]$t
+  t <- mask_grid_genes(ci, 0.5, "retained_block", seed = 4L)[["1"]]$t
   all(diff(t) == 1L) })
+
+check("missing_blocks removes several disjoint intervals", {
+  ci <- list("1" = list(rows = 1:400, t = 1:400, N = 400L, coverage = 1))
+  t <- mask_grid_genes(ci, 0.6, "missing_blocks", seed = 5L, n_blocks = 4L)[["1"]]$t
+  gaps <- sum(diff(t) > 1)
+  gaps >= 2 && length(t) < 400 })
+
+check("expression_dropout removes the least expressed first", {
+  ci <- list("1" = list(rows = 1:200, t = 1:200, N = 200L, coverage = 1))
+  v <- seq_len(200)                       # gene i has expression i
+  kept <- mask_grid_genes(ci, 0.5, "expression_dropout", seed = 6L,
+                          values = v)[["1"]]$t
+  mean(v[kept]) > mean(v) })
+
+check("expression_dropout falls back when no values are given", {
+  ci <- list("1" = list(rows = 1:200, t = 1:200, N = 200L, coverage = 1))
+  length(mask_grid_genes(ci, 0.5, "expression_dropout", seed = 6L)[["1"]]$t) == 100L })
 
 check("a chromosome left too short is dropped", {
   ci <- list("1" = list(rows = 1:20, t = 1:20, N = 20L, coverage = 1))
@@ -506,6 +523,19 @@ check("both rejection rates are reported whichever policy is applied", {
   b <- summarise_bands(bp, policy = "pooled")
   all(c("unknown_rate_at_threshold", "unknown_rate_conservative",
         "threshold_applied", "policy") %in% colnames(b)) })
+
+check("confirmation requires beating the permuted null, not just zero", {
+  cs <- data.frame(chr = "1", N = 200L, k = 6L, freq = 0.03, period = 33,
+                   n_samples_valid = 40L, prevalence = 1,
+                   plv = 1, plv_rayleigh_p = 1e-12, plv_rayleigh_q = 1e-10,
+                   consensus_score = 0.5, consensus_score_ci_lower = 0.3,
+                   stringsAsFactors = FALSE)
+  beats <- consensus_signature(cs, null_score = 0.1)
+  loses <- consensus_signature(cs, null_score = 0.9)
+  none  <- consensus_signature(cs, null_score = NA_real_)
+  identical(beats$signature_class, "confirmed") &&
+    identical(loses$signature_class, "exploratory") &&
+    identical(none$signature_class, "exploratory") })
 
 check("signatures are labelled confirmed or exploratory", {
   # Two samples: exp(-2) * n_freq exceeds the q threshold, so phase alignment
