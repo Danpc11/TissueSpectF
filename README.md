@@ -236,9 +236,10 @@ the stage says so and ranks by prevalence and score instead of returning an
 empty signature.
 
 `signature_<condition>.tsv` is the exported characteristic signature. Each
-component carries `signature_class`: **confirmed** when prevalence, the
-bootstrap lower bound and the adjusted Rayleigh p all hold, **exploratory**
-otherwise — including every component from a condition with too few samples to
+component carries `signature_class`: **confirmed** when prevalence holds, the
+adjusted Rayleigh p holds, and the bootstrap lower bound clears a
+label-permuted null (random samples of the same size, ignoring condition);
+**exploratory** otherwise — including every component from a condition with too few samples to
 test phase alignment at all. An exploratory component is a lead, not a
 signature, and the stage counts only confirmed ones in its summary.
 
@@ -436,9 +437,12 @@ already normalised; negative values are refused. A query covering less than 20%
 of the grid, or less than 50% of the features the model uses, is reported
 `LOW_COVERAGE` and **not scored** — in the CLI and in the app alike.
 
-Coverage is calibrated rather than assumed. Validation masks **genes** on the
-grid — scattered, in contiguous blocks, and by whole chromosomes — recomputes
-the fingerprint from the survivors, and reports accuracy and threshold per band
+Coverage is calibrated rather than assumed, and measured against the canonical
+grid rather than against whatever the validation cohort happened to observe: a
+cohort covering 70% of the grid, masked to 80% of its own genes, is a 56% query,
+not an 80% one. Validation masks **genes** five ways — scattered, one retained
+block, several missing blocks, whole chromosomes, and dropout of the least
+expressed — recomputes the fingerprint from the survivors, and reports accuracy and threshold per band
 with the spread between masks. Masking spectral features instead would measure
 an easier quantity: half a chromosome's genes can go missing and the GLS still
 estimates nearly every frequency, so feature coverage stays near 100% while gene
