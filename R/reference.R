@@ -106,7 +106,10 @@ match_query <- function(model, query_vec, available = NULL,
 
 #' Leave-one-dataset-out validation. The only number worth reporting.
 validate_across_datasets <- function(fps, target = c("condition", "tissue"),
-                                     n_features = 500L, n_masks = 25L) {
+                                     n_features = 500L, n_masks = 10L,
+                                     datasets = NULL, ref_params = list(),
+                                     max_queries_per_mask = 25L,
+                                     threshold_policy = "pooled") {
   target <- match.arg(target)
   ids <- unique(unlist(lapply(fps, function(f) f$labels$dataset_id)))
   if (length(ids) < 2) {
@@ -179,9 +182,17 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
   }
 
   calib <- calibrate_rejection(pred_all)
-  band_pred <- calibrate_coverage_bands(mat, lab, ids, target, n_features,
-                                        n_masks = n_masks)
-  calib$bands <- summarise_bands(band_pred)
+  band_pred <- if (is.null(datasets)) {
+    tsf_warn("No expression matrices supplied: gene-level coverage cannot be ",
+             "simulated, so no per-band threshold will exist and partial ",
+             "queries will be reported UNCALIBRATED_COVERAGE.")
+    NULL
+  } else {
+    calibrate_coverage_bands(datasets, fps, lab, ids, target, n_features,
+                             ref_params = ref_params, n_masks = n_masks,
+                             max_queries_per_mask = max_queries_per_mask)
+  }
+  calib$bands <- summarise_bands(band_pred, policy = threshold_policy)
   if (!is.null(calib$bands)) {
     tsf_log("Accuracy by query coverage band:")
     for (i in seq_len(nrow(calib$bands))) {
@@ -190,8 +201,11 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
               calib$bands$n[i], " over ", calib$bands$n_masks[i], " masks, sd ",
               round(calib$bands$accuracy_sd_between_masks[i], 3),
               ", threshold ",
-              if (is.na(calib$bands$threshold[i])) "none" else
-                round(calib$bands$threshold[i], 3), ")")
+              if (is.na(calib$bands$threshold_applied[i])) "none" else
+                round(calib$bands$threshold_applied[i], 3),
+              " [", calib$bands$policy[i], "], rejects ",
+              round(100 * calib$bands$expected_rejection_of_members[i], 1),
+              "% of members)")
     }
   }
   list(target = target, predictions = pred_all, accuracy = acc,
@@ -200,39 +214,62 @@ validate_across_datasets <- function(fps, target = c("condition", "tissue"),
        calibration = calib, n_datasets = length(ids), datasets = ids)
 }
 
-#' Realistic feature loss, for calibrating what a partial query looks like.
+#' Realistic GENE loss on the reference grid.
 #'
-#' Coverage is never lost at random gene by gene: a query is missing whole
-#' chromosomes (a targeted panel), contiguous genomic blocks (a capture kit), or
-#' a scatter of low-expressed genes (a shallower library). Dropping features
-#' uniformly at random would produce an optimistic calibration, because random
-#' loss leaves every chromosome represented.
-simulate_feature_loss <- function(features, target_coverage, mode = c("block", "chromosome", "random"),
-                                  seed = 1L) {
+#' The thing a real query loses is genes, not frequencies, and the two are not
+#' interchangeable. Masking spectral features (chr1_k6, chr1_k7, ...) models a
+#' panel that reports some frequencies and not others, which no experiment does.
+#' Dropping half the genes of a chromosome, by contrast, leaves the GLS able to
+#' estimate almost every frequency -- feature coverage stays near 100% while
+#' gene coverage is 50% -- but every estimate is noisier and the spectral window
+#' changes. Calibrating on feature masks therefore measures the wrong quantity
+#' and, because it is the easier one, measures it optimistically.
+#'
+#' Loss is simulated on the grid and the fingerprint is recomputed from the
+#' surviving genes.
+#'
+#'   random      scattered genes, a shallower library
+#'   block       contiguous runs of grid positions, a capture kit
+#'   chromosome  whole chromosomes, a targeted panel
+mask_grid_genes <- function(chrom_idx, target_coverage,
+                            mode = c("random", "block", "chromosome"), seed = 1L) {
   mode <- match.arg(mode)
   set.seed(seed)
-  chr <- sub("^(chr[^_]+)_.*$", "\\1", features)
-  keep_n <- max(3L, floor(target_coverage * length(features)))
+  chrs <- names(chrom_idx)
 
   if (mode == "chromosome") {
-    chrs <- sample(unique(chr))
-    keep <- character(0)
-    for (c in chrs) {
-      if (length(keep) >= keep_n) break
-      keep <- c(keep, features[chr == c])
+    order_chr <- sample(chrs)
+    total <- sum(vapply(chrom_idx, function(ci) length(ci$t), integer(1)))
+    keep_chr <- character(0); kept <- 0L
+    for (c in order_chr) {
+      if (kept >= target_coverage * total) break
+      keep_chr <- c(keep_chr, c); kept <- kept + length(chrom_idx[[c]]$t)
     }
-    return(keep)
+    out <- chrom_idx[keep_chr]
+    return(out)
   }
-  if (mode == "block") {
-    # Contiguous runs of k within each chromosome.
-    keep <- unlist(lapply(split(features, chr), function(f) {
-      n <- length(f); m <- max(1L, floor(target_coverage * n))
+
+  out <- lapply(chrom_idx, function(ci) {
+    n <- length(ci$t)
+    m <- max(1L, floor(target_coverage * n))
+    sel <- if (mode == "block") {
       start <- sample.int(max(1L, n - m + 1L), 1L)
-      f[start:min(n, start + m - 1L)]
-    }), use.names = FALSE)
-    return(keep)
-  }
-  sample(features, keep_n)
+      start:min(n, start + m - 1L)
+    } else {
+      sort(sample.int(n, m))
+    }
+    list(rows = ci$rows[sel], t = ci$t[sel], N = ci$N,
+         coverage = length(sel) / ci$N)
+  })
+  # A chromosome left with too few genes is dropped, exactly as ingest would.
+  out[vapply(out, function(ci) length(ci$t) >= 8L, logical(1))]
+}
+
+#' Recompute a sample's fingerprint from a masked grid.
+fingerprint_masked <- function(y, masked_idx, k_max, features) {
+  if (!length(masked_idx)) return(NULL)
+  terms <- fingerprint_terms(masked_idx)
+  fingerprint_vector(y, masked_idx, terms, k_max = k_max, features = features)
 }
 
 COVERAGE_BANDS <- list(
@@ -249,43 +286,68 @@ coverage_band <- function(coverage) {
   "<50%"
 }
 
-#' Score held-out samples again at reduced coverage, band by band.
+#' Score held-out samples again at reduced GENE coverage, band by band.
 #'
-#' The thresholds calibrated on complete fingerprints do not transfer to partial
-#' queries: with fewer shared features the similarity distribution shifts, so
-#' applying the full-coverage threshold to a 60%-covered query rejects members
-#' that should be accepted. Each band gets its own threshold.
-calibrate_coverage_bands <- function(mat, lab, ids, target, n_features,
+#' For each fold the centroids are fitted on the full training fingerprints;
+#' each held-out sample is then re-fingerprinted from a masked grid and scored.
+#' Bands are keyed on GENE coverage, because that is the quantity a query can
+#' report about itself before anything is computed.
+#'
+#' Cost is one GLS fingerprint per (sample, level, mode, mask), so
+#' `max_queries_per_mask` caps how many held-out samples each mask scores.
+calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features,
+                                     ref_params,
                                      coverage_levels = c(0.95, 0.8, 0.6, 0.4),
-                                     modes = c("block", "chromosome", "random"),
-                                     n_masks = 25L, seed = 7L) {
-  # One mask per (coverage, mode) would calibrate against a single accidental
-  # choice of which chromosomes or blocks went missing. Which regions are absent
-  # matters as much as how many, so each combination is repeated over n_masks
-  # independent masks and the spread between masks enters the calibration.
+                                     modes = c("random", "block", "chromosome"),
+                                     n_masks = 10L, max_queries_per_mask = 25L,
+                                     seed = 7L) {
+  common <- Reduce(intersect, lapply(fps, function(f) colnames(f$matrix)))
+  full_mat <- normalise_fingerprints(
+    do.call(rbind, lapply(fps, function(f) f$matrix[, common, drop = FALSE])))
+
   rows <- list()
   for (held in ids) {
     tr <- lab$dataset_id != held; te <- !tr
     shared <- intersect(unique(lab[[target]][tr]), unique(lab[[target]][te]))
     if (length(shared) < 2) next
     keep_tr <- tr & lab[[target]] %in% shared
-    keep_te <- te & lab[[target]] %in% shared
-    model <- fit_centroids(mat[keep_tr, , drop = FALSE], lab[[target]][keep_tr],
-                           n_features)
+    model <- fit_centroids(full_mat[keep_tr, , drop = FALSE],
+                           lab[[target]][keep_tr], n_features)
+
+    ds <- datasets[[held]]
+    if (is.null(ds)) next
+    te_idx <- which(te & lab[[target]] %in% shared)
+    te_idx <- te_idx[lab$sample_id[te_idx] %in% colnames(ds$dataset$expression)]
+    if (!length(te_idx)) next
 
     for (lev in coverage_levels) {
       for (md in modes) {
         for (m in seq_len(n_masks)) {
           mask_seed <- seed + 1000L * m + 17L * match(md, modes) +
             as.integer(round(100 * lev)) + 7L * match(held, ids)
-          avail <- simulate_feature_loss(model$features, lev, md, mask_seed)
-          realised <- length(intersect(avail, model$features)) / length(model$features)
-          for (i in which(keep_te)) {
-            sc <- score_query(model, mat[i, ], avail)
+          masked <- mask_grid_genes(ds$chrom_idx, lev, md, mask_seed)
+          if (!length(masked)) next
+          gene_cov <- sum(vapply(masked, function(ci) length(ci$t), integer(1))) /
+            sum(vapply(ds$chrom_idx, function(ci) length(ci$t), integer(1)))
+
+          set.seed(mask_seed)
+          pick <- if (length(te_idx) > max_queries_per_mask)
+            sample(te_idx, max_queries_per_mask) else te_idx
+
+          for (i in pick) {
+            y <- ds$dataset$expression[, lab$sample_id[i]]
+            fp <- fingerprint_masked(y, masked, ref_params$k_max,
+                                     ref_params$features)
+            if (is.null(fp)) next
+            avail <- intersect(names(fp), model$features)
+            if (length(avail) < 3) next
+            sc <- score_query(model, fp, avail)
             if (is.null(sc)) next
             rows[[length(rows) + 1]] <- data.frame(
-              held_out = held, mask = m, coverage = realised, mode = md,
-              band = coverage_band(realised),
+              held_out = held, mask = m, mode = md,
+              gene_coverage = gene_cov,
+              feature_coverage = length(avail) / length(model$features),
+              band = coverage_band(gene_cov),
               truth = lab[[target]][i], predicted = sc$class[1],
               similarity = sc$similarity[1],
               margin = if (nrow(sc) > 1) sc$similarity[1] - sc$similarity[2] else NA_real_,
@@ -300,7 +362,8 @@ calibrate_coverage_bands <- function(mat, lab, ids, target, n_features,
 }
 
 #' Per-band accuracy and rejection threshold.
-summarise_bands <- function(band_pred, quantile_correct = 0.05) {
+summarise_bands <- function(band_pred, quantile_correct = 0.05,
+                            policy = "pooled") {
   if (is.null(band_pred)) return(NULL)
   bands <- vapply(COVERAGE_BANDS, function(b) b$name, character(1))
   out <- do.call(rbind, lapply(bands, function(b) {
@@ -337,16 +400,38 @@ summarise_bands <- function(band_pred, quantile_correct = 0.05) {
       threshold_conservative = if (all(is.na(thr_by_mask))) NA_real_ else
         unname(stats::quantile(thr_by_mask, 0.90, na.rm = TRUE)),
       unknown_rate_at_threshold = NA_real_,
+      unknown_rate_conservative = NA_real_,
       classify = !identical(b, "<50%"),
       stringsAsFactors = FALSE)
   }))
   if (is.null(out)) return(NULL)
   # What fraction of held-out members that band's own threshold would reject.
-  out$unknown_rate_at_threshold <- vapply(seq_len(nrow(out)), function(i) {
+  rate_at <- function(i, col) {
     d <- band_pred[band_pred$band == out$band[i], , drop = FALSE]
-    if (is.na(out$threshold[i]) || !nrow(d)) return(NA_real_)
-    mean(d$similarity < out$threshold[i], na.rm = TRUE)
-  }, numeric(1))
+    thr <- out[[col]][i]
+    if (is.na(thr) || !nrow(d)) return(NA_real_)
+    mean(d$similarity < thr, na.rm = TRUE)
+  }
+  out$unknown_rate_at_threshold <- vapply(seq_len(nrow(out)), rate_at,
+                                          numeric(1), col = "threshold")
+  out$unknown_rate_conservative <- vapply(seq_len(nrow(out)), rate_at,
+                                          numeric(1), col = "threshold_conservative")
+  # Which of the two is actually applied is a declared policy, not an
+  # accident. "conservative" uses the 90th percentile of the per-mask
+  # thresholds, so a query whose missing regions happen to be the awkward ones
+  # is not judged against a threshold calibrated on a luckier mask; it rejects
+  # more true members, and the rate at which it does so is recorded here.
+  out$threshold_applied <- switch(policy,
+    conservative = ifelse(is.na(out$threshold_conservative), out$threshold,
+                          out$threshold_conservative),
+    pooled = out$threshold,
+    tsf_abort("threshold_policy must be 'conservative' or 'pooled'"))
+  out$expected_rejection_of_members <- switch(policy,
+    conservative = ifelse(is.na(out$threshold_conservative),
+                          out$unknown_rate_at_threshold,
+                          out$unknown_rate_conservative),
+    pooled = out$unknown_rate_at_threshold)
+  out$policy <- policy
   out
 }
 
@@ -423,7 +508,11 @@ apply_rejection <- function(res, calibration, coverage = NA_real_) {
   thr <- NA_real_; source <- "none"
   if (!is.na(band) && !is.null(calibration$bands)) {
     b <- calibration$bands[calibration$bands$band == band, , drop = FALSE]
-    if (nrow(b) && !is.na(b$threshold[1])) { thr <- b$threshold[1]; source <- "band" }
+    col <- if ("threshold_applied" %in% colnames(b)) "threshold_applied" else "threshold"
+    if (nrow(b) && !is.na(b[[col]][1])) {
+      thr <- b[[col]][1]
+      source <- paste0("band:", b$policy[1] %||% "pooled")
+    }
   }
   if (is.na(thr)) {
     pc <- calibration$per_class
@@ -432,7 +521,7 @@ apply_rejection <- function(res, calibration, coverage = NA_real_) {
     } else {
       thr <- calibration$global_threshold; source <- "global"
     }
-    if (!is.na(band) && !identical(band, "90-100%") && source != "band") {
+    if (!is.na(band) && !identical(band, "90-100%") && !startsWith(source, "band")) {
       # Refuse to silently reuse a full-coverage threshold on a partial query.
       res$decision <- "UNCALIBRATED_COVERAGE"
       res$threshold <- NA_real_
@@ -448,7 +537,9 @@ apply_rejection <- function(res, calibration, coverage = NA_real_) {
 
 #' Build the reference: fingerprints, validation, and a model fitted on all data.
 build_reference <- function(fps, target = "condition", n_features = 500L,
-                            grid = NULL, params = list(), n_masks = 25L) {
+                            grid = NULL, params = list(), n_masks = 10L,
+                            datasets = NULL, max_queries_per_mask = 25L,
+                            threshold_policy = "pooled") {
   common <- Reduce(intersect, lapply(fps, function(f) colnames(f$matrix)))
   mat <- normalise_fingerprints(
     do.call(rbind, lapply(fps, function(f) f$matrix[, common, drop = FALSE])))
@@ -456,7 +547,10 @@ build_reference <- function(fps, target = "condition", n_features = 500L,
 
   validation <- validate_across_datasets(fps, target = target,
                                          n_features = n_features,
-                                         n_masks = n_masks)
+                                         n_masks = n_masks, datasets = datasets,
+                                         ref_params = params,
+                                         max_queries_per_mask = max_queries_per_mask,
+                                         threshold_policy = threshold_policy)
   model <- fit_centroids(mat, lab[[target]], n_features)
 
   # SELF-CONTAINED. A reference must carry everything needed to fingerprint a
