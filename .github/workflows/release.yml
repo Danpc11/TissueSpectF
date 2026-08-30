@@ -1,0 +1,112 @@
+name: Build app bundle
+
+# Two triggers: a version tag publishes a Release with the bundle attached, and
+# manual dispatch builds one without publishing, for checking a change before
+# tagging.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      gene_universe:
+        description: 'Gene universe for the grid'
+        default: '^protein-coding$'
+      n_masks:
+        description: 'Masks per coverage level and loss mode'
+        default: '10'
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    # The coverage calibration recomputes one GLS fingerprint per
+    # (sample, level, mode, mask); on two cores that is the long pole.
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+
+      - name: Tests must pass before anything is published
+        run: |
+          Rscript tests/test_labels.R
+          Rscript tests/test_spectrum.R
+
+      # GEO downloads are stable for a given accession, so cache them rather
+      # than hitting NCBI on every run.
+      - name: Cache GEO downloads
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: geo-${{ hashFiles('config/datasets/*.R') }}
+
+      - name: Fetch inputs
+        run: |
+          ./tsf fetch --geo-dir data
+          ./tsf check --geo-dir data
+
+      # The reference needs the common format, nothing further: fingerprints
+      # come from the expression matrices, so neither maxT nor the spectral
+      # stages are on this path.
+      - name: Ingest
+        run: |
+          ./tsf run --to ingest \
+            --geo-dir data --interim-dir interim --results-dir results \
+            --gene-universe '${{ github.event.inputs.gene_universe || ''^protein-coding$'' }}'
+
+      - name: Build reference and validate out of cohort
+        run: |
+          ./tsf reference \
+            --geo-dir data --interim-dir interim --results-dir results \
+            2>&1 | tee reference.log
+
+      # The validation numbers are what tell a recipient how much a match is
+      # worth, so they go on the run's summary page rather than only into a log
+      # nobody opens.
+      - name: Report validation on the summary page
+        if: always()
+        run: |
+          {
+            echo '## Reference validation'
+            echo '```'
+            grep -E 'Out-of-cohort|coverage band|%:|USABLE|WEAK|NOT BETTER|Grid compatibility' reference.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refuse to publish a reference that does not beat its baseline
+        run: |
+          if grep -q 'NOT BETTER THAN GUESSING' reference.log; then
+            echo "The reference does not beat the majority-class baseline out of cohort."
+            echo "Publishing it would ship confident-looking output with no information."
+            exit 1
+          fi
+
+      - name: Build the bundle
+        run: |
+          ./tsf bundle --results-dir results --interim-dir interim \
+                       --out TissueSpectF-app
+          sha256sum TissueSpectF-app.zip > TissueSpectF-app.zip.sha256
+          cat TissueSpectF-app/REFERENCE.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TissueSpectF-app
+          path: |
+            TissueSpectF-app.zip
+            TissueSpectF-app.zip.sha256
+          retention-days: 30
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            TissueSpectF-app.zip
+            TissueSpectF-app.zip.sha256
+          body_path: TissueSpectF-app/REFERENCE.txt
+          fail_on_unmatched_files: true
