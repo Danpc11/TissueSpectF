@@ -243,6 +243,69 @@ harmonize_conditions <- function(pheno, dataset_config) {
   )
 }
 
+#' Drop samples a dataset should not contribute at all.
+#'
+#' Two mechanisms, both explicit, because a cohort can be useful for part of
+#' what it contains and wrong for the rest:
+#'
+#'   sample_filter    keep only samples whose fields match (or exclude those
+#'                    that match). This is how a mixed-etiology series
+#'                    contributes its MASLD samples and not its HBV, ALD or
+#'                    cholestatic ones -- those are different diseases whose
+#'                    fibrosis is not the same object.
+#'   keep_conditions  keep only certain classes. A series can be sound for
+#'                    advanced fibrosis and too thin or too selected for the
+#'                    early stages.
+#'
+#' A sample whose filter field is missing or unreadable is DROPPED, never kept
+#' on the assumption that it belongs. Silently admitting a hepatitis B cirrhosis
+#' into a MASLD class would be the most expensive error available here.
+apply_sample_filter <- function(labels, pheno, dataset_config) {
+  filt <- dataset_config$sample_filter
+  if (!is.null(filt)) {
+    for (f in filt) {
+      col <- find_pheno_column(pheno, f$column)
+      if (is.null(col)) {
+        tsf_abort("sample_filter for ", dataset_config$id, " needs a column ",
+                  "matching '", f$column, "', which is absent. Refusing to ",
+                  "proceed: without it every sample would be admitted, ",
+                  "including the ones the filter exists to exclude.")
+      }
+      v <- tolower(clean_pheno_value(pheno[[col]]))
+      ok <- if (!is.null(f$values)) {
+        !is.na(v) & v %in% tolower(as.character(f$values))
+      } else if (!is.null(f$pattern)) {
+        !is.na(v) & grepl(f$pattern, v, ignore.case = TRUE)
+      } else if (!is.null(f$exclude_values)) {
+        !is.na(v) & !(v %in% tolower(as.character(f$exclude_values)))
+      } else {
+        tsf_abort("sample_filter entry needs values, pattern or exclude_values")
+      }
+      dropped <- sum(labels$keep & !ok)
+      if (dropped) {
+        tsf_log("  filter '", f$column, "': dropped ", dropped, " sample(s) (",
+                paste(utils::head(sort(unique(v[labels$keep & !ok])), 6),
+                      collapse = ", "), ")")
+      }
+      labels$keep <- labels$keep & ok
+      labels$filtered_out <- !ok
+    }
+  }
+
+  keep_cond <- dataset_config$keep_conditions
+  if (!is.null(keep_cond)) {
+    out <- labels$keep & !(labels$condition %in% keep_cond)
+    if (any(out)) {
+      tsf_log("  keep_conditions: dropped ", sum(out), " sample(s) in ",
+              paste(sort(unique(labels$condition[out])), collapse = ", "),
+              " (this dataset contributes only ",
+              paste(keep_cond, collapse = ", "), ")")
+    }
+    labels$keep <- labels$keep & labels$condition %in% keep_cond
+  }
+  labels
+}
+
 #' Summarise labelling and refuse to continue on a bad parse.
 audit_labels <- function(labels, dataset_config, max_unresolved_frac = 0.05,
                          min_n_per_condition = 5L) {
