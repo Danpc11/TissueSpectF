@@ -505,7 +505,8 @@ summarise_bands <- function(band_pred, quantile_correct = 0.05,
                           out$unknown_rate_conservative),
     pooled = out$unknown_rate_at_threshold)
   out$policy <- policy
-  attr(out, "per_class") <- summarise_bands_by_class(band_pred, quantile_correct)
+  attr(out, "per_class") <- summarise_bands_by_class(band_pred, quantile_correct,
+                                                     policy = policy)
   out
 }
 
@@ -518,7 +519,7 @@ summarise_bands <- function(band_pred, quantile_correct = 0.05,
 #' threshold stays as the fallback wherever a class has too few correct matches
 #' to calibrate on its own.
 summarise_bands_by_class <- function(band_pred, quantile_correct = 0.05,
-                                     min_correct = 8L) {
+                                     min_correct = 8L, policy = "pooled") {
   if (is.null(band_pred)) return(NULL)
   d <- band_pred[band_pred$truth == band_pred$predicted, , drop = FALSE]
   if (!nrow(d)) return(NULL)
@@ -527,8 +528,25 @@ summarise_bands_by_class <- function(band_pred, quantile_correct = 0.05,
     i <- grp[[g]]
     if (length(i) < min_correct) return(NULL)
     parts <- strsplit(g, "\r", fixed = TRUE)[[1]]
+    pooled <- unname(stats::quantile(d$similarity[i], quantile_correct))
+    # The declared policy applies at the most specific level too. Computing only
+    # a pooled quantile here and then preferring it over the band-level
+    # threshold silently overrode a `conservative` setting: the more specific
+    # number won, and it was the less conservative one.
+    per_mask <- if ("mask" %in% colnames(d))
+      split(i, paste(d$held_out[i], d$mode[i], d$mask[i])) else list(i)
+    thr_by_mask <- vapply(per_mask, function(j)
+      if (length(j) < 3) NA_real_ else
+        unname(stats::quantile(d$similarity[j], quantile_correct)), numeric(1))
+    conservative <- if (all(is.na(thr_by_mask))) NA_real_ else
+      unname(stats::quantile(thr_by_mask, 0.90, na.rm = TRUE))
     data.frame(band = parts[1], class = parts[2], n_correct = length(i),
-               threshold = unname(stats::quantile(d$similarity[i], quantile_correct)),
+               threshold_pooled = pooled,
+               threshold_conservative = conservative,
+               threshold_applied = if (identical(policy, "conservative") &&
+                                       !is.na(conservative)) conservative else pooled,
+               threshold = pooled,
+               policy = policy,
                median_similarity = stats::median(d$similarity[i]),
                stringsAsFactors = FALSE)
   })
@@ -613,8 +631,10 @@ apply_rejection <- function(res, calibration, coverage = NA_real_) {
   bc <- calibration$bands_by_class
   if (!is.na(band) && !is.null(bc)) {
     hit <- bc[bc$band == band & bc$class == res$best, , drop = FALSE]
-    if (nrow(hit) && !is.na(hit$threshold[1])) {
-      thr <- hit$threshold[1]; source <- "band+class"
+    col <- if ("threshold_applied" %in% colnames(hit)) "threshold_applied" else "threshold"
+    if (nrow(hit) && !is.na(hit[[col]][1])) {
+      thr <- hit[[col]][1]
+      source <- paste0("band+class:", hit$policy[1] %||% "pooled")
     }
   }
   if (is.na(thr) && !is.na(band) && !is.null(calibration$bands)) {
