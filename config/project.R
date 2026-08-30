@@ -54,6 +54,11 @@ list(
     quantile_cut   = 0.95,   # "stands out" cut when no maxT is available
     min_prevalence = 0.5,
     plv_q          = 0.05,   # BH-adjusted Rayleigh p for phase alignment
+    # Draws of n random samples, ignoring condition, whose best consensus score
+    # forms the null a component must beat to be called confirmed.
+    # Cost is one consensus spectrum per draw, cached per sample size, so
+    # conditions of equal size share a null.
+    n_null         = 50L,
     max_components = 50L
   ),
 
