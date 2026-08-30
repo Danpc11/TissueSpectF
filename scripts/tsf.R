@@ -41,6 +41,7 @@ Commands:
   reference   build the fingerprint library + out-of-cohort validation
   match       identify one expression profile against the reference
   app         open the local desktop app in a browser (needs shiny)
+  bundle      package the app + reference into a folder anyone can run
   run         all of the above, in order
   status      what each dataset has on disk
   selfcheck   run the full pipeline on synthetic data with a known peak
@@ -76,6 +77,7 @@ Matching:
   --query <file>        counts TSV to identify
   --reference <file>    reference .rds to match against
   --input-unit <u>      counts (default) | cpm | tpm | logged
+  --out <dir>           where to write the bundle    (bundle only)
 
 Other:
   --log <file>          append all output to this file
@@ -109,7 +111,8 @@ OPTION_ALIASES <- c(
   criterion = "criterion", ebicgamma = "ebic_gamma", ebic_gamma = "ebic_gamma",
   kmax = "k_max", k_max = "k_max", target = "target",
   cores = "cores",
-  inputunit = "input_unit", input_unit = "input_unit", unit = "input_unit"
+  inputunit = "input_unit", input_unit = "input_unit", unit = "input_unit",
+  out = "out"
 )
 
 FLAG_ALIASES <- c(force = "force", dryrun = "dry_run", dry_run = "dry_run",
@@ -192,7 +195,7 @@ opt <- parse_cli(commandArgs(trailingOnly = TRUE))
 if (opt$help || opt$command %in% c("help", "--help")) { cat(USAGE); quit(status = 0L) }
 
 known <- c(stage_names, "check", "run", "status", "selfcheck", "window",
-           "fetch", "reference", "match", "app")
+           "fetch", "reference", "match", "app", "bundle")
 if (!opt$command %in% known) {
   cat(USAGE)
   tsf_abort("Unknown command: ", opt$command)
@@ -220,6 +223,11 @@ if (opt$command == "status") {
   st <- pipeline_status(project, opt)
   tsf_log("results_dir: ", project$results_dir)
   print(st, row.names = FALSE)
+  quit(status = 0L)
+}
+
+if (opt$command == "bundle") {
+  bundle_app(project, opt$out %||% "TissueSpectF-app", opt$reference)
   quit(status = 0L)
 }
 
