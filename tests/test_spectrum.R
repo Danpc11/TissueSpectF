@@ -498,6 +498,33 @@ check("the two consensus scores are both reported and differ in meaning", {
     all(is.finite(no_maxt$consensus_score_rank)) &&
     isTRUE(all.equal(no_maxt$consensus_score, no_maxt$consensus_score_rank)) })
 
+check("confirmation uses a family-wise p with a reachable floor", {
+  # 50 draws over 297 frequencies: BH on the pointwise p cannot go below 5.8,
+  # so nothing could ever be confirmed that way. The family-wise p against the
+  # distribution of the null's maximum has a floor of 1/51 and can.
+  cs <- data.frame(chr = "1", N = 200L, k = seq_len(297),
+                   consensus_score_rank = c(0.95, runif(296, 0, 0.3)),
+                   consensus_score_ci_lower = 0.9, stringsAsFactors = FALSE)
+  nd <- list(per_key = matrix(runif(297 * 50, 0, 0.3), nrow = 297,
+                              dimnames = list(paste("1", 200L, seq_len(297), sep = "|"), NULL)),
+             global = 0.4, global_max_draws = runif(50, 0.2, 0.4),
+             n_null = 50L, n_samples = 10L)
+  out <- null_component_pvalues(cs, nd)
+  min(out$q_null, na.rm = TRUE) > 0.05 &&      # the pointwise route cannot confirm
+    out$p_null_fwer[1] <= 0.05 &&              # the family-wise route can
+    out$p_null_fwer[1] >= 1 / 51 })
+
+check("a blocked null draws whole blocks", {
+  set.seed(95); N <- 120L; tt <- 1:N
+  per_sample <- do.call(rbind, lapply(1:12, function(i) {
+    r <- run_fft(cos(2 * pi * 5 * (tt - 1) / N) + rnorm(N, sd = 0.5))
+    r$sample <- paste0("S", i); r$chr <- "1"; r }))
+  blocks <- stats::setNames(rep(paste0("subj", 1:6), each = 2), paste0("S", 1:12))
+  nd <- null_consensus_distribution(per_sample, n_samples = 4L, n_null = 12L,
+                                    blocks = blocks)
+  # Blocks of two, four samples per draw: a draw can never split a subject.
+  !is.null(nd) && nd$n_null > 0 })
+
 check("the per-component null gives a p-value and a BH q-value", {
   cs <- data.frame(chr = "1", N = 200L, k = c(6L, 7L), freq = c(.03, .035),
                    period = c(33, 28), n_samples_valid = 10L, prevalence = 1,
@@ -512,16 +539,28 @@ check("the per-component null gives a p-value and a BH q-value", {
   out$p_null[1] < 0.05 && out$p_null[2] > 0.05 &&
     all(out$q_null >= out$p_null) && !out$beats_global_null[1] })
 
+check("the policy reaches the band+class level too", {
+  bp <- data.frame(band = "50-75%", held_out = "A", mode = "random",
+                   mask = rep(1:4, each = 10), truth = "X", predicted = "X",
+                   similarity = c(runif(10, .5, .6), runif(10, .7, .8),
+                                  runif(10, .8, .9), runif(10, .9, .95)),
+                   stringsAsFactors = FALSE)
+  po <- summarise_bands_by_class(bp, policy = "pooled", min_correct = 8L)
+  co <- summarise_bands_by_class(bp, policy = "conservative", min_correct = 8L)
+  co$threshold_applied > po$threshold_applied &&
+    identical(po$threshold_applied, po$threshold_pooled) })
+
 check("band and class thresholds beat the band-only threshold", {
   cal <- list(global_threshold = 0.9, per_class = NULL, quantile = 0.05,
               bands = data.frame(band = "50-75%", threshold = 0.4,
                                  threshold_applied = 0.4, policy = "pooled",
                                  stringsAsFactors = FALSE),
               bands_by_class = data.frame(band = "50-75%", class = "A",
-                                          threshold = 0.7, stringsAsFactors = FALSE))
+                                          threshold = 0.7, threshold_applied = 0.7,
+                                          policy = "pooled", stringsAsFactors = FALSE))
   a <- apply_rejection(list(best = "A", similarity = 0.5), cal, coverage = 0.6)
   b <- apply_rejection(list(best = "B", similarity = 0.5), cal, coverage = 0.6)
-  identical(a$decision, "UNKNOWN") && identical(a$threshold_source, "band+class") &&
+  identical(a$decision, "UNKNOWN") && startsWith(a$threshold_source, "band+class") &&
     identical(b$decision, "B") && startsWith(b$threshold_source, "band:") })
 
 check("expression_dropout removes the least expressed first", {
@@ -573,9 +612,9 @@ check("confirmation requires beating the permuted null, not just zero", {
                      consensus_score = 0.5, consensus_score_rank = 0.5,
                      consensus_score_ci_lower = 0.3,
                      stringsAsFactors = FALSE)
-  beats <- consensus_signature(within(base, { p_null <- 0.001; q_null <- 0.002 }))
-  loses <- consensus_signature(within(base, { p_null <- 0.4; q_null <- 0.6 }))
-  none  <- consensus_signature(within(base, { p_null <- NA_real_; q_null <- NA_real_ }))
+  beats <- consensus_signature(within(base, { p_null_fwer <- 0.02 }))
+  loses <- consensus_signature(within(base, { p_null_fwer <- 0.4 }))
+  none  <- consensus_signature(within(base, { p_null_fwer <- NA_real_ }))
   identical(beats$signature_class, "confirmed") &&
     identical(loses$signature_class, "exploratory") &&
     identical(none$signature_class, "exploratory") })
