@@ -23,7 +23,7 @@ list(
       type   = "column_match",
       column = "^disease",
       values = c("Control", "control", "normal"),
-      assign = "Control"
+      assign = "Control_disease_cohort"
     ),
     list(
       id            = "biopsy_fibrosis_stage",
