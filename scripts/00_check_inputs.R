@@ -8,13 +8,15 @@
 # _norm_counts_TPM, a date stamp), and that mismatch is the most common reason
 # ingest fails on a new machine.
 
-suppressPackageStartupMessages({
-  source("R/utils_io.R")
-  source("R/config.R")
-  source("R/labels.R")
-})
-
-project <- load_project_config("config/project.R")
+# When invoked as `./tsf check`, the CLI has already loaded the config and
+# applied every --geo-dir / --results-dir override; reloading it here would
+# quietly discard them and check the wrong directory.
+if (!exists("project", inherits = TRUE) || !is.list(get0("project"))) {
+  suppressPackageStartupMessages({
+    source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
+  })
+  project <- load_project_config("config/project.R")
+}
 tsf_log("geo_dir: ", project$geo_dir)
 
 if (!dir.exists(project$geo_dir)) {
@@ -69,4 +71,4 @@ if (!ok) {
   tsf_abort("Inputs incomplete. Fix the file names in config/datasets/<GSE>.R ",
             "(counts_file, series_matrix) or config/project.R (annotation_file, paths).")
 }
-tsf_log("All inputs present. Run: ./tsf run")
+tsf_log("All inputs present. Run: Rscript scripts/01_ingest_dataset.R")
