@@ -136,10 +136,11 @@ consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
     prev <- mean(d$stands_out[i], na.rm = TRUE)
     score <- med_p * prev * pl[["plv"]]
 
-    # Bootstrap over SAMPLES: the unit of replication is the sample, not the
+    # Bootstrap over SAMPLES (skipped when n_boot = 0, as in the null): the unit of replication is the sample, not the
     # frequency, so resampling anything else would understate the uncertainty.
     samples_here <- unique(d$sample[i])
-    boot <- vapply(seq_len(n_boot), function(b) {
+    boot <- if (n_boot < 1L) matrix(NA_real_, nrow = 3, ncol = 1) else
+      vapply(seq_len(n_boot), function(b) {
       pick <- sample(samples_here, replace = TRUE)
       idx <- unlist(lapply(pick, function(s) i[d$sample[i] == s]), use.names = FALSE)
       if (!length(idx)) return(c(NA_real_, NA_real_, NA_real_))
@@ -182,13 +183,45 @@ consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
   out[order(-out$consensus_score), ]
 }
 
+#' Null distribution of the consensus score, by permuting condition labels.
+#'
+#' `consensus_score_ci_lower > 0` is nearly automatic: the score is a product of
+#' non-negative quantities, so any signal at all clears zero. It says the score
+#' is stable under resampling, not that it is larger than what an arbitrary
+#' group of samples of the same size would produce.
+#'
+#' The null here is the right one for the question: draw n samples at random
+#' from the whole dataset, ignoring condition, and compute the consensus score.
+#' A component of a real condition has to beat that. Prevalence and phase
+#' locking both survive in the null when they reflect tissue-wide structure
+#' rather than the condition, which is exactly the confound worth removing.
+null_consensus_scores <- function(spectra_all, n_samples, n_null = 100L,
+                                  seed = 42L, quantile_cut = 0.95,
+                                  q = 0.95) {
+  samples <- unique(spectra_all$sample)
+  if (length(samples) <= n_samples || n_null < 10L) return(NA_real_)
+  set.seed(seed)
+  best <- vapply(seq_len(n_null), function(b) {
+    pick <- sample(samples, n_samples)
+    sub <- spectra_all[spectra_all$sample %in% pick, , drop = FALSE]
+    cs <- tryCatch(consensus_spectrum(sub, n_boot = 0L, seed = seed + b,
+                                      quantile_cut = quantile_cut),
+                   error = function(e) NULL)
+    if (is.null(cs) || !nrow(cs)) return(NA_real_)
+    max(cs$consensus_score, na.rm = TRUE)
+  }, numeric(1))
+  best <- best[is.finite(best)]
+  if (!length(best)) return(NA_real_)
+  unname(stats::quantile(best, q))
+}
+
 #' The characteristic signature of a condition.
 #'
 #' Selection is by the lower bootstrap bound rather than the point estimate, so
 #' a component ranks on what survives resampling of the samples, and by phase
 #' alignment that is unlikely under uniform phases.
 consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
-                                plv_q = 0.05) {
+                                plv_q = 0.05, null_score = NA_real_) {
   if (is.null(cs) || !nrow(cs)) return(NULL)
 
   # The Rayleigh p-value cannot fall below exp(-n) (attained at PLV = 1), so
@@ -208,6 +241,7 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
     hit <- cs[cs$prevalence >= min_prevalence, , drop = FALSE]
     if (!nrow(hit)) return(NULL)
     hit$phase_alignment_testable <- FALSE
+    hit$null_score_q95 <- null_score
     hit$signature_class <- "exploratory"
     hit <- hit[order(-hit$consensus_score_ci_lower), ]
     return(utils::head(hit, max_components))
@@ -217,13 +251,20 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
   hit <- cs[keep, , drop = FALSE]
   if (!nrow(hit)) return(NULL)
   hit$phase_alignment_testable <- TRUE
-  # "confirmed" means all three held: prevalence above the floor, a bootstrap
-  # lower bound above zero, and phase alignment unlikely under uniform phases.
-  # Anything else is "exploratory" and must be reported as such -- a component
-  # from a five-sample condition is a lead, not a signature.
-  hit$signature_class <- ifelse(
-    hit$consensus_score_ci_lower > 0 & hit$plv_rayleigh_q <= plv_q,
-    "confirmed", "exploratory")
+  hit$null_score_q95 <- null_score
+  # "confirmed" requires the bootstrap lower bound to clear the label-permuted
+  # null, not merely zero. Clearing zero is nearly automatic for a product of
+  # non-negative quantities; clearing the null means the component belongs to
+  # this condition rather than to any group of samples of the same size.
+  # Without a null, the strongest available statement is exploratory.
+  beats_null <- if (is.na(null_score)) rep(FALSE, nrow(hit)) else
+    hit$consensus_score_ci_lower > null_score
+  hit$signature_class <- ifelse(beats_null & hit$plv_rayleigh_q <= plv_q,
+                                "confirmed", "exploratory")
+  if (is.na(null_score)) {
+    tsf_warn("No permutation null was computed, so no component can be ",
+             "confirmed: clearing zero is not evidence. Set consensus$n_null.")
+  }
   hit <- hit[order(-hit$consensus_score_ci_lower), ]
   utils::head(hit, max_components)
 }
