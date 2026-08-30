@@ -39,6 +39,7 @@ TissueSpectF_colab.ipynb   the whole pipeline on a free Colab VM
 Makefile
 .github/workflows/
   tests.yml                unit tests + self-check on every push
+  release.yml              builds and publishes the app bundle on a version tag
 config/
   project.R                paths, filters, and every tunable parameter
   datasets/<GSE>.R         one per dataset: file names, tissue, label rules
@@ -325,12 +326,55 @@ as separate, non-identical counts. If both hold, the label fix is in effect.
 
 ## The app
 
+Locally, from the repository:
+
 ```bash
 Rscript -e 'install.packages("shiny")'   # once
 ./tsf run --to spectra
 ./tsf reference
 ./tsf app
 ```
+
+### Giving it to someone else
+
+The usual route is a Release: tag a version and GitHub Actions builds the
+bundle, so the recipient downloads a zip and nobody has to run anything.
+
+```bash
+git tag v0.2.0 && git push --tags
+```
+
+`.github/workflows/release.yml` fetches the GEO inputs, ingests, builds the
+reference, runs the out-of-cohort validation, packages the bundle, and attaches
+it to the Release with its SHA-256 and the provenance file as the release notes.
+It **refuses to publish** a reference that does not beat its majority-class
+baseline: shipping one would mean distributing confident-looking output with no
+information in it. The validation numbers, including the per-coverage-band
+table, land on the run's summary page.
+
+The reference needs only `ingest` — fingerprints come from the expression
+matrices — so the slow spectral stages are not on the release path. What does
+cost time there is the coverage calibration, which recomputes a fingerprint per
+(sample, coverage level, loss mode, mask); `workflow_dispatch` exposes
+`n_masks` for a cheaper trial build.
+
+Binary references do not belong in git, which is why the bundle is a release
+asset rather than a committed file.
+
+Locally, the same thing:
+
+```bash
+./tsf bundle --out TissueSpectF-app
+```
+
+Produces a folder (and a zip) that depends on nothing else — not this
+repository, not `config/project.R`, not the interim or results directories, not
+the GEO downloads. It contains the reference, the four R modules a query needs,
+a launcher for macOS/Linux and one for Windows, a README and a provenance file
+recording exactly what the reference was built from and how well it validated.
+
+The recipient unzips it and runs `run.sh` (or double-clicks `run.bat`). R is the
+only prerequisite; `shiny` installs itself on first run. Nothing is uploaded.
 
 Opens in a browser and runs entirely on the machine that started it: no upload
 leaves the computer and no server is contacted. Drop in a counts TSV (gene id
