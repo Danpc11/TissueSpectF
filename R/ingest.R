@@ -222,6 +222,7 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   } else {
     harmonize_conditions(pheno, cfg)
   }
+  labels <- apply_sample_filter(labels, pheno, cfg)
   write_tsv_tsf(labels, file.path(out_dir, "label_audit.tsv"))
   audit <- audit_labels(labels, cfg)
   samples <- labels[labels$keep, , drop = FALSE]
