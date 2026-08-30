@@ -103,6 +103,9 @@ run_selfcheck <- function() {
 
   opt <- list(datasets = c("GSE135251", "GSE162694"), cond = NULL,
               branch = NULL, branches = "average", force = TRUE)
+  project$fingerprint$n_masks <- 3L            # keep the self-check quick
+  project$fingerprint$max_queries_per_mask <- 6L
+  project$consensus$n_null <- 20L
 
   for (stage in stage_names) {
     tsf_log("selfcheck stage: ", stage)
@@ -154,6 +157,70 @@ run_selfcheck <- function() {
   shared <- if (length(hits)) read_tsv_tsf(hits[1], required = FALSE) else NULL
   check("the increase replicates across datasets",
         !is.null(shared) && sum(shared$replicated, na.rm = TRUE) >= 3)
+
+  # --- the matcher, end to end -----------------------------------------------
+  # Stages alone do not exercise stage_reference, the coverage calibration or
+  # the query path, so a break there used to pass selfcheck silently. Here a
+  # reference is built and queried at several ABSOLUTE coverage levels, and the
+  # decisions are checked against the bands they should fall in.
+  ref_ok <- tryCatch({ stage_reference(project, opt); TRUE },
+                     error = function(e) { tsf_warn("reference: ", conditionMessage(e)); FALSE })
+  check("a reference is built from the synthetic cohorts", ref_ok)
+
+  if (ref_ok) {
+    ref <- readRDS(file.path(project$results_dir, "reference", "reference.rds"))
+    check("the reference carries its own grid and unit",
+          !is.null(ref$grid) && nrow(ref$grid) > 0 &&
+            !is.na(ref$params$expression_unit))
+    check("coverage bands were calibrated",
+          !is.null(ref$validation$calibration$bands) &&
+            nrow(ref$validation$calibration$bands) >= 2)
+
+    counts <- read_tsv_tsf(file.path(geo, "GSE162694.tsv.gz"))
+    ids_all <- as.character(counts[[1]])
+    col <- colnames(counts)[ncol(counts)]          # an F4 sample
+    grid_ids <- as.character(ref$grid$entrez_id)
+
+    query_at <- function(frac, seed) {
+      set.seed(seed)
+      keep_ids <- sample(intersect(ids_all, grid_ids),
+                         max(3L, floor(frac * nrow(ref$grid))))
+      i <- match(keep_ids, ids_all)
+      fq <- fingerprint_query(counts[[col]][i], ids_all[i], ref, unit = "counts")
+      if (is.null(fq)) return(NULL)
+      proj <- project_to_reference(fq$vector, ref)
+      res <- match_query(ref$model, proj$vector, proj$available)
+      if (is.null(res)) return(NULL)
+      res <- apply_rejection(res, ref$validation$calibration,
+                             coverage = fq$coverage)
+      list(coverage = fq$coverage, res = res)
+    }
+
+    q100 <- query_at(1.0, 1L)
+    check("a full-coverage query is scored", {
+      !is.null(q100) && q100$coverage > 0.9 &&
+        identical(q100$res$coverage_band, "90-100%") &&
+        !q100$res$decision %in% c("LOW_COVERAGE", "UNCALIBRATED_COVERAGE") })
+    check("the full query recovers a class of the reference",
+          !is.null(q100) && q100$res$best %in% ref$model$classes)
+
+    for (frac in c(0.8, 0.6)) {
+      q <- query_at(frac, as.integer(100 * frac))
+      check(paste0("a ", 100 * frac, "% query lands in the right band"), {
+        !is.null(q) && abs(q$coverage - frac) < 0.1 &&
+          identical(q$res$coverage_band, coverage_band(q$coverage)) })
+    }
+
+    q40 <- query_at(0.4, 40L)
+    check("a 40% query is refused as LOW_COVERAGE",
+          !is.null(q40) && identical(q40$res$decision, "LOW_COVERAGE"))
+
+    check("coverage is measured against the grid, not the query", {
+      # Halving the query halves the reported coverage, whatever the dataset
+      # the reference was built from covered.
+      a <- query_at(0.8, 7L); b <- query_at(0.4, 7L)
+      !is.null(a) && !is.null(b) && a$coverage > b$coverage * 1.5 })
+  }
 
   unlink(tmp, recursive = TRUE)
   if (failures == 0L) {
