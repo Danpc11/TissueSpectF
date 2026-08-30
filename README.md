@@ -234,8 +234,12 @@ than roughly `log(n_frequencies/q)` samples cannot establish alignment at all;
 the stage says so and ranks by prevalence and score instead of returning an
 empty signature.
 
-`signature_<condition>.tsv` is the exported characteristic signature, and it can
-drive the reference model.
+`signature_<condition>.tsv` is the exported characteristic signature. Each
+component carries `signature_class`: **confirmed** when prevalence, the
+bootstrap lower bound and the adjusted Rayleigh p all hold, **exploratory**
+otherwise — including every component from a condition with too few samples to
+test phase alignment at all. An exploratory component is a lead, not a
+signature, and the stage counts only confirmed ones in its summary.
 
 ## What decides that a peak exists
 
@@ -388,11 +392,18 @@ already normalised; negative values are refused. A query covering less than 20%
 of the grid, or less than 50% of the features the model uses, is reported
 `LOW_COVERAGE` and **not scored** — in the CLI and in the app alike.
 
-Coverage is calibrated rather than assumed: validation re-scores every held-out
-sample under simulated loss of whole chromosomes, contiguous blocks and
-scattered genes, repeated over many independent masks (`fingerprint$n_masks`),
-and reports accuracy and threshold per band along with the spread between masks.
-Which regions are missing matters as much as how many.
+Coverage is calibrated rather than assumed. Validation masks **genes** on the
+grid — scattered, in contiguous blocks, and by whole chromosomes — recomputes
+the fingerprint from the survivors, and reports accuracy and threshold per band
+with the spread between masks. Masking spectral features instead would measure
+an easier quantity: half a chromosome's genes can go missing and the GLS still
+estimates nearly every frequency, so feature coverage stays near 100% while gene
+coverage is 50%.
+
+Two thresholds are computed per band, pooled and conservative, and both
+rejection rates are reported; `fingerprint$threshold_policy` declares which is
+applied. The default is pooled: with gene-level masking the conservative
+threshold rejected 46–79% of true members.
 
 The rejection threshold is calibrated on the similarity that correct held-out
 matches reach, per class and per coverage band. It bounds how often a true member is wrongly rejected.
