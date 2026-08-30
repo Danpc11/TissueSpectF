@@ -141,17 +141,20 @@ stage_consensus <- function(project, opt) {
         sig$condition <- cond
         write_tsv_tsf(sig, file.path(inp$paths$base, "consensus",
                                      sprintf("signature_%s.tsv", cond)))
-        n_sig <- n_sig + nrow(sig)
-        tsf_log("  ", cond, ": ", nrow(sig), " signature component(s) of ",
-                nrow(cs), " frequencies | top: chr", sig$chr[1], " k", sig$k[1],
+        n_conf <- sum(sig$signature_class == "confirmed")
+        n_sig <- n_sig + n_conf
+        tsf_log("  ", cond, ": ", n_conf, " confirmed and ",
+                nrow(sig) - n_conf, " exploratory component(s) of ", nrow(cs),
+                " frequencies | top: chr", sig$chr[1], " k", sig$k[1],
                 " period ", round(sig$period[1]), " genes, PLV ",
-                round(sig$plv[1], 2), ", prevalence ", round(sig$prevalence[1], 2))
+                round(sig$plv[1], 2), ", prevalence ", round(sig$prevalence[1], 2),
+                " [", sig$signature_class[1], "]")
       } else {
         tsf_log("  ", cond, ": no component passes prevalence and phase alignment")
       }
     }
   }
-  sprintf("%d signature component(s) across conditions", n_sig)
+  sprintf("%d confirmed signature component(s) across conditions", n_sig)
 }
 
 # --- CLEAN decomposition -----------------------------------------------------
@@ -385,7 +388,7 @@ compare_one_group <- function(project, loaded, ids, group_name, opt) {
 # --- reference library -------------------------------------------------------
 stage_reference <- function(project, opt) {
   ids <- stage_datasets(opt)
-  fps <- list()
+  fps <- list(); kept_datasets <- list()
   for (id in ids) {
     inp <- tsf_stage_inputs(project, id)
     tsf_log(id, ": fingerprinting ", nrow(inp$dataset$samples), " samples")
@@ -393,6 +396,10 @@ stage_reference <- function(project, opt) {
                              k_max = project$fingerprint$k_max %||% 64L,
                              features = project$fingerprint$features %||% "amplitude")
     if (is.null(f)) { tsf_warn("  no fingerprint for ", id); next }
+    # Kept so coverage calibration can re-fingerprint from masked grids: the
+    # loss that matters is loss of genes, which only the expression matrix and
+    # the grid can reproduce.
+    kept_datasets[[id]] <- list(dataset = inp$dataset, chrom_idx = inp$chrom_idx)
     write_tsv_tsf(cbind(f$labels, as.data.frame(f$matrix)),
                   file.path(inp$paths$base, "fingerprints", "fingerprints.tsv"))
     fps[[id]] <- f
@@ -409,7 +416,10 @@ stage_reference <- function(project, opt) {
   prov <- grids[[1]]$provenance
   ref <- build_reference(fps, target = project$fingerprint$target %||% "condition",
                          n_features = project$fingerprint$n_features %||% 500L,
-                         n_masks = project$fingerprint$n_masks %||% 25L,
+                         n_masks = project$fingerprint$n_masks %||% 10L,
+                         datasets = kept_datasets,
+                         max_queries_per_mask = project$fingerprint$max_queries_per_mask %||% 25L,
+                         threshold_policy = project$fingerprint$threshold_policy %||% "pooled",
                          grid = canonical_grid,
                          params = list(
                            k_max = project$fingerprint$k_max %||% 64L,
