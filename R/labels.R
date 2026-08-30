@@ -112,6 +112,26 @@ apply_condition_rule <- function(rule, pheno) {
   n <- nrow(pheno)
   out <- rep(NA_character_, n)
 
+  if (identical(rule$type, "compound")) {
+    # Every sub-condition must hold. Needed when a class is defined by a
+    # combination of scores rather than by one field: GSE130970 publishes no
+    # disease/control column, so a histologically normal biopsy can only be
+    # recognised by its scores being zero together.
+    hit <- rep(TRUE, n)
+    for (sub in rule$all_of) {
+      col <- find_pheno_column(pheno, sub$column)
+      if (is.null(col)) {
+        tsf_warn("compound rule '", rule$id, "' needs column matching '",
+                 sub$column, "', which is absent; the rule cannot fire")
+        return(out)
+      }
+      v <- tolower(clean_pheno_value(pheno[[col]]))
+      hit <- hit & !is.na(v) & v %in% tolower(as.character(sub$values))
+    }
+    out[hit] <- rule$assign
+    return(out)
+  }
+
   if (identical(rule$type, "column_match")) {
     col <- find_pheno_column(pheno, rule$column)
     if (is.null(col)) return(out)
