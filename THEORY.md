@@ -373,14 +373,29 @@ permutation test, whatever the direction of the bias, so
 The null draws $n$ samples at random from the whole dataset, ignoring condition,
 and scores them the same way. Two summaries of it are kept:
 
-- **per component**, an empirical p-value at each $(\mathrm{chr}, k)$ against
-  its own null, BH-adjusted across components. This is what `confirmed` rests
-  on, and it is what lets a signature be *localised*.
-- **global maximum**, the 95th percentile of the best score over all frequencies
-  of each draw. This controls error over the whole signature and is very strict;
-  in practice it confirms almost nothing, which is the right answer to "is there
-  any component at all" and useless for "which ones". Kept as
-  `beats_global_null`.
+- **family-wise**, `p_null_fwer`: the observed score compared against the
+  distribution of the *maximum* score any draw produced at any frequency. This
+  controls error across all frequencies by construction, so nothing is adjusted
+  afterwards and the floor is $1/(B+1)$ — reachable with the default 50 draws.
+  This is what `confirmed` rests on.
+- **pointwise**, `p_null` and its BH-adjusted `q_null`: an empirical p-value at
+  each $(\mathrm{chr}, k)$ against its own null. It localises a signature, but
+  it cannot confirm one at realistic $B$: its floor is also $1/(B+1)$, and BH
+  over $n_f$ frequencies puts the smallest reachable $q$ at $n_f/(B+1)$ — with
+  297 frequencies and 50 draws that is 5.8, so no component could ever pass
+  however strong it is. Confirming on it would need $B \ge n_f/q$, thousands of
+  draws for one chromosome. The stage detects that floor and says so, exactly as
+  it does for the permutation and Rayleigh floors elsewhere.
+
+`beats_global_null` is kept as the strictest flag: the bootstrap lower bound
+above the 95th percentile of the null maxima.
+
+Samples are not always independent — several biopsies from one subject,
+longitudinal series, technical batches, tumour-normal pairs. Setting
+`consensus$permutation_block` to a column of `samples.tsv` makes the null draw
+whole blocks, so its dependence structure matches the data's. Drawing freely
+from a blocked dataset builds a null more variable than the data and is
+anti-conservative precisely where independence fails.
 
 Clearing zero is not evidence: the score is a product of non-negative
 quantities, so any signal at all clears it. Clearing the null means the
