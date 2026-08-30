@@ -3,7 +3,8 @@ import numpy as np
 import pytest
 
 from ml.splits import (assert_no_cohort_leak, balanced_sample_weights,
-                       class_cohort_counts, describe_folds, leave_one_cohort_out)
+                       class_cohort_counts, class_evaluation_report,
+                       describe_folds, format_class_report, leave_one_cohort_out)
 
 
 def toy():
@@ -88,3 +89,26 @@ def test_describe_folds_mentions_dropped_classes():
     cl = np.array(["F0", "F0", "F1", "F1", "F0", "F1", "F9", "F9"])
     text = describe_folds(leave_one_cohort_out(ds, cl), ds, cl)
     assert "dropped" in text and "F9" in text
+
+
+def test_class_report_names_classes_never_evaluated():
+    # A class living in one cohort is dropped from every fold and contributes
+    # nothing to any average. Reporting a single macro-F1 without saying so
+    # presents it as if it had been tested like the rest.
+    ds = np.array(["A"] * 6 + ["B"] * 4)
+    cl = np.array(["F0", "F0", "F1", "F1", "F2", "F2", "F0", "F0", "F1", "F1"])
+    folds = leave_one_cohort_out(ds, cl)
+    rows = {r["class_id"]: r for r in class_evaluation_report(folds, ds, cl)}
+    assert rows["F0"]["evaluated_out_of_cohort"] and rows["F0"]["n_folds_evaluated"] == 2
+    assert not rows["F2"]["evaluated_out_of_cohort"]
+    assert rows["F2"]["n_samples_tested"] == 0
+    text = format_class_report(list(rows.values()))
+    assert "NEVER EVALUATED OUT OF COHORT" in text
+
+
+def test_class_report_counts_cohorts_per_class():
+    ds = np.array(["A"] * 4 + ["B"] * 4 + ["C"] * 2)
+    cl = np.array(["F0", "F0", "F1", "F1"] * 2 + ["F0", "F1"])
+    rows = {r["class_id"]: r for r in
+            class_evaluation_report(leave_one_cohort_out(ds, cl), ds, cl)}
+    assert rows["F0"]["n_cohorts"] == 3 and rows["F0"]["cohorts"] == "A,B,C"
