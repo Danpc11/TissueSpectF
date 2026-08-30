@@ -360,6 +360,15 @@ $e^{-n} n_f$: below roughly $\log(n_f/q)$ samples, about 9 for 5,000
 frequencies, perfect alignment could not pass. The stage says so and falls back
 to prevalence and score rather than returning an empty signature.
 
+A component is **confirmed** only if its bootstrap lower bound clears a
+label-permuted null: $n$ samples drawn at random from the whole dataset,
+ignoring condition, scored the same way, at the 95th percentile of the best
+score obtained. Clearing zero is not evidence — the score is a product of
+non-negative quantities, so any signal at all clears it. Clearing the null means
+the component belongs to *this condition* rather than to any group of samples of
+that size, which is the confound that matters: tissue-wide structure has high
+prevalence and high phase locking too. Everything else is **exploratory**.
+
 The score is a **ranking statistic, not a test**. Bootstrap intervals over
 samples say how stable it is; the Rayleigh p-value covers phase alignment alone.
 Neither makes it a significance claim — §5.4 is for that. Stouffer stays a
@@ -503,11 +512,22 @@ the survivors. Masking spectral features instead would measure a different and
 easier quantity: dropping half the genes of a chromosome still leaves the GLS
 able to estimate almost every frequency, so feature coverage stays near 100%
 while gene coverage is 50% — every estimate merely becomes noisier and the
-spectral window changes. Bands are keyed on gene coverage, which is what a query
-can report about itself before anything is computed. Loss is simulated as
-scattered genes, contiguous grid blocks and whole chromosomes, repeated over
-many independent masks (`fingerprint$n_masks`), since *which* regions are
-missing matters as much as how many.
+spectral window changes. Bands are keyed on gene coverage **relative to the canonical grid**, which is
+what a query can report about itself before anything is computed. The
+denominator matters: a held-out cohort covering 70% of the grid, masked to keep
+80% of its own genes, has 56% coverage of the reference, not 80%. Calibrating
+against the dataset's own denominator would place every simulated query in an
+easier band than the real query it stands for. Each record keeps
+`baseline_dataset_coverage`, `mask_retention` and
+`absolute_reference_coverage` so the three are never confused again.
+
+Loss is simulated five ways — scattered genes, one retained contiguous block,
+several missing disjoint blocks, whole chromosomes, and dropout of the least
+expressed genes — repeated over many independent masks (`fingerprint$n_masks`),
+since *which* regions are missing matters as much as how many. The dropout mode
+is the most realistic: coverage loss is not independent of expression, and the
+genes that drop out cluster in the tissue-specific families that carry much of
+the between-condition signal.
 
 Two thresholds are computed per band and both rejection rates are reported: the
 pooled quantile over all masks, and a conservative one at the 90th percentile of
