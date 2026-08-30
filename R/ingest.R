@@ -65,14 +65,59 @@ parse_series_matrix_pheno <- function(path) {
   df
 }
 
-#' Read a GEO count table and map its identifiers to Ensembl gene ids.
-read_counts <- function(path, id_type = "ENTREZID") {
-  dt <- read_tsv_tsf(path)
-  id_col <- colnames(dt)[1]
-  colnames(dt)[1] <- "source_id"
-  tsf_log("Counts: ", nrow(dt), " rows x ", ncol(dt) - 1, " samples (id column: ", id_col, ")")
-  attr(dt, "id_type") <- id_type
-  dt
+#' Read a GEO count table.
+#'
+#' GEO publishes count matrices in whatever shape the submitters chose: tabs or
+#' commas, Entrez or Ensembl or symbols in the first column, sometimes a second
+#' header row carrying the real sample names above meaningless column labels.
+#' Those are properties of a file, not of the analysis, so they are declared in
+#' the dataset config rather than handled by a bespoke script per series.
+#'
+#' @param spec optional list with sep, id_column, symbol_column, sample_map_row,
+#'   skip. `sample_map_row` names a second header row whose values are the
+#'   sample identifiers the phenotype table uses; it is extracted, used to
+#'   rename the columns, and removed BEFORE anything is coerced to numeric --
+#'   left in place it turns every count column into character and the whole
+#'   matrix silently becomes text.
+read_counts <- function(path, id_type = "ENTREZID", spec = list()) {
+  sep <- spec$sep %||% "\t"
+  dt <- utils::read.delim(path, sep = sep, header = TRUE, check.names = FALSE,
+                          stringsAsFactors = FALSE, quote = "\"",
+                          comment.char = "", skip = spec$skip %||% 0L)
+  sample_map <- NULL
+
+  if (!is.null(spec$sample_map_row)) {
+    row <- as.integer(spec$sample_map_row)
+    if (row < 1L || row > nrow(dt)) {
+      tsf_abort("sample_map_row = ", row, " is out of range for ", basename(path))
+    }
+    labels <- as.character(unlist(dt[row, ], use.names = FALSE))
+    sample_map <- data.frame(count_column = colnames(dt), mapped_id = labels,
+                             stringsAsFactors = FALSE)
+    dt <- dt[-row, , drop = FALSE]
+    tsf_log("Counts: second header row consumed as the sample map")
+  }
+
+  id_col <- spec$id_column %||% 1L
+  if (is.numeric(id_col)) id_col <- colnames(dt)[id_col]
+  if (!id_col %in% colnames(dt)) {
+    tsf_abort("counts id_column '", id_col, "' is not in ", basename(path),
+              " (columns start: ", paste(utils::head(colnames(dt), 4),
+                                         collapse = ", "), ")")
+  }
+  symbol_col <- spec$symbol_column
+  if (is.numeric(symbol_col)) symbol_col <- colnames(dt)[symbol_col]
+  value_cols <- setdiff(colnames(dt), c(id_col, symbol_col))
+  for (cl in value_cols) dt[[cl]] <- suppressWarnings(as.numeric(dt[[cl]]))
+
+  out <- dt[, c(id_col, value_cols), drop = FALSE]
+  colnames(out)[1] <- "source_id"
+  out$source_id <- sub("\\..*$", "", trimws(as.character(out$source_id)))
+  tsf_log("Counts: ", nrow(out), " rows x ", length(value_cols),
+          " samples (id column: ", id_col, ", type: ", id_type, ")")
+  attr(out, "id_type") <- id_type
+  attr(out, "sample_map") <- sample_map
+  out
 }
 
 #' Gene coordinates from the NCBI annotation table shipped with the GEO counts.
@@ -229,13 +274,41 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   samples$condition <- factor(samples$condition, levels = tsf_levels(cfg$vocabulary_spec))
 
   # ---- counts and annotation ------------------------------------------------
-  counts <- read_counts(file.path(project$geo_dir, cfg$counts_file), cfg$count_id_type)
+  counts <- read_counts(file.path(project$geo_dir, cfg$counts_file),
+                        cfg$count_id_type, cfg$counts_spec %||% list())
+  sample_map <- attr(counts, "sample_map")
+  if (!is.null(sample_map)) {
+    write_tsv_tsf(sample_map, file.path(out_dir, "count_column_map.tsv"))
+    keep_map <- sample_map$count_column %in% colnames(counts)
+    colnames(counts)[match(sample_map$count_column[keep_map], colnames(counts))] <-
+      sample_map$mapped_id[keep_map]
+  }
   genes <- read_gene_annotation(file.path(project$geo_dir, project$annotation_file),
                                 project$chrom_levels)
 
-  key <- if (identical(cfg$count_id_type, "ENTREZID")) "entrez_id" else "gene_id"
+  key <- switch(cfg$count_id_type %||% "ENTREZID",
+                ENTREZID = "entrez_id",
+                ENSEMBL  = "gene_id",
+                SYMBOL   = "gene_name",
+                tsf_abort("count_id_type must be ENTREZID, ENSEMBL or SYMBOL; got '",
+                          cfg$count_id_type, "'"))
+  if (!key %in% colnames(genes)) {
+    tsf_abort("The annotation has no ", key, " column, which count_id_type = ",
+              cfg$count_id_type, " requires.")
+  }
   merged <- merge(counts, genes, by.x = "source_id", by.y = key)
-  if (!nrow(merged)) tsf_abort("No count row mapped to the annotation for ", cfg$id)
+  if (!nrow(merged)) {
+    tsf_abort("No count row mapped to the annotation for ", cfg$id,
+              ". count_id_type is ", cfg$count_id_type, "; the file's first ",
+              "identifiers are ", paste(utils::head(counts$source_id, 3),
+                                        collapse = ", "), ".")
+  }
+  if (identical(cfg$count_id_type, "SYMBOL")) {
+    dup <- sum(duplicated(merged$source_id))
+    if (dup) tsf_log(dup, " duplicated symbol(s) collapsed to one gene each; ",
+                     "symbols are not unique identifiers and this is the cost ",
+                     "of a count table keyed on them")
+  }
   merged <- merged[!duplicated(merged$gene_id), ]
   # merge() consumed the join key into source_id; restore it under its own name
   # so a query keyed on Entrez ids can be matched without conversion.
