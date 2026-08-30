@@ -44,18 +44,31 @@ pheno_162 <- data.frame(
 
 lab162 <- harmonize_conditions(pheno_162, cfg_162)
 
-check("title token N -> F0 (not Control)", identical(lab162$condition[1], "F0"))
+check("title token N -> Normal_histology, not F0 and not Control",
+      identical(lab162$condition[1], "Normal_histology"))
 check("no Control label is ever produced", !any(lab162$condition %in% "Control"))
+check("the healthy states get different class_ids under one state", {
+  a <- tsf_class_id("liver", "Control", cfg_135$vocabulary_spec)
+  b <- tsf_class_id("liver", "Normal_histology", cfg_135$vocabulary_spec)
+  identical(a, "liver::healthy::Control") &&
+    identical(b, "liver::healthy::Normal_histology") })
+check("a stage becomes a disease class", {
+  identical(tsf_class_id("liver", "F2", cfg_135$vocabulary_spec),
+            "liver::disease::NAFLD_fibrosis_F2") })
+check("the progression excludes the healthy states", {
+  identical(tsf_progression(cfg_135$vocabulary_spec), paste0("F", 0:4)) })
 check("title token F2", identical(lab162$condition[2], "F2"))
 check("fallback to fibrosis column when the title has no token",
       identical(lab162$condition[4], "F1") && identical(lab162$label_rule[4], "biopsy_fibrosis_stage"))
-check("normal liver histology parses as stage 0",
+check("normal liver histology parses as stage 0 only when a config asks it to",
       identical(parse_fibrosis_stage("fibrosis stage: normal liver histology",
-                                     c("normal liver histology")), 0))
-check("the same sample gets the same label from either route",
-      identical(lab162$condition[1], "F0") &&
-        identical(paste0("F", parse_fibrosis_stage(pheno_162$`fibrosis stage`[1],
-                                                   c("normal liver histology"))), "F0"))
+                                     c("normal liver histology")), 0) &&
+        is.na(parse_fibrosis_stage("fibrosis stage: normal liver histology")))
+check("the phenotype field and the title token agree on the healthy class", {
+  # Both routes must reach Normal_histology; before this change one said F0 and
+  # the other said stage 0, which is how the two groups got merged.
+  identical(lab162$condition[1], "Normal_histology") &&
+    identical(lab162$label_rule[1], "normal_histology_field") })
 
 # --- guardrails --------------------------------------------------------------
 check("config with has_control_cohort=FALSE rejects a Control rule",
