@@ -494,14 +494,29 @@ identity, phase is plausibly the more discriminative half.
 Coverage is calibrated, not assumed. A query rarely covers the whole grid, and
 the similarity distribution shifts with coverage, so a threshold calibrated on
 complete fingerprints rejects members of a 60%-covered query that should be
-accepted. Validation therefore re-scores every held-out sample under simulated
-loss — whole chromosomes and contiguous genomic blocks as well as scattered
-genes, because real loss is structured — and calibrates accuracy and rejection
-threshold per band: 90–100%, 75–90%, 50–75%, and below 50%, where nothing is
-classified. Each combination of fold, coverage level and loss mode is repeated
-over many independent masks (`fingerprint$n_masks`), since *which* regions are
-missing matters as much as how many; the spread between masks is reported next
-to each threshold. A query whose band has no calibrated threshold is reported
+accepted. Validation therefore re-scores every held-out sample under simulated loss and
+calibrates accuracy and rejection threshold per band: 90–100%, 75–90%, 50–75%,
+and below 50%, where nothing is classified.
+
+What is masked are **genes on the grid**, and the fingerprint is recomputed from
+the survivors. Masking spectral features instead would measure a different and
+easier quantity: dropping half the genes of a chromosome still leaves the GLS
+able to estimate almost every frequency, so feature coverage stays near 100%
+while gene coverage is 50% — every estimate merely becomes noisier and the
+spectral window changes. Bands are keyed on gene coverage, which is what a query
+can report about itself before anything is computed. Loss is simulated as
+scattered genes, contiguous grid blocks and whole chromosomes, repeated over
+many independent masks (`fingerprint$n_masks`), since *which* regions are
+missing matters as much as how many.
+
+Two thresholds are computed per band and both rejection rates are reported: the
+pooled quantile over all masks, and a conservative one at the 90th percentile of
+the per-mask thresholds. Which is applied is declared in
+`fingerprint$threshold_policy`. The default is pooled, because with gene-level
+masking the conservative threshold was measured to reject 46–79% of true
+members — safety bought at a price that is not worth paying, and a number that
+only became visible once the masking was done on genes rather than on
+frequencies. A query whose band has no calibrated threshold is reported
 `UNCALIBRATED_COVERAGE` rather than judged against the wrong number.
 
 The reference is self-contained — it carries the canonical annotation grid, gene
@@ -575,6 +590,7 @@ of any positive result.
 | `window_rank` | whether sampling alone could produce the frequency | anything about biology |
 | CLEAN components | the components the data prefer to retain | a per-component error rate |
 | consensus score | how strong, common and phase-aligned a frequency is | a significance claim; it has no null |
+| `signature_class` | `confirmed` when prevalence, bootstrap bound and adjusted Rayleigh all hold; `exploratory` otherwise | that an exploratory component is a signature — it is a lead |
 | PLV + Rayleigh q | whether the crest falls in the same place across samples | that the component is biological |
 | band accuracy | how well a query of that coverage can be classified | that an out-of-domain sample will be rejected |
 | `pct_samples_significant` | reproducibility across samples | evidence strength; it does not aggregate |
