@@ -1,0 +1,20 @@
+# TissueSpect-AE. CPU-only by default; CUDA is used when present, never required.
+#
+#   pip install -r requirements-ml.txt
+#
+# The statistical pipeline in R has no dependency on any of this. TissueSpectF
+# runs, and every existing test passes, without Python installed at all.
+
+torch>=2.2,<3
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+scikit-learn>=1.4
+pyyaml>=6.0
+matplotlib>=3.8
+seaborn>=0.13
+
+# Optional, only if Parquet is used for the tensor exchange:
+# pyarrow>=15.0
+# Optional baseline:
+# xgboost>=2.0
