@@ -1,0 +1,96 @@
+# TissueSpect-AE — configuration.
+#
+# These are starting values, not settled ones. Anything that changes what the
+# model can learn is here rather than in code, so a run is described by this
+# file plus a seed.
+
+seed: 42
+device: auto          # auto | cpu | cuda
+
+# --- input representation ----------------------------------------------------
+data:
+  k_max: 64           # frequency indices kept per chromosome
+  channels:           # order is fixed and recorded in the manifest
+    - log_power
+    - amplitude
+    - cos_phase
+    - sin_phase
+    - coverage
+    - observed_mask
+  min_coverage: 0.50  # a sample below this is not scored at all
+  # Phase enters as cos/sin, never as a linear number: phase is circular, and
+  # -pi and +pi are the same angle. A network fed the raw value would have to
+  # learn that discontinuity from data it does not have.
+
+# --- model -------------------------------------------------------------------
+model:
+  latent_dim: 32
+  hidden_dim: 128
+  conv_channels: [32, 64, 64]
+  kernel_sizes: [5, 5, 3]
+  dropout: 0.15
+  norm: layer          # layer | group -- never batch: cohort-imbalanced batches
+                       # make BatchNorm statistics a leak of cohort identity
+  pooling: attention   # attention | masked_mean
+  prototype_distance: cosine
+  prototype_temperature: 0.1
+
+# --- training ----------------------------------------------------------------
+training:
+  batch_size: 32
+  epochs: 200
+  early_stopping_patience: 20
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  domain_warmup_epochs: 20   # adversary starts at zero weight and ramps up
+  balanced_sampling: true    # by condition x dataset
+  max_per_cohort_class: null # cap so one large cohort cannot dominate
+
+loss_weights:
+  reconstruction: 1.0
+  classification: 1.0
+  prototype: 0.5
+  separation: 0.1
+  ordinal: 0.5
+  domain: 0.1
+  sparsity: 0.001      # L1 on Delta_condition only, never on the shared term
+  smoothness: 0.0      # off by default: total variation erases narrow peaks,
+                       # which are exactly what this is looking for
+
+# --- denoising corruptions ---------------------------------------------------
+# Reuses the mask vocabulary of the statistical pipeline so the corruptions the
+# model trains against are the ones the coverage calibration measures.
+denoising:
+  enabled: true
+  random_mask_probability: 0.10
+  chromosome_dropout_probability: 0.05
+  block_mask_probability: 0.15
+  expression_dropout_probability: 0.10
+
+# --- UNKNOWN -----------------------------------------------------------------
+rejection:
+  distance_quantile: 0.95    # calibrated on training folds only
+  min_margin: 0.05
+  max_entropy: null
+  min_coverage: 0.50
+
+# --- classes -----------------------------------------------------------------
+# Read from the data, not hardcoded. Listed here only to be validated against.
+classes:
+  expected:
+    - liver::healthy::Control
+    - liver::healthy::Normal_histology
+    - liver::disease::NAFLD_fibrosis_F0
+    - liver::disease::NAFLD_fibrosis_F1
+    - liver::disease::NAFLD_fibrosis_F2
+    - liver::disease::NAFLD_fibrosis_F3
+    - liver::disease::NAFLD_fibrosis_F4
+  # The ordinal head runs over this subset only. Healthy states sit outside the
+  # progression and are handled by the hierarchical head, never coerced into
+  # "negative fibrosis".
+  ordinal:
+    - liver::disease::NAFLD_fibrosis_F0
+    - liver::disease::NAFLD_fibrosis_F1
+    - liver::disease::NAFLD_fibrosis_F2
+    - liver::disease::NAFLD_fibrosis_F3
+    - liver::disease::NAFLD_fibrosis_F4
