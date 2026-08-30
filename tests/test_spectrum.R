@@ -476,11 +476,53 @@ check("retained_block keeps one contiguous run", {
   t <- mask_grid_genes(ci, 0.5, "retained_block", seed = 4L)[["1"]]$t
   all(diff(t) == 1L) })
 
-check("missing_blocks removes several disjoint intervals", {
+check("missing_blocks removes several intervals and hits its target", {
   ci <- list("1" = list(rows = 1:400, t = 1:400, N = 400L, coverage = 1))
+  kept <- vapply(1:20, function(s)
+    length(mask_grid_genes(ci, 0.6, "missing_blocks", seed = s, n_blocks = 4L)[["1"]]$t),
+    integer(1))
   t <- mask_grid_genes(ci, 0.6, "missing_blocks", seed = 5L, n_blocks = 4L)[["1"]]$t
-  gaps <- sum(diff(t) > 1)
-  gaps >= 2 && length(t) < 400 })
+  # Overlapping draws used to remove fewer genes than asked; the retained count
+  # must now match the target rather than drifting above it.
+  sum(diff(t) > 1) >= 2 && all(abs(kept - 240) <= 2) })
+
+check("the two consensus scores are both reported and differ in meaning", {
+  set.seed(91); N <- 200L; tt <- 1:N
+  per_sample <- do.call(rbind, lapply(1:8, function(i) {
+    r <- run_fft(2 * cos(2 * pi * 7 * (tt - 1) / N + 0.3) + rnorm(N, sd = 0.5))
+    r$sample <- paste0("S", i); r$chr <- "1"; r }))
+  no_maxt <- consensus_spectrum(per_sample, n_boot = 20L)
+  # Without maxT the maxT-based score is NA and the rank score is populated;
+  # the permuted comparison must use the rank one on both sides.
+  all(is.na(no_maxt$consensus_score_maxt)) &&
+    all(is.finite(no_maxt$consensus_score_rank)) &&
+    isTRUE(all.equal(no_maxt$consensus_score, no_maxt$consensus_score_rank)) })
+
+check("the per-component null gives a p-value and a BH q-value", {
+  cs <- data.frame(chr = "1", N = 200L, k = c(6L, 7L), freq = c(.03, .035),
+                   period = c(33, 28), n_samples_valid = 10L, prevalence = 1,
+                   plv = 1, plv_rayleigh_p = 1e-6, plv_rayleigh_q = 1e-5,
+                   consensus_score_rank = c(0.9, 0.1),
+                   consensus_score_ci_lower = c(0.8, 0.05),
+                   stringsAsFactors = FALSE)
+  nd <- list(per_key = matrix(runif(2 * 50, 0, 0.3), nrow = 2,
+                              dimnames = list(c("1|200|6", "1|200|7"), NULL)),
+             global = 0.95, n_null = 50L, n_samples = 10L)
+  out <- null_component_pvalues(cs, nd)
+  out$p_null[1] < 0.05 && out$p_null[2] > 0.05 &&
+    all(out$q_null >= out$p_null) && !out$beats_global_null[1] })
+
+check("band and class thresholds beat the band-only threshold", {
+  cal <- list(global_threshold = 0.9, per_class = NULL, quantile = 0.05,
+              bands = data.frame(band = "50-75%", threshold = 0.4,
+                                 threshold_applied = 0.4, policy = "pooled",
+                                 stringsAsFactors = FALSE),
+              bands_by_class = data.frame(band = "50-75%", class = "A",
+                                          threshold = 0.7, stringsAsFactors = FALSE))
+  a <- apply_rejection(list(best = "A", similarity = 0.5), cal, coverage = 0.6)
+  b <- apply_rejection(list(best = "B", similarity = 0.5), cal, coverage = 0.6)
+  identical(a$decision, "UNKNOWN") && identical(a$threshold_source, "band+class") &&
+    identical(b$decision, "B") && startsWith(b$threshold_source, "band:") })
 
 check("expression_dropout removes the least expressed first", {
   ci <- list("1" = list(rows = 1:200, t = 1:200, N = 200L, coverage = 1))
@@ -525,14 +567,15 @@ check("both rejection rates are reported whichever policy is applied", {
         "threshold_applied", "policy") %in% colnames(b)) })
 
 check("confirmation requires beating the permuted null, not just zero", {
-  cs <- data.frame(chr = "1", N = 200L, k = 6L, freq = 0.03, period = 33,
-                   n_samples_valid = 40L, prevalence = 1,
-                   plv = 1, plv_rayleigh_p = 1e-12, plv_rayleigh_q = 1e-10,
-                   consensus_score = 0.5, consensus_score_ci_lower = 0.3,
-                   stringsAsFactors = FALSE)
-  beats <- consensus_signature(cs, null_score = 0.1)
-  loses <- consensus_signature(cs, null_score = 0.9)
-  none  <- consensus_signature(cs, null_score = NA_real_)
+  base <- data.frame(chr = "1", N = 200L, k = 6L, freq = 0.03, period = 33,
+                     n_samples_valid = 40L, prevalence = 1,
+                     plv = 1, plv_rayleigh_p = 1e-12, plv_rayleigh_q = 1e-10,
+                     consensus_score = 0.5, consensus_score_rank = 0.5,
+                     consensus_score_ci_lower = 0.3,
+                     stringsAsFactors = FALSE)
+  beats <- consensus_signature(within(base, { p_null <- 0.001; q_null <- 0.002 }))
+  loses <- consensus_signature(within(base, { p_null <- 0.4; q_null <- 0.6 }))
+  none  <- consensus_signature(within(base, { p_null <- NA_real_; q_null <- NA_real_ }))
   identical(beats$signature_class, "confirmed") &&
     identical(loses$signature_class, "exploratory") &&
     identical(none$signature_class, "exploratory") })
