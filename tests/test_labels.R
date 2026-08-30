@@ -123,6 +123,45 @@ check("the compound rule is ordered before the stage rule", {
   identical(ids[1], "normal_histology_scores") &&
     identical(ids[2], "biopsy_fibrosis_stage") })
 
+# --- sample filters and per-dataset class restriction ------------------------
+check("a sample filter keeps only what matches", {
+  ph <- data.frame(geo_accession = paste0("G", 1:4),
+                   etiology = c("etiology: MASLD", "etiology: HBV",
+                                "etiology: MASH", "etiology: alcohol"),
+                   check.names = FALSE, stringsAsFactors = FALSE)
+  lab <- data.frame(condition = "F4", keep = rep(TRUE, 4), stringsAsFactors = FALSE)
+  cfg <- list(id = "X", sample_filter = list(
+    list(column = "etiolog", pattern = "masld|mash")))
+  identical(apply_sample_filter(lab, ph, cfg)$keep, c(TRUE, FALSE, TRUE, FALSE)) })
+
+check("an unlabelled sample is dropped, not admitted", {
+  ph <- data.frame(geo_accession = c("G1", "G2"),
+                   etiology = c("etiology: MASLD", "etiology: "),
+                   check.names = FALSE, stringsAsFactors = FALSE)
+  lab <- data.frame(condition = "F4", keep = c(TRUE, TRUE), stringsAsFactors = FALSE)
+  cfg <- list(id = "X", sample_filter = list(
+    list(column = "etiolog", pattern = "masld")))
+  identical(apply_sample_filter(lab, ph, cfg)$keep, c(TRUE, FALSE)) })
+
+check("a missing filter column aborts instead of admitting everything", {
+  ph <- data.frame(geo_accession = "G1", other = "x", stringsAsFactors = FALSE)
+  lab <- data.frame(condition = "F4", keep = TRUE, stringsAsFactors = FALSE)
+  cfg <- list(id = "X", sample_filter = list(list(column = "etiolog", pattern = "masld")))
+  inherits(tryCatch(apply_sample_filter(lab, ph, cfg), error = function(e) e), "error") })
+
+check("keep_conditions restricts what a dataset contributes", {
+  ph <- data.frame(geo_accession = paste0("G", 1:4), stringsAsFactors = FALSE)
+  lab <- data.frame(condition = c("F0", "F3", "F4", "F1"), keep = rep(TRUE, 4),
+                    stringsAsFactors = FALSE)
+  cfg <- list(id = "X", keep_conditions = c("F3", "F4"))
+  identical(apply_sample_filter(lab, ph, cfg)$keep, c(FALSE, TRUE, TRUE, FALSE)) })
+
+check("the two new cohort configs load and declare their restrictions", {
+  a <- load_dataset_config("GSE276114"); b <- load_dataset_config("GSE142530")
+  identical(a$keep_conditions, c("F3", "F4")) && isFALSE(a$has_control_cohort) &&
+    identical(b$keep_conditions, "Control") && isTRUE(b$has_control_cohort) &&
+    length(a$sample_filter) == 1 && length(b$sample_filter) == 1 })
+
 # --- input schemas and vocabularies without a baseline -----------------------
 tmp_v <- file.path(tempdir(), "voc"); tmp_d <- file.path(tempdir(), "ds")
 dir.create(tmp_v, showWarnings = FALSE); dir.create(tmp_d, showWarnings = FALSE)
