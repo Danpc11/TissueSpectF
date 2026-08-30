@@ -11,6 +11,13 @@
 # same class as GSE135251's ten. That gives liver::healthy::Control a second
 # cohort and lifts it out of single_cohort/provisional.
 #
+# NOT THE SAME CLASS AS GSE135251's CONTROLS
+#
+# They map to Control_external_study, not to Control_disease_cohort. Merging the
+# two would assume what is worth testing -- that a healthy liver looks the same
+# whichever study recruited it -- and would do it by choosing a label. If the two
+# spectra agree, a Healthy_consensus class can be defended afterwards.
+#
 # THE ARGUMENT AGAINST, WHICH IS NOT NOTHING
 #
 # These are controls for an ALCOHOL study, not for MASLD. The class is defined
@@ -33,19 +40,33 @@ list(
   description   = "Alcohol-related liver disease series; normal controls only",
   tissue        = "liver",
   vocabulary    = "liver_fibrosis",
-  counts_file   = "GSE142530.tsv.gz",          # VERIFY the name GEO actually uses
+  # A comma-separated file with Ensembl ids in the first column, symbols in the
+  # second, and a DESCRIPTIVE SECOND ROW carrying the real sample names
+  # (Control_Lille 389 and so on) above columns named RB_N1, RB_N2, ...
+  #
+  # That second row is why a rename is not enough: left in place it makes every
+  # count column character, and the whole matrix silently becomes text. The
+  # reader extracts it as the sample map, renames the columns with it, and
+  # removes it before anything is coerced to numeric. The map is written to
+  # count_column_map.tsv so the correspondence is auditable rather than implied.
+  counts_file   = "GSE142530_Annoted-RNAseq-with-SampleIDs.csv.gz",
   series_matrix = "GSE142530_series_matrix.txt.gz",
-  count_id_type = "ENTREZID",                  # VERIFY against the counts header
+  count_id_type = "ENSEMBL",
+
+  counts_spec = list(sep = ",", id_column = 1L, symbol_column = 2L,
+                     sample_map_row = 1L),
 
   has_control_cohort = TRUE,
 
-  sample_id_column = "geo_accession",
+  # After the rename the columns carry the descriptive names, which match the
+  # series matrix titles rather than the accessions.
+  sample_id_column = "title",
 
   sample_filter = list(
     list(column = "disease state", values = c("Normal"))
   ),
 
-  keep_conditions = c("Control"),
+  keep_conditions = c("Control_external_study"),
 
   condition_rules = list(
     list(
@@ -53,7 +74,7 @@ list(
       type   = "column_match",
       column = "disease state",
       values = c("Normal"),
-      assign = "Control"
+      assign = "Control_external_study"
     )
   ),
 
