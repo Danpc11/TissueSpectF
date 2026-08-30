@@ -43,13 +43,21 @@ list(
   description   = "Mixed-etiology liver fibrosis; MASLD F3/F4 only",
   tissue        = "liver",
   vocabulary    = "liver_fibrosis",
-  counts_file   = "GSE276114.tsv.gz",          # VERIFY the name GEO actually uses
+  # The published matrix is Kallisto/tximport estimated counts keyed on gene
+  # SYMBOL, with columns named after the sample titles rather than accessions.
+  counts_file   = "GSE276114_raw.count.txt.gz",
   series_matrix = "GSE276114_series_matrix.txt.gz",
-  count_id_type = "ENTREZID",                  # VERIFY against the counts header
+  count_id_type = "SYMBOL",
 
   has_control_cohort = FALSE,
 
-  sample_id_column = "geo_accession",
+  # The count columns read "Liver sample 1", which is the TITLE, not the GEO
+  # accession. Matching them against GSM ids yields zero samples and an ingest
+  # that fails with an empty matrix rather than a useful message, so the sample
+  # identifier for this cohort is the title.
+  sample_id_column = "title",
+
+  counts_spec = list(sep = "\t", id_column = "Gene.name"),
 
   sample_filter = list(
     # "^disease:" and not "^disease": the parser names characteristics columns
@@ -80,5 +88,12 @@ list(
     )
   ),
 
-  notes = "Verified: MASLD F3 = 13, F4 = 42. Stop if it differs."
+  notes = paste(
+    "Verified: MASLD F3 = 13, F4 = 42.",
+    "Counts are fractional estimated counts from Kallisto/tximport, not integer",
+    "reads. They are depth-normalised to CPM downstream like any other counts,",
+    "which is defensible, but they are not the same quantity as the raw integer",
+    "counts of the other cohorts and that difference is aligned with the cohort.",
+    "Symbols are also not unique identifiers; duplicates collapse to one gene."
+  )
 )
