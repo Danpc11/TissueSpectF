@@ -1,7 +1,8 @@
 #!/usr/bin/env Rscript
 # Dependency-free tests for the label layer. Run: Rscript tests/test_labels.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/grid.R"); source("R/ingest.R")
+source("R/grid.R"); source("R/ingest.R"); source("R/fingerprint.R")
+source("R/reference.R"); source("R/bundle.R")
 
 failures <- 0L
 check <- function(label, expr) {
@@ -168,6 +169,37 @@ check("no module is missing from the load order", {
   env <- new.env(); sys.source("R/utils_io.R", envir = env)
   files <- basename(get("tsf_module_order", envir = env)())
   setequal(files, list.files("R", pattern = "\\.R$")) })
+
+# --- the distributable bundle ------------------------------------------------
+check("the bundle carries every module the app sources", {
+  # Whatever app.R sources must be in BUNDLE_MODULES, or the bundle breaks on
+  # someone else's machine and nowhere else.
+  src <- readLines("app/app.R", warn = FALSE)
+  line <- grep('^for \\(f in c\\("utils_io"', src, value = TRUE)
+  needed <- regmatches(line, gregexpr('"[a-z_]+"', line))[[1]]
+  needed <- gsub('"', "", needed)
+  all(needed %in% BUNDLE_MODULES) })
+
+check("bundled modules do not reach outside the bundle", {
+  # A module that sources ../R/ or reads config/project.R would work in the
+  # repository and fail in the bundle.
+  bad <- unlist(lapply(BUNDLE_MODULES, function(m) {
+    txt <- readLines(file.path("R", paste0(m, ".R")), warn = FALSE)
+    grep('config/project\\.R|\\.\\./R|load_project_config|tsf_stage_inputs',
+         txt, value = TRUE)
+  }))
+  length(bad) == 0 })
+
+check("the launcher and provenance are generated", {
+  ref <- list(built = "x", version = "y", target = "condition",
+              model = list(classes = c("A", "B")),
+              labels = data.frame(a = 1:3),
+              grid = data.frame(gene_id = 1:10),
+              params = list(k_max = 64L, features = "amplitude"),
+              validation = NULL)
+  length(bundle_launcher_sh()) > 5 && length(bundle_launcher_bat()) > 5 &&
+    any(grepl("NOT validated", bundle_readme(ref))) &&
+    any(grepl("grid digest", bundle_manifest(ref, "reference.rds"))) })
 
 cat("\n", if (failures == 0L) "All tests passed." else paste(failures, "test(s) failed."), "\n")
 quit(status = if (failures == 0L) 0L else 1L)
