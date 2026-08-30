@@ -27,6 +27,36 @@
 # no code change. See load_vocabulary() in config.R.
 TSF_DEFAULT_VOCABULARY <- "liver_fibrosis"
 
+#' The ordered subset over which transitions and trends are defined.
+#'
+#' Not every level is a step of a progression. Control -> Normal_histology is
+#' not a transition, and treating it as one would report a "change" between two
+#' unrelated healthy states. A vocabulary declares `progression` explicitly;
+#' when it does not, the ordered levels are the progression.
+tsf_progression <- function(voc) {
+  if (!isTRUE(voc$ordered)) return(character(0))
+  voc$progression %||% tsf_levels(voc)
+}
+
+#' class_id = tissue::state::condition
+#'
+#' Three levels because two are not enough. `state` separates healthy from
+#' diseased tissue; `condition` names the class within it. With two levels,
+#' healthy liver from a non-disease cohort and healthy liver from a biopsy
+#' series would have to share one label or invent unrelated ones. With three,
+#' both sit under liver::healthy and stay distinguishable, and TCGA's
+#' adjacent-normal will fit later without renaming anything.
+tsf_class_id <- function(tissue, condition, voc) {
+  state <- if (is.null(voc$states)) "healthy" else
+    unname(voc$states[condition])
+  state[is.na(state)] <- "unknown"
+  cond_name <- if (is.null(voc$conditions)) condition else {
+    nm <- unname(voc$conditions[condition]); nm[is.na(nm)] <- condition[is.na(nm)]; nm
+  }
+  ifelse(is.na(condition), NA_character_,
+         paste(tissue %||% "unknown", state, cond_name, sep = "::"))
+}
+
 #' Levels of a dataset's vocabulary, in order.
 tsf_levels <- function(x) {
   if (is.character(x)) return(x)
@@ -176,6 +206,10 @@ harmonize_conditions <- function(pheno, dataset_config) {
     dataset_id     = dataset_config$id,
     tissue         = dataset_config$tissue %||% NA_character_,
     vocabulary     = (dataset_config$vocabulary_spec %||% list())$id %||% NA_character_,
+    state          = if (is.null(dataset_config$vocabulary_spec$states)) "healthy"
+                     else unname(dataset_config$vocabulary_spec$states[condition]),
+    class_id       = tsf_class_id(dataset_config$tissue, condition,
+                                  dataset_config$vocabulary_spec %||% list()),
     condition      = condition,
     fibrosis_stage = ifelse(is.na(implied), fibrosis_stage, implied),
     fibrosis_stage_reported = fibrosis_stage,
