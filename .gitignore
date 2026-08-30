@@ -1,7 +1,13 @@
 data/
 results/
+resultados*/
 *.Rproj.user
 .Rhistory
 .RData
 *.log
 interim/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
