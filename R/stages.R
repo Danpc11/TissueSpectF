@@ -118,6 +118,14 @@ stage_consensus <- function(project, opt) {
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id, need = "maxt")
     tsf_log(id, ": consensus spectra from per-sample spectra")
+    # The label-permuted null needs every sample of the dataset, not just the
+    # condition's, so it is assembled once.
+    pool <- do.call(rbind, lapply(inp$conditions, function(c)
+      read_tsv_tsf(p_spectra_samples(inp$paths, c), required = FALSE)))
+    # The null depends only on how many samples are drawn, so conditions of the
+    # same size share it. Without this the same permutation set is recomputed
+    # once per condition, which dominates the stage's cost on real data.
+    null_cache <- list()
     for (cond in tsf_conditions(inp$conditions, opt)) {
       sp <- read_tsv_tsf(p_spectra_samples(inp$paths, cond), required = FALSE)
       if (is.null(sp) || !nrow(sp)) {
@@ -133,7 +141,25 @@ stage_consensus <- function(project, opt) {
       write_tsv_tsf(cs, file.path(inp$paths$base, "consensus",
                                   sprintf("consensus_spectrum_%s.tsv", cond)))
 
-      sig <- consensus_signature(cs,
+      n_here <- length(unique(sp$sample))
+      key <- as.character(n_here)
+      if (is.null(pool)) {
+        null_score <- NA_real_
+      } else {
+        if (is.null(null_cache[[key]])) {
+          t0 <- Sys.time()
+          null_cache[[key]] <- null_consensus_scores(
+            pool, n_here, n_null = project$consensus$n_null %||% 50L,
+            seed = project$maxt$seed,
+            quantile_cut = project$consensus$quantile_cut %||% 0.95)
+          tsf_log("  null for n = ", n_here, ": q95 = ",
+                  signif(null_cache[[key]], 3), " (",
+                  round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 2),
+                  " min)")
+        }
+        null_score <- null_cache[[key]]
+      }
+      sig <- consensus_signature(cs, null_score = null_score,
                                  max_components = project$consensus$max_components %||% 50L,
                                  min_prevalence = project$consensus$min_prevalence %||% 0.5,
                                  plv_q = project$consensus$plv_q %||% 0.05)
