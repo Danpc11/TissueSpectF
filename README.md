@@ -237,9 +237,11 @@ empty signature.
 
 `signature_<condition>.tsv` is the exported characteristic signature. Each
 component carries `signature_class`: **confirmed** when prevalence holds, the
-adjusted Rayleigh p holds, and the bootstrap lower bound clears a
-label-permuted null (random samples of the same size, ignoring condition);
-**exploratory** otherwise — including every component from a condition with too few samples to
+adjusted Rayleigh p holds, and the component beats its own label-permuted null
+(BH-adjusted across components); **exploratory** otherwise. The permuted
+comparison uses the rank-based score on both sides — the maxT-based score exists
+only where the per-sample test was run, so it is reported as confirmatory
+evidence rather than used as the test statistic — including every component from a condition with too few samples to
 test phase alignment at all. An exploratory component is a lead, not a
 signature, and the stage counts only confirmed ones in its summary.
 
@@ -458,18 +460,3 @@ matches reach, per class and per coverage band. It bounds how often a true membe
 It does **not** bound how often an out-of-domain sample is wrongly accepted:
 no out-of-domain sample was in the validation. Open-set specificity needs
 negatives — for a tissue reference, other tissues.
-
-## What changed from the original scripts
-
-1. `save_tsv(overwrite = FALSE)` silently kept files from earlier runs. Writes
-   now overwrite by default and each output tree carries a manifest.
-2. The per-transition tables named `*_cambian_magnitud.tsv` held peaks *stable in
-   both* conditions, with no amplitude change computed anywhere.
-   `transition_table()` now reports the amplitude delta, its log2 ratio, and a
-   Welch test on per-sample peak power, and the file is named for what it holds.
-3. Cross-dataset results are reported side by side, never pooled. A combined
-   percentage over summed counts would be dominated by the larger cohort and
-   would hide heterogeneity; `replicated` (same direction, FDR <= 0.05 in both)
-   is the replication statement instead.
-4. Gene order along a chromosome is computed once at ingest, not re-derived at
-   each call site.
