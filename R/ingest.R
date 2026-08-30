@@ -188,7 +188,11 @@ labels_from_metadata <- function(pheno, cfg) {
     sample_id = clean_pheno_value(pheno[[id_col]]),
     dataset_id = cfg$id, tissue = cfg$tissue %||% NA_character_,
     vocabulary = cfg$vocabulary_spec$id,
-    condition = cond, fibrosis_stage = NA_real_,
+    condition = cond,
+    state = if (is.null(cfg$vocabulary_spec$states)) "healthy" else
+      unname(cfg$vocabulary_spec$states[cond]),
+    class_id = tsf_class_id(cfg$tissue, cond, cfg$vocabulary_spec),
+    fibrosis_stage = NA_real_,
     fibrosis_stage_reported = NA_real_, label_rule = "metadata_column",
     label_mismatch = FALSE,
     cohort = if (is.null(baseline)) NA_character_ else
