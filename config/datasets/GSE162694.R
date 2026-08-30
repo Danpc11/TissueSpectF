@@ -15,30 +15,41 @@ list(
   series_matrix = "GSE162694_series_matrix.txt.gz",
   count_id_type = "ENTREZID",
 
-  has_control_cohort = FALSE,
+  has_control_cohort = FALSE,   # no non-NAFLD cohort; the N group is Normal_histology
 
   sample_id_column = "geo_accession",
   fibrosis_column  = "fibrosis stage",
-  normal_histology_terms = c("normal liver histology", "normal"),
+  # Deliberately no normal_histology_terms: "normal liver histology" must NOT
+  # be parsed as stage 0 here. It is its own class.
+  covariate_columns = c(sex = "^Sex", age = "^age", nas = "nas score"),
 
   condition_rules = list(
+    # The phenotype field is decisive, so it goes first; the title token is the
+    # fallback for anything it does not cover.
+    list(
+      id     = "normal_histology_field",
+      type   = "column_match",
+      column = "fibrosis stage",
+      values = c("normal liver histology"),
+      assign = "Normal_histology"
+    ),
     list(
       id             = "title_stage_token",
       type           = "title_token",
       column         = "title",
       pattern        = "^F[0-4]$",
       normal_tokens  = c("N"),
-      normal_assign  = "F0"      # NOT Control: same cohort, stage 0
+      normal_assign  = "Normal_histology"
     ),
     list(
       id           = "biopsy_fibrosis_stage",
       type         = "fibrosis_stage",
-      column       = "fibrosis stage",
-      normal_terms = c("normal liver histology", "normal")
+      column       = "fibrosis stage"
     )
   ),
 
   notes = paste(
+    "Expected: Normal_histology 31, F0 35, F1 30, F2 27, F3 8, F4 12.",
     "Titles carrying more than one F-token are treated as ambiguous and fall",
     "through to the fibrosis-stage rule instead of taking the first match."
   )
