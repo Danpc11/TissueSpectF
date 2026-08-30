@@ -20,6 +20,17 @@ SELFCHECK_K <- 6L
 SELFCHECK_PHASE <- 0.5
 SELFCHECK_GENES_PER_CHR <- 200L
 
+# A second injected component, on chromosome 2 and present in ONE condition of
+# one dataset only. It is what distinguishes the two claims the consensus stage
+# has to separate: a component shared by every condition is tissue-wide and must
+# come back exploratory, while one confined to a condition must be confirmable.
+# chr2 carries nothing else, so this component owns its chromosome's spectrum
+# and can beat the family-wise null; chr1's shared component competes with the
+# distractor below and cannot.
+SELFCHECK_SPECIFIC_K <- 11L
+SELFCHECK_SPECIFIC_CONDITION <- "F0"
+SELFCHECK_DISTRACTOR_K <- 23L
+
 write_synthetic_geo <- function(dir, amplitude_by_condition) {
   ensure_dir(dir)
   n_chr <- 3L
@@ -39,7 +50,8 @@ write_synthetic_geo <- function(dir, amplitude_by_condition) {
              }, character(1)))
   gz_write(annot, file.path(dir, "Human.GRCh38.p13.annot.tsv.gz"))
 
-  make_dataset <- function(id, conds, titles, characteristics) {
+  make_dataset <- function(id, conds, titles, characteristics,
+                           specific_here = FALSE, specific_levels = character(0)) {
     samples <- sprintf("GSM%s%03d", substr(id, 4, 6), seq_along(conds))
     quoted <- function(v) paste0('"', v, '"')
     lines <- c(
@@ -59,7 +71,12 @@ write_synthetic_geo <- function(dir, amplitude_by_condition) {
       vals <- vapply(conds, function(cnd) {
         periodic <- if (chrom == 0) {
           amplitude_by_condition[[cnd]] * 80 *
-            cos(2 * pi * SELFCHECK_K * pos / SELFCHECK_GENES_PER_CHR + SELFCHECK_PHASE)
+            cos(2 * pi * SELFCHECK_K * pos / SELFCHECK_GENES_PER_CHR + SELFCHECK_PHASE) +
+            60 * cos(2 * pi * SELFCHECK_DISTRACTOR_K * pos /
+                       SELFCHECK_GENES_PER_CHR + 1.9)
+        } else if (chrom == 1 && specific_here && cnd %in% specific_levels) {
+          110 * cos(2 * pi * SELFCHECK_SPECIFIC_K * pos /
+                      SELFCHECK_GENES_PER_CHR - 0.8)
         } else 0
         max(0L, as.integer(200 + periodic + stats::rnorm(1, sd = 12)))
       }, numeric(1))
@@ -81,7 +98,8 @@ write_synthetic_geo <- function(dir, amplitude_by_condition) {
                sprintf("Liver %s %d", conds2, seq_along(conds2)),
                list(paste0("fibrosis stage: ",
                            ifelse(conds2 == "N", "normal liver histology",
-                                  substr(conds2, 2, 2)))))
+                                  substr(conds2, 2, 2)))),
+               specific_here = TRUE, specific_levels = c("N", "F0"))
   invisible(dir)
 }
 
@@ -163,6 +181,31 @@ run_selfcheck <- function() {
   # the query path, so a break there used to pass selfcheck silently. Here a
   # reference is built and queried at several ABSOLUTE coverage levels, and the
   # decisions are checked against the bands they should fall in.
+  # --- what the consensus must and must not confirm ---------------------------
+  cons_dir <- file.path(project$results_dir, "GSE162694", "consensus")
+  sig_specific <- read_tsv_tsf(file.path(cons_dir, sprintf("signature_%s.tsv",
+                                                           SELFCHECK_SPECIFIC_CONDITION)),
+                               required = FALSE)
+  check("the condition-specific component is found in its condition", {
+    !is.null(sig_specific) &&
+      any(sig_specific$chr == "2" & sig_specific$k == SELFCHECK_SPECIFIC_K) })
+  check("the condition-specific component is CONFIRMED", {
+    !is.null(sig_specific) && {
+      row <- sig_specific[sig_specific$chr == "2" &
+                            sig_specific$k == SELFCHECK_SPECIFIC_K, ]
+      nrow(row) == 1 && identical(row$signature_class[1], "confirmed")
+    } })
+  check("the tissue-wide component stays exploratory", {
+    ok <- TRUE
+    for (cnd in c("F1", "F2", "F3")) {
+      sg <- read_tsv_tsf(file.path(cons_dir, sprintf("signature_%s.tsv", cnd)),
+                         required = FALSE)
+      if (is.null(sg)) next
+      row <- sg[sg$chr == "1" & sg$k == SELFCHECK_K, ]
+      if (nrow(row) && identical(row$signature_class[1], "confirmed")) ok <- FALSE
+    }
+    ok })
+
   ref_ok <- tryCatch({ stage_reference(project, opt); TRUE },
                      error = function(e) { tsf_warn("reference: ", conditionMessage(e)); FALSE })
   check("a reference is built from the synthetic cohorts", ref_ok)
