@@ -6,34 +6,51 @@
 # specific class within that state. This is what lets two different kinds of
 # healthy liver coexist without one absorbing the other:
 #
-#   Control            a subject OUTSIDE the disease cohort. A cohort statement,
-#                      not a histology one -- in GSE135251 two of the ten
-#                      controls carry incidental fibrosis of stage 1 and 2.
-#   Normal_histology   a biopsy with normal histology and no NAFLD activity
-#                      (NAS = 0) taken WITHIN a biopsy series. In GSE162694 the
-#                      phenotype table distinguishes these 31 samples from the
-#                      35 with fibrosis stage 0, whose NAS runs 1-5.
+# THREE HEALTHY CLASSES, NOT ONE
 #
-# Folding Normal_histology into F0 would merge histologically normal livers with
-# NAFLD patients who simply have no fibrosis yet. Calling it Control would merge
-# two different definitions of healthy. Keeping both under state = healthy makes
-# the comparison between them an answerable question instead of an assumption.
+#   Normal_histology         a biopsy with normal histology and no NAFLD
+#                            activity (NAS = 0) taken WITHIN a biopsy series.
+#                            GSE162694 (31) and GSE130970 (6).
+#   Control_disease_cohort   a subject outside the disease cohort of a NAFLD
+#                            study. A cohort statement, not a histology one:
+#                            two of GSE135251's ten carry incidental fibrosis
+#                            of stage 1 and 2, so this class is not a strictly
+#                            healthy extreme and must not be used as one
+#                            without auditing those two out.
+#   Control_external_study   the control group of a DIFFERENT disease study.
+#                            GSE142530's twelve are controls for an alcohol
+#                            cohort, recruited, sampled and processed under that
+#                            study's protocol.
+#
+# All three sit under state = healthy and none absorbs the others. Merging them
+# into one Control would assume exactly what is worth testing: that a healthy
+# liver looks the same whichever study recruited it. If their spectra turn out
+# to agree, a Healthy_consensus class can be created and defended. Equivalence
+# is demonstrated first; it is not asserted by sharing a label.
+#
+# Folding Normal_histology into F0 would likewise merge histologically normal
+# livers with NAFLD patients who simply have no fibrosis yet.
 #
 # `progression` is the ordered subset. Transitions and ordinal trends run over
 # it alone: F0 -> F1 is a step, Control -> Normal_histology is not.
 list(
   id       = "liver_fibrosis",
   tissue   = "liver",
-  levels   = c("Control", "Normal_histology", paste0("F", 0:4)),
-  states   = c(Control = "healthy", Normal_histology = "healthy",
+  levels   = c("Control_disease_cohort", "Control_external_study",
+               "Normal_histology", paste0("F", 0:4)),
+  states   = c(Control_disease_cohort = "healthy",
+               Control_external_study = "healthy",
+               Normal_histology = "healthy",
                F0 = "disease", F1 = "disease", F2 = "disease",
                F3 = "disease", F4 = "disease"),
-  conditions = c(Control = "Control", Normal_histology = "Normal_histology",
+  conditions = c(Control_disease_cohort = "Control_disease_cohort",
+                 Control_external_study = "Control_external_study",
+                 Normal_histology = "Normal_histology",
                  F0 = "NAFLD_fibrosis_F0", F1 = "NAFLD_fibrosis_F1",
                  F2 = "NAFLD_fibrosis_F2", F3 = "NAFLD_fibrosis_F3",
                  F4 = "NAFLD_fibrosis_F4"),
   progression = paste0("F", 0:4),
   ordered  = TRUE,
-  baseline = "Control",
+  baseline = "Control_disease_cohort",
   description = "METAVIR-style fibrosis stage, plus two distinct healthy states"
 )
