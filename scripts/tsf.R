@@ -73,6 +73,9 @@ Parameters (override config/project.R):
   --primary-scheme <s>  full | all
   --criterion <s>       condition | consistency
   --ebic-gamma <f>      CLEAN selection penalty
+  --n-null <n>          permutation draws for the consensus null
+  --n-boot <n>          bootstrap resamples of the consensus score
+  --n-masks <n>         masks per coverage band in the reference calibration
   --k-max <n>           frequencies per chromosome in a fingerprint
   --target <s>          condition | tissue   (reference only)
 
@@ -118,6 +121,9 @@ OPTION_ALIASES <- c(
   out = "out", outputdir = "output_dir", output_dir = "output_dir",
   kmax = "k_max", k_max = "k_max", seed = "seed",
   chromosomes = "chromosomes", chrom = "chromosomes",
+  nnull = "n_null", n_null = "n_null",
+  nboot = "n_boot", n_boot = "n_boot",
+  nmasks = "n_masks", n_masks = "n_masks",
   minutes = "minutes"
 )
 
@@ -207,6 +213,9 @@ apply_cli_overrides <- function(project, opt) {
   set(c("maxt", "stable_frac"), opt$stable_frac, as.numeric)
   set(c("maxt", "primary_scheme"), opt$primary_scheme)
   set(c("clean", "ebic_gamma"), opt$ebic_gamma, as.numeric)
+  set(c("consensus", "n_null"), opt$n_null, as.integer)
+  set(c("consensus", "n_boot"), opt$n_boot, as.integer)
+  set(c("fingerprint", "n_masks"), opt$n_masks, as.integer)
   set(c("clean", "per_sample"), opt$per_sample, isTRUE)
   set(c("fingerprint", "k_max"), opt$k_max, as.integer)
   set(c("fingerprint", "target"), opt$target)
