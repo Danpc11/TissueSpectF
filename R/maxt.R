@@ -58,6 +58,35 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
   # stay NA so the table has the same shape for every chromosome -- chromosomes
   # differ in how many genes are observed, and dropping columns per chromosome
   # made the per-chromosome results impossible to rbind.
+  # Pointwise exceedance counts, accumulated alongside the maxima at no extra
+  # cost. The maxT p-value asks whether a frequency beats the strongest
+  # frequency of an entire permuted spectrum -- family-wise control across the
+  # chromosome, and with 500 to 800 frequencies that is a very high bar: it
+  # effectively asks whether this is the dominant component of the chromosome.
+  # The pointwise p-value asks whether the frequency beats its own null, which
+  # is the question a signature is about; the multiplicity is then handled by
+  # BH across frequencies rather than by taking a maximum.
+  #
+  # A per-frequency p-value computed against that frequency's own null has the
+  # same floor as any permutation p, 1/(B+1), and BH across ~10,000 genome-wide
+  # frequencies then needs B >= n_freq/q -- two hundred thousand draws for
+  # q = 0.05. Infeasible, and the fourth time this floor has bitten in this
+  # project.
+  #
+  # The pooled null is the standard way out. Each frequency's null is
+  # standardised by its own mean and standard deviation, and the standardised
+  # values are pooled across the frequencies of the chromosome, giving an
+  # empirical null of size B*K and a floor of 1/(B*K+1) -- 6e-7 with 200 draws
+  # over 600 frequencies, small enough for BH to reach anything.
+  #
+  # The assumption is that the STANDARDISED null is exchangeable across the
+  # frequencies of a chromosome. Standardising removes the systematic difference
+  # between frequencies; what it does not remove is the effect of the sampling
+  # window, which is why window_power travels with every peak and ./tsf window
+  # exists. The unpooled family-wise p-value is kept alongside and makes no such
+  # assumption.
+  null_power_mat <- matrix(NA_real_, nrow = B, ncol = length(power_observed))
+
   block_sizes <- unique(as.integer(block_sizes[is.finite(block_sizes) & block_sizes >= 2]))
   block_map <- lapply(stats::setNames(block_sizes, block_sizes), grid_blocks)
   # A scheme needs enough blocks for shuffling to have resolution. With only 4
@@ -74,7 +103,9 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
                      dimnames = list(NULL, scheme_names))
   set.seed(seed)
   for (b in seq_len(B)) {
-    null_max[b, "full"] <- max(gls_spectrum(sample(y), terms)$power)
+    null_power <- gls_spectrum(sample(y), terms)$power
+    null_max[b, "full"] <- max(null_power)
+    null_power_mat[b, ] <- null_power
     for (bs in usable) {
       null_max[b, paste0("block", bs)] <-
         max(gls_spectrum(permute_blocks(y, block_map[[as.character(bs)]]), terms)$power)
@@ -100,7 +131,19 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
                       all  = p_all,
                       tsf_abort("maxt$primary_scheme must be 'full' or 'all'"))
 
+  centre <- colMeans(null_power_mat)
+  scale <- apply(null_power_mat, 2, stats::sd)
+  scale[!is.finite(scale) | scale <= 0] <- 1
+  z_obs <- (power_observed - centre) / scale
+  pooled <- sort(as.vector(sweep(sweep(null_power_mat, 2, centre), 2, scale, "/")))
+  # (1 + number of pooled null values at least as extreme) / (1 + pool size)
+  p_pooled <- (1 + (length(pooled) -
+                      findInterval(z_obs, pooled, left.open = TRUE))) /
+    (length(pooled) + 1)
+
   out <- obs
+  out$p_pointwise <- pmin(1, p_pooled)
+  out$null_z <- z_obs
   out$p_empirical_maxT <- p_primary
   out$p_empirical_maxT_full <- p_full
   out$p_empirical_maxT_all <- p_all
