@@ -387,6 +387,34 @@ check("the input unit changes the transform", {
     identical(query_signal(v, "logged"), v) &&
     inherits(tryCatch(query_signal(v, "rpkm"), error = function(e) e), "error") })
 
+check("the pooled null reaches a floor BH can use", {
+  # A per-frequency p against its own null floors at 1/(B+1); BH over ~10,000
+  # genome-wide frequencies would then need B >= n_freq/q, two hundred thousand
+  # draws. Pooling the standardised nulls across frequencies floors at 1/(B*K+1).
+  set.seed(41); N <- 400L; tt <- 1:N
+  m <- permutation_gls_test(rnorm(N), gls_prepare(tt, N), B = 100L, seed = 1L)
+  # The p-values go below the unpooled floor, so BH is no longer capped by the
+  # number of draws. On this input BH still finds nothing, which is correct --
+  # it is pure noise; what is being checked is the floor, not a detection.
+  min(m$p_pointwise) < 1 / (100 + 1) && min(p.adjust(m$p_pointwise, "BH")) < 1 })
+
+check("FDR finds components that do not dominate their chromosome", {
+  # Two real components, neither the strongest thing in a noisy spectrum. The
+  # family-wise rule asks whether a frequency beats the maximum of a permuted
+  # spectrum, which is close to asking whether it dominates the chromosome; the
+  # pointwise rule asks whether it beats its own null.
+  set.seed(42); N <- 400L; tt <- 1:N
+  y <- 0.6 * cos(2 * pi * 7 * (tt - 1) / N) +
+       0.5 * cos(2 * pi * 23 * (tt - 1) / N + 1) + rnorm(N, sd = 1)
+  m <- permutation_gls_test(y, gls_prepare(tt, N), B = 200L, seed = 2L)
+  q <- p.adjust(m$p_pointwise, "BH")
+  all(c(7L, 23L) %in% m$k[q <= 0.05]) && sum(q <= 0.05) <= 6 })
+
+check("the pooled null is calibrated on noise", {
+  set.seed(43); N <- 400L; tt <- 1:N
+  m <- permutation_gls_test(rnorm(N), gls_prepare(tt, N), B = 200L, seed = 3L)
+  mean(m$p_pointwise <= 0.05) < 0.12 })
+
 # --- consensus spectrum ------------------------------------------------------
 check("PLV is 1 for aligned phases and near 0 for scattered ones", {
   set.seed(81)
