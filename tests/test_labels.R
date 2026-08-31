@@ -182,6 +182,48 @@ check("an etiology filter is not fooled by a similarly named column", {
   lab <- data.frame(condition = "F4", keep = c(TRUE, TRUE), stringsAsFactors = FALSE)
   identical(apply_sample_filter(lab, ph, cfg)$keep, c(TRUE, FALSE)) })
 
+check("a declared substitution reconciles labels and leaves a trail", {
+  # The count file says "Control_Lille 389"; the series matrix says
+  # "Control_389". The substitution is declared, and the raw label survives in
+  # the map so the correspondence can be checked rather than trusted.
+  f <- tempfile(fileext = ".csv")
+  writeLines(c("gene_id,symbol,RB_N1,RB_N2,RB_N3",
+               "NA,NA,Control_Lille 389,Control_TPF 111484,not.used",
+               "ENSG00000000003.1,TSPAN6,10,20,5"), f)
+  d <- read_counts(f, "ENSEMBL",
+                   list(sep = ",", id_column = 1L, symbol_column = 2L,
+                        sample_map_row = 1L,
+                        map_transform = list(list(pattern = "_(Lille|TPF)[[:space:]]+",
+                                                  replacement = "_")),
+                        exclude_columns = c("not.used")))
+  m <- attr(d, "sample_map")
+  setequal(m$mapped_id, c("Control_389", "Control_111484")) &&
+    "Control_Lille 389" %in% m$raw_label &&
+    !any(grepl("not.used", colnames(d))) })
+
+check("the Ensembl version suffix is stripped", {
+  f <- tempfile(fileext = ".csv")
+  writeLines(c("gene_id,symbol,S1", "ENSG00000000003.14,TSPAN6,10"), f)
+  identical(read_counts(f, "ENSEMBL",
+                        list(sep = ",", id_column = 1L, symbol_column = 2L))$source_id,
+            "ENSG00000000003") })
+
+check("cohort_roles keep a second control class out of the disease group", {
+  # Comparing against the baseline alone called Control_external_study disease,
+  # because it is not the baseline. That column feeds reports and balancing.
+  v <- load_vocabulary("liver_fibrosis")
+  got <- tsf_cohort_role(c("Control_disease_cohort", "Control_external_study",
+                           "Normal_histology", "F2"), v)
+  identical(got, c("control", "control", "within_disease_normal", "disease")) })
+
+check("a vocabulary without cohort_roles falls back to the baseline", {
+  v <- list(baseline = "Control", cohort_roles = NULL)
+  identical(tsf_cohort_role(c("Control", "Case"), v), c("control", "disease")) })
+
+check("an undeclared class is recorded as unknown, not guessed", {
+  v <- load_vocabulary("liver_fibrosis")
+  identical(tsf_cohort_role("Made_up", v), "unknown") })
+
 # --- input schemas and vocabularies without a baseline -----------------------
 tmp_v <- file.path(tempdir(), "voc"); tmp_d <- file.path(tempdir(), "ds")
 dir.create(tmp_v, showWarnings = FALSE); dir.create(tmp_d, showWarnings = FALSE)
