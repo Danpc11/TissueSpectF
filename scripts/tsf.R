@@ -76,6 +76,7 @@ Parameters (override config/project.R):
   --n-null <n>          permutation draws for the consensus null
   --n-boot <n>          bootstrap resamples of the consensus score
   --n-masks <n>         masks per coverage band in the reference calibration
+  --cores <n>           worker processes (consensus defaults to at most 8)
   --k-max <n>           frequencies per chromosome in a fingerprint
   --target <s>          condition | tissue   (reference only)
 
