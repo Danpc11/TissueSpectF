@@ -13,6 +13,7 @@ list(
   levels   = NULL,          # dataset config supplies condition_levels
   states   = NULL,          # every level is its own state: healthy by default
   conditions = NULL,
+  cohort_roles = NULL,   # falls back to baseline comparison
   progression = NULL,
   ordered  = FALSE,
   baseline = NULL,
