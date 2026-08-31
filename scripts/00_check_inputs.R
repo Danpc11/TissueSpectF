@@ -32,11 +32,18 @@ closest <- function(target, pool, n = 3L) {
   pool[order(d)][seq_len(min(n, length(pool)))]
 }
 
+#' Human-readable size. A series matrix is tens of kilobytes, and rounding it
+#' to "0 MB" reads like a zero-byte file, which is alarming for no reason.
+human_size <- function(bytes) {
+  if (bytes >= 1024^2) return(paste0(round(bytes / 1024^2, 1), " MB"))
+  if (bytes >= 1024) return(paste0(round(bytes / 1024), " KB"))
+  paste0(bytes, " B")
+}
+
 report <- function(label, filename) {
   path <- file.path(project$geo_dir, filename)
   if (file.exists(path)) {
-    size_mb <- round(file.size(path) / 1024^2, 1)
-    tsf_log("  OK      ", label, ": ", filename, " (", size_mb, " MB)")
+    tsf_log("  OK      ", label, ": ", filename, " (", human_size(file.size(path)), ")")
     return(TRUE)
   }
   tsf_warn("  MISSING ", label, ": ", filename)
@@ -71,4 +78,4 @@ if (!ok) {
   tsf_abort("Inputs incomplete. Fix the file names in config/datasets/<GSE>.R ",
             "(counts_file, series_matrix) or config/project.R (annotation_file, paths).")
 }
-tsf_log("All inputs present. Run: Rscript scripts/01_ingest_dataset.R")
+tsf_log("All inputs present. Next: ./tsf ingest")
