@@ -1,13 +1,13 @@
 # TissueSpectF
 
-![R](.../R-4.1%2B-276DC3?logo=r&logoColor=white)
-![Python](.../Python-3.10%2B-3776AB?logo=python&logoColor=white)
-[![Tests](...)]
-[![Full pipeline](...Colab...)]
-![Cohorts](.../GEO-5%20liver%20cohorts-1f6feb)
-![Classes](.../classes-3%20healthy%20%7C%20F0--F4-1f6feb)
-![Dependencies](.../pipeline-base%20R%20only-success)
-![ML](.../TissueSpect--AE-optional-lightgrey)
+![R](https://img.shields.io/badge/R-4.1%2B-276DC3?logo=r&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+[![Tests](https://github.com/Danpc11/TissueSpectF/actions/workflows/tests.yml/badge.svg)](https://github.com/Danpc11/TissueSpectF/actions/workflows/tests.yml)
+[![Full pipeline](https://img.shields.io/badge/Colab-Full%20pipeline-4285F4?logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/Danpc11/TissueSpectF/blob/main/TissueSpectF_colab.ipynb)
+![Cohorts](https://img.shields.io/badge/GEO-5%20liver%20cohorts-1f6feb)
+![Classes](https://img.shields.io/badge/classes-3%20healthy%20%7C%20F0--F4-1f6feb)
+![Dependencies](https://img.shields.io/badge/pipeline-base%20R%20only-success)
+![ML](https://img.shields.io/badge/TissueSpect--AE-optional-lightgrey)
 
 Chromosome-ordered Fourier spectral analysis of tissue level transcriptomes.
 
