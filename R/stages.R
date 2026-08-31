@@ -28,7 +28,25 @@ stage_ingest <- function(project, opt) {
     res <- ingest_dataset(id, project)
     present[[id]] <- res$audit$present
   }
-  if (length(present) > 1) invisible(comparable_conditions(present))
+  if (length(present) > 1) {
+    common <- Reduce(intersect, present)
+    all_conditions <- unique(unlist(present, use.names = FALSE))
+    for (id in names(present)) {
+      missing <- setdiff(all_conditions, present[[id]])
+      if (length(missing)) {
+        tsf_log(id, " does not contribute: ", paste(missing, collapse = ", "))
+      }
+    }
+    if (length(common)) {
+      tsf_log("Conditions shared by every selected dataset: ",
+              paste(common, collapse = ", "))
+    } else {
+      tsf_warn("No condition is shared by every selected dataset. This is valid ",
+               "for library construction: each cohort was ingested independently. ",
+               "Cross-cohort synthesis must group cohorts by condition rather than ",
+               "requiring one global intersection.")
+    }
+  }
   sprintf("%d dataset(s) ingested", length(ids))
 }
 
