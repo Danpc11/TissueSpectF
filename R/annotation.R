@@ -153,6 +153,54 @@ read_gtf_annotation <- function(path, chrom_levels, strip_version = TRUE,
   out
 }
 
+#' Add identifiers the annotation itself does not carry.
+#'
+#' A GENCODE GTF has Ensembl ids and symbols but no Entrez ids, and three of the
+#' liver cohorts publish counts keyed on Entrez. Rather than guessing, the
+#' project declares a mapping file; the NCBI annotation table already in the
+#' data directory is one, since it carries GeneID and EnsemblGeneID side by side.
+#'
+#' Genes with no mapping keep NA. They are then simply unmatched by an
+#' Entrez-keyed count table, which is the honest outcome: a gene the mapping
+#' does not cover was not measured under that identifier.
+attach_id_map <- function(ann, project) {
+  spec <- project$id_map
+  if (is.null(spec)) return(ann)
+  path <- file.path(project$geo_dir, spec$file)
+  if (!file.exists(path)) {
+    tsf_abort("id_map file not found: ", path)
+  }
+  map <- read_tsv_tsf(path)
+  from <- spec$ensembl_column %||% "EnsemblGeneID"
+  to <- spec$entrez_column %||% "GeneID"
+  for (cl in c(from, to)) {
+    if (!cl %in% colnames(map)) {
+      tsf_abort("id_map file has no column '", cl, "'. Columns: ",
+                paste(utils::head(colnames(map), 8), collapse = ", "))
+    }
+  }
+  key <- sub("\\..*$", "", trimws(as.character(map[[from]])))
+  val <- trimws(as.character(map[[to]]))
+  ok <- nzchar(key) & !is.na(key) & nzchar(val) & !is.na(val)
+  lookup <- stats::setNames(val[ok], key[ok])
+  lookup <- lookup[!duplicated(names(lookup))]
+
+  ann$entrez_id <- unname(lookup[ann$gene_id])
+  n <- sum(!is.na(ann$entrez_id))
+  tsf_log("Identifier map: ", n, "/", nrow(ann), " genes gained an Entrez id (",
+          round(100 * n / nrow(ann)), "%) from ", basename(path))
+  if (n == 0L) {
+    tsf_abort("The identifier map produced no matches. Check that '", from,
+              "' holds Ensembl gene ids in ", basename(path), ".")
+  }
+  ann
+}
+
+# Parsing a GENCODE GTF takes about a minute and a half, and ingest reads the
+# annotation once per dataset. Cached for the session, keyed on the file and its
+# modification time so an edited annotation is never served from the cache.
+.annotation_cache <- new.env(parent = emptyenv())
+
 #' Read whatever annotation the project declares.
 #'
 #' Dispatches on `annotation_format`. Adding a source means adding a reader
@@ -160,6 +208,16 @@ read_gtf_annotation <- function(path, chrom_levels, strip_version = TRUE,
 read_annotation <- function(project) {
   path <- file.path(project$geo_dir, project$annotation_file)
   format <- project$annotation_format %||% "ncbi"
+
+  cache_key <- paste(path, file.mtime(path), format,
+                     project$gene_universe %||% "all",
+                     project$gene_length_mode %||% "exonic",
+                     paste(project$chrom_levels, collapse = ","), sep = "|")
+  if (!is.null(.annotation_cache[[cache_key]])) {
+    tsf_log("Annotation: reusing the parse from earlier in this run")
+    return(.annotation_cache[[cache_key]])
+  }
+
   ann <- switch(format,
     ncbi = read_gene_annotation(path, project$chrom_levels),
     gtf  = ,
@@ -168,6 +226,8 @@ read_annotation <- function(project) {
                                length_mode = project$gene_length_mode %||% "exonic",
                                gff3 = identical(format, "gff3")),
     tsf_abort("annotation_format must be ncbi, gtf or gff3; got '", format, "'"))
+
+  ann <- attach_id_map(ann, project)
 
   # A universe pattern written for the other source matches nothing and would
   # produce an empty or nonsensical grid. Say so here, where the fix is obvious.
@@ -181,5 +241,7 @@ read_annotation <- function(project) {
                 default_gene_universe(format), "'.")
     }
   }
+
+  .annotation_cache[[cache_key]] <- ann
   ann
 }
