@@ -39,6 +39,14 @@ list(
   gene_length_mode  = "exonic",
   strip_gene_version = TRUE,
 
+  # A GENCODE GTF carries Ensembl ids and symbols but no Entrez ids, and three
+  # of these cohorts publish counts keyed on Entrez. The NCBI annotation table
+  # already in the data directory carries both side by side, so it doubles as
+  # the mapping. Set to NULL when the annotation already has what the counts use.
+  id_map = list(file = "Human.GRCh38.p13.annot.tsv.gz",
+                ensembl_column = "EnsemblGeneID",
+                entrez_column  = "GeneID"),
+
   # Provenance of the annotation. Recorded in every output and checked before
   # two datasets are allowed into the same reference: a feature named chrX_k7
   # means a different thing under a different build or gene universe.
