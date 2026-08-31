@@ -49,6 +49,16 @@ list(
                  F0 = "NAFLD_fibrosis_F0", F1 = "NAFLD_fibrosis_F1",
                  F2 = "NAFLD_fibrosis_F2", F3 = "NAFLD_fibrosis_F3",
                  F4 = "NAFLD_fibrosis_F4"),
+  # What role a class plays, independent of which one is the baseline. Deriving
+  # `cohort` by comparing against the baseline alone marked
+  # Control_external_study as disease, because it is not the baseline -- a
+  # conclusion drawn from a naming convention rather than from the biology.
+  cohort_roles = c(Control_disease_cohort = "control",
+                   Control_external_study = "control",
+                   Normal_histology       = "within_disease_normal",
+                   F0 = "disease", F1 = "disease", F2 = "disease",
+                   F3 = "disease", F4 = "disease"),
+
   progression = paste0("F", 0:4),
   ordered  = TRUE,
   baseline = "Control_disease_cohort",
