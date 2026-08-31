@@ -266,6 +266,9 @@ harmonize_conditions <- function(pheno, dataset_config) {
     label_mismatch = mismatch,
     cohort         = tsf_cohort_role(condition,
                                      dataset_config$vocabulary_spec %||% list()),
+    label_resolved = !is.na(condition),
+    in_scope       = TRUE,
+    condition_selected = TRUE,
     keep           = !is.na(condition),
     stringsAsFactors = FALSE
   )
@@ -289,6 +292,15 @@ harmonize_conditions <- function(pheno, dataset_config) {
 #' on the assumption that it belongs. Silently admitting a hepatitis B cirrhosis
 #' into a MASLD class would be the most expensive error available here.
 apply_sample_filter <- function(labels, pheno, dataset_config) {
+  if (!"label_resolved" %in% colnames(labels)) {
+    labels$label_resolved <- !is.na(labels$condition)
+  }
+  if (!"in_scope" %in% colnames(labels)) labels$in_scope <- TRUE
+  if (!"condition_selected" %in% colnames(labels)) {
+    labels$condition_selected <- TRUE
+  }
+  if (!"filtered_out" %in% colnames(labels)) labels$filtered_out <- FALSE
+
   filt <- dataset_config$sample_filter
   if (!is.null(filt)) {
     for (f in filt) {
@@ -309,28 +321,33 @@ apply_sample_filter <- function(labels, pheno, dataset_config) {
       } else {
         tsf_abort("sample_filter entry needs values, pattern or exclude_values")
       }
-      dropped <- sum(labels$keep & !ok)
+      previously_in_scope <- labels$in_scope
+      dropped <- sum(previously_in_scope & !ok)
       if (dropped) {
         tsf_log("  filter '", f$column, "': dropped ", dropped, " sample(s) (",
-                paste(utils::head(sort(unique(v[labels$keep & !ok])), 6),
+                paste(utils::head(sort(unique(v[previously_in_scope & !ok])), 6),
                       collapse = ", "), ")")
       }
-      labels$keep <- labels$keep & ok
-      labels$filtered_out <- !ok
+      labels$in_scope <- labels$in_scope & ok
+      labels$filtered_out <- labels$filtered_out | !ok
     }
   }
 
   keep_cond <- dataset_config$keep_conditions
   if (!is.null(keep_cond)) {
-    out <- labels$keep & !(labels$condition %in% keep_cond)
+    out <- labels$in_scope & labels$label_resolved &
+      !(labels$condition %in% keep_cond)
     if (any(out)) {
       tsf_log("  keep_conditions: dropped ", sum(out), " sample(s) in ",
               paste(sort(unique(labels$condition[out])), collapse = ", "),
               " (this dataset contributes only ",
               paste(keep_cond, collapse = ", "), ")")
     }
-    labels$keep <- labels$keep & labels$condition %in% keep_cond
+    labels$condition_selected[out] <- FALSE
   }
+
+  labels$keep <- labels$label_resolved & labels$in_scope &
+    labels$condition_selected
   labels
 }
 
@@ -339,14 +356,39 @@ audit_labels <- function(labels, dataset_config, max_unresolved_frac = 0.05,
                          min_n_per_condition = 5L) {
   levels_now <- tsf_levels(dataset_config$vocabulary_spec %||%
                              dataset_config$condition_levels)
-  n <- nrow(labels)
-  unresolved <- sum(!labels$keep)
-  tsf_log("Labels for ", dataset_config$id, ": ", n - unresolved, "/", n, " resolved")
-  tab <- table(factor(labels$condition[labels$keep], levels = levels_now))
+  if (!"label_resolved" %in% colnames(labels)) {
+    labels$label_resolved <- !is.na(labels$condition)
+  }
+  if (!"in_scope" %in% colnames(labels)) labels$in_scope <- TRUE
+  if (!"condition_selected" %in% colnames(labels)) {
+    labels$condition_selected <- TRUE
+  }
+
+  scope <- labels$in_scope & labels$condition_selected
+  n_scope <- sum(scope)
+  resolved_scope <- scope & labels$label_resolved
+  unresolved <- sum(scope & !labels$label_resolved)
+  filtered <- sum(!labels$in_scope)
+  condition_excluded <- sum(labels$in_scope & !labels$condition_selected)
+
+  tsf_log("Labels for ", dataset_config$id, ": ",
+          sum(resolved_scope), "/", n_scope,
+          " resolved within analysis scope; ", filtered, " filtered out",
+          if (condition_excluded > 0L)
+            paste0("; ", condition_excluded,
+                   " resolved sample(s) excluded by keep_conditions")
+          else "")
+
+  tab <- table(factor(labels$condition[resolved_scope], levels = levels_now))
   for (cnd in names(tab)) tsf_log("  ", cnd, ": ", tab[[cnd]])
 
-  if (unresolved / max(n, 1L) > max_unresolved_frac) {
-    tsf_abort(unresolved, "/", n, " samples unresolved in ", dataset_config$id,
+  if (n_scope == 0L) {
+    tsf_abort("No samples remain within the analysis scope for ",
+              dataset_config$id, ". Check sample_filter and keep_conditions.")
+  }
+  if (unresolved / n_scope > max_unresolved_frac) {
+    tsf_abort(unresolved, "/", n_scope, " in-scope samples unresolved in ",
+               dataset_config$id,
                " (> ", max_unresolved_frac * 100, "%). Check condition_rules.")
   }
   low <- names(tab)[tab > 0 & tab < min_n_per_condition]
@@ -362,6 +404,9 @@ audit_labels <- function(labels, dataset_config, max_unresolved_frac = 0.05,
              " (recorded; cross-dataset comparison will skip them)")
   }
   invisible(list(counts = tab, unresolved = unresolved,
+                 filtered_out = filtered,
+                 condition_excluded = condition_excluded,
+                 n_in_scope = n_scope,
                  present = names(tab)[tab > 0]))
 }
 
