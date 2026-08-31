@@ -135,7 +135,16 @@ stage_consensus <- function(project, opt) {
   n_sig <- 0L
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id, need = "maxt")
-    tsf_log(id, ": consensus spectra from per-sample spectra")
+    detected <- suppressWarnings(parallel::detectCores(logical = TRUE))
+    if (is.na(detected) || detected < 1L) detected <- 1L
+    requested <- suppressWarnings(as.integer(opt$cores %||% NA_integer_))
+    # Consensus workers each touch a large spectral table. Eight is a safer
+    # default than blindly forking once per chromosome; --cores can raise or
+    # lower it after checking available RAM.
+    n_cores <- if (is.na(requested)) min(8L, max(1L, detected - 1L)) else
+      max(1L, min(requested, detected))
+    tsf_log(id, ": consensus spectra from per-sample spectra (", n_cores,
+            " worker(s))")
     # The label-permuted null needs every sample of the dataset, not just the
     # condition's, so it is assembled once.
     pool <- do.call(rbind, lapply(inp$conditions, function(c)
@@ -171,7 +180,8 @@ stage_consensus <- function(project, opt) {
                                n_boot = project$consensus$n_boot %||% 500L,
                                alpha = project$maxt$alpha,
                                seed = project$maxt$seed,
-                               quantile_cut = project$consensus$quantile_cut %||% 0.95)
+                               quantile_cut = project$consensus$quantile_cut %||% 0.95,
+                               n_cores = n_cores)
       if (is.null(cs)) { tsf_warn("  ", cond, ": no consensus"); next }
 
       n_here <- length(unique(sp$sample))
@@ -184,7 +194,7 @@ stage_consensus <- function(project, opt) {
             pool, n_here, n_null = project$consensus$n_null %||% 50L,
             seed = project$maxt$seed,
             quantile_cut = project$consensus$quantile_cut %||% 0.95,
-            blocks = blocks))
+            blocks = blocks, n_cores = n_cores))
           tsf_log("  null for n = ", n_here, ": global q95 = ",
                   signif(null_cache[[key]]$d$global %||% NA, 3), " over ",
                   null_cache[[key]]$d$n_null %||% 0, " draws (",
