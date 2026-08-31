@@ -343,8 +343,7 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
                 "counts_spec$map_transform entry.")
     }
   }
-  genes <- read_gene_annotation(file.path(project$geo_dir, project$annotation_file),
-                                project$chrom_levels)
+  genes <- read_annotation(project)
 
   key <- switch(cfg$count_id_type %||% "ENTREZID",
                 ENTREZID = "entrez_id",
@@ -472,11 +471,14 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   # coverage as if it were the annotation.
   write_tsv_tsf(grid, file.path(out_dir, "grid.tsv"))
   write_tsv_tsf(data.frame(
-    key = c("species", "genome_build", "annotation_release", "gene_universe",
-            "annotation_file", "grid_genes", "grid_digest", "expression_unit"),
+    key = c("species", "genome_build", "annotation_release", "annotation_format",
+            "gene_length_mode", "gene_universe", "annotation_file",
+            "grid_genes", "grid_digest", "expression_unit"),
     value = c(project$species %||% NA_character_,
               project$genome_build %||% NA_character_,
               project$annotation_release %||% NA_character_,
+              project$annotation_format %||% "ncbi",
+              attr(genes, "length_mode") %||% NA_character_,
               project$gene_universe %||% "all",
               project$annotation_file,
               nrow(grid), grid_digest(grid), unit),
