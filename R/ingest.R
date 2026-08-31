@@ -290,6 +290,9 @@ labels_from_metadata <- function(pheno, cfg) {
     fibrosis_stage_reported = NA_real_, label_rule = "metadata_column",
     label_mismatch = FALSE,
     cohort = tsf_cohort_role(cond, cfg$vocabulary_spec),
+    label_resolved = !is.na(cond),
+    in_scope = TRUE,
+    condition_selected = TRUE,
     keep = !is.na(cond), stringsAsFactors = FALSE)
 }
 
