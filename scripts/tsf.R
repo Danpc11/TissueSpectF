@@ -116,7 +116,9 @@ OPTION_ALIASES <- c(
   cores = "cores",
   inputunit = "input_unit", input_unit = "input_unit", unit = "input_unit",
   out = "out", outputdir = "output_dir", output_dir = "output_dir",
-  kmax = "k_max", k_max = "k_max", seed = "seed"
+  kmax = "k_max", k_max = "k_max", seed = "seed",
+  chromosomes = "chromosomes", chrom = "chromosomes",
+  minutes = "minutes"
 )
 
 FLAG_ALIASES <- c(force = "force", dryrun = "dry_run", dry_run = "dry_run",
@@ -183,6 +185,22 @@ apply_cli_overrides <- function(project, opt) {
   set("interim_dir", opt$interim_dir)
   set("results_dir", opt$results_dir)
   set("gene_universe", opt$gene_universe)
+  # Restricting the chromosomes is what makes an exploratory run possible on a
+  # small machine: cost scales with how many there are, and one chromosome
+  # exercises every stage. It is a scope switch, never a result -- a signature
+  # computed on part of the genome is a rehearsal.
+  if (!is.null(opt$chromosomes)) {
+    chrs <- trimws(strsplit(opt$chromosomes, ",")[[1]])
+    unknown <- setdiff(chrs, project$chrom_levels)
+    if (length(unknown)) {
+      tsf_abort("Unknown chromosome(s): ", paste(unknown, collapse = ", "),
+                ". Available: ", paste(project$chrom_levels, collapse = ", "))
+    }
+    project$chrom_levels <- chrs
+    tsf_warn("PARTIAL GENOME: ", length(chrs), " chromosome(s) (",
+             paste(chrs, collapse = ", "), "). Fine for a rehearsal; any ",
+             "signature from this run is not a result.")
+  }
   set("stability_criterion", opt$criterion)
   set(c("maxt", "B"), opt$maxt_b, as.integer)
   set(c("maxt", "condition_B"), opt$condition_b, as.integer)
