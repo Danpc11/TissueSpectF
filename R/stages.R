@@ -306,7 +306,8 @@ stage_stability <- function(project, opt) {
       m <- inp$maxt[[cond]]
       if (is.null(m)) {
         # No per-sample maxT: fall back to the condition-level result alone.
-        st <- stability_from_condition(inp$paths, cond, opt$branches[1])
+        st <- stability_from_condition(inp$paths, cond, opt$branches[1],
+                                       project$stability_criterion %||% "condition")
         if (is.null(st)) {
           tsf_warn("  ", cond, ": neither maxT nor a condition test; run one of them")
           next
