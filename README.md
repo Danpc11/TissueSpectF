@@ -35,6 +35,8 @@ everything else is shared code.
 tsf                        the command line entry point
 README.md
 THEORY.md                  the model, the estimators, what each test licenses
+RUNBOOK.md                 the sequence for a full run, and what to check
+requirements-ml.txt        dependencies of the learned layer (optional)
 TissueSpectF_colab.ipynb   the whole pipeline on a free Colab VM
 Makefile
 .github/workflows/
@@ -43,7 +45,8 @@ Makefile
 config/
   project.R                paths, filters, and every tunable parameter
   datasets/<GSE>.R         one per dataset: file names, tissue, label rules
-  vocabularies/<name>.R    condition vocabularies (levels, order, baseline)
+  vocabularies/<name>.R    condition vocabularies (levels, states, roles, order)
+  autoencoder.yaml         configuration of the learned layer
 R/
   utils_io.R               logging, TSV I/O, phenotype cleaning, manifests
   config.R                 config and vocabulary loading, validation
@@ -62,17 +65,29 @@ R/
   compare.R                signature, transitions, cross-cohort replication
   fingerprint.R            a sample's spectrum as a comparable feature vector
   reference.R              reference library, out-of-cohort validation, matching
+  bundle.R                 package the app + reference into a portable folder
   stages.R                 each stage as a callable function
+ml/                        TissueSpect-AE, the learned layer (Python)
+  utils.py                 seeds, device, manifest and compatibility checks
+  dataset.py               spectra -> masked tensor, normalisation
+  splits.py                leave-one-cohort-out, leak checks, balanced sampling
+  prototypes.py            cohort-balanced class prototypes
+  evaluate.py              metrics, silhouette, cohort predictability
+  baselines.py             the bar the model has to clear
 scripts/
   tsf.R                    CLI implementation
   00_check_inputs.R        verify the GEO inputs are where the configs expect
+  inspect_series_matrix.R  read a GEO series before writing rules for it
+  prepare_ae_data.R        export spectra for the learned layer
+  run_baselines.py         leave-one-cohort-out baselines
   match_query.R            the match command
   selfcheck.R              end-to-end run on synthetic data with a known peak
 app/
   app.R                    local desktop app (the only part that needs shiny)
 tests/
-  test_labels.R            label engine
+  test_labels.R            label engine, configs, filters, bundle
   test_spectrum.R          grid, GLS, maxT, CLEAN, condition test, Wilson
+  ml/                      the learned layer (pytest, numpy/sklearn only)
 ```
 
 Outputs go where `config/project.R` says (`interim_dir`, `results_dir`),
@@ -137,37 +152,128 @@ the positions fixed, so the missingness pattern is identical in the data and in
 every permutation and cannot by itself produce significance. That is checked
 directly in the test suite.
 
-## Condition vocabulary
+## Classes
 
-`Control, F0, F1, F2, F3, F4`
+`class_id = tissue::state::condition`
 
-- **Control** is a *cohort* statement: liver from a subject outside the disease
-  cohort. It is never inferred from a fibrosis stage of 0 or from a description
-  of normal histology.
-- **F0–F4** are biopsy fibrosis stages *within* the disease cohort.
+Three levels because two are not enough. `state` separates healthy tissue from
+diseased tissue, `condition` names the class within it. With two levels, healthy
+liver from a non-disease cohort and healthy liver from a biopsy series would
+have to share one label or invent unrelated ones; with three, both sit under
+`liver::healthy` and stay distinguishable, and TCGA's adjacent-normal will fit
+later without renaming anything.
 
-This is the fix for the main inconsistency in the original scripts. GSE135251
-has a real non-NAFLD control group, so `Control` and `F0` (NAFLD without
-fibrosis) are different populations. GSE162694 is a single biopsy cohort: its
-`N` / "normal liver histology" samples are `F0`, and the config declares
-`has_control_cohort = FALSE`. The engine refuses to emit `Control` for a dataset
-that declares it has none.
+### Three healthy classes, not one
+
+| class | what it is | cohorts |
+|---|---|---|
+| `Normal_histology` | a biopsy with normal histology and no NAFLD activity (NAS = 0), taken **within** a biopsy series | GSE162694 (31), GSE130970 (6) |
+| `Control_disease_cohort` | a subject **outside** the disease cohort of a NAFLD study | GSE135251 (10) |
+| `Control_external_study` | the control group of a **different** disease study | GSE142530 (11) |
+
+None absorbs the others. Merging them into one `Control` would assume exactly
+what is worth testing — that a healthy liver looks the same whichever study
+recruited it — and would do it by choosing a label. If their spectra agree, a
+`Healthy_consensus` class can be created and defended afterwards. Equivalence is
+demonstrated, not asserted.
+
+`Control_disease_cohort` is **not a strictly healthy extreme**: two of its ten
+carry incidental fibrosis of stage 1 and 2, which is what makes it a cohort
+statement rather than a histological one. Audit those two out before using the
+class as a healthy reference.
+
+### The disease classes
+
+`NAFLD_fibrosis_F0` through `F4`, biopsy fibrosis stages within the disease
+cohort. `Normal_histology` is not `F0`: in GSE162694 the phenotype table lists
+`normal liver histology` and `0` as separate values, and NAS settles it — all 31
+normal-histology samples score 0 while the 35 at stage 0 score 1 to 5.
+
+### Ordering and roles
+
+A vocabulary declares three things beyond its levels:
+
+- **`progression`** — the ordered subset. Transitions and ordinal trends run
+  over it alone: `F0 → F1` is a step, `Control_disease_cohort →
+  Normal_histology` is not.
+- **`states`** — healthy or disease, which becomes the middle term of `class_id`.
+- **`cohort_roles`** — `control`, `disease` or `within_disease_normal`. Deriving
+  the role by comparing against the baseline alone marked `Control_external_study`
+  as disease, because it is not the baseline: a conclusion drawn from a naming
+  convention rather than from the biology.
 
 Cross-dataset work runs over `comparable_conditions()`, which reports what each
 dataset lacks instead of silently producing an empty intersection.
 
+## The cohorts
+
+| cohort | Control_disease_cohort | Control_external_study | Normal_histology | F0 | F1 | F2 | F3 | F4 |
+|---|---|---|---|---|---|---|---|---|
+| GSE135251 | 10 | — | — | 38 | 47 | 53 | 54 | 14 |
+| GSE162694 | — | — | 31 | 35 | 30 | 27 | 8 | 12 |
+| GSE130970 | — | — | 6 | 19 | 28 | 9 | 14 | 2 |
+| GSE276114 | — | — | — | — | — | — | 13 | 42 |
+| GSE142530 | — | 11 | — | — | — | — | — | — |
+
+GSE276114 spans three etiologies and contributes MASLD only, and only F3/F4: its
+`F0-2` bin spans three classes and resolves to none of them. GSE142530 is an
+alcohol study and contributes only its controls. Neither restriction is a
+filter applied for convenience — pooling etiologies would put one class label on
+a mixture of diseases.
+
 ## Adding a dataset
 
-Write `config/datasets/<GSE>.R` returning a list with `id`, `counts_file`,
-`series_matrix`, `has_control_cohort` and an ordered `condition_rules` list.
-Three rule types are available:
+Read the series before writing rules for it:
 
-- `column_match` — exact match on a phenotype column (used for cohort membership)
+```bash
+Rscript scripts/inspect_series_matrix.R data/<GSE>_series_matrix.txt.gz "field" "other"
+```
+
+It prints every phenotype field with its counts and cross-tabulates two of them.
+That last view is what settles whether a class is what its name suggests — it is
+how GSE162694's 31 "normal liver histology" samples turned out to have NAS = 0
+while its 35 stage-0 samples had NAS 1–5, two groups the pipeline had been
+merging. **Write the config from that output, not from the paper's description
+of it.**
+
+Then `config/datasets/<GSE>.R` returns a list with `id`, `tissue`, `vocabulary`,
+`counts_file`, `series_matrix`, `has_control_cohort` and an ordered
+`condition_rules` list. Four rule types:
+
+- `column_match` — exact match on a phenotype column
 - `title_token` — stage token parsed from the sample title
 - `fibrosis_stage` — numeric stage from a phenotype column
+- `compound` — every sub-condition must hold, for a class defined by a
+  combination of scores rather than one field
 
 The first rule that resolves a sample wins; samples no rule resolves come back
 with `condition = NA` and are reported, never guessed.
+
+### Restricting what a cohort contributes
+
+- `sample_filter` — keep only samples matching a field, or exclude those that
+  do. A sample whose filter field is missing is **dropped**, never admitted: in
+  a mixed cohort an absent label is not evidence that it is the one wanted. A
+  missing filter column **aborts** rather than admitting everything.
+- `keep_conditions` — the classes this cohort contributes at all.
+- `expected_n_samples` — ingest stops if the count changes.
+
+### Reading count matrices that are not plain TSVs
+
+GEO publishes count matrices in whatever shape the submitters chose, and those
+are properties of a file rather than of the analysis, so they go in
+`counts_spec`: `sep`, `id_column`, `symbol_column`, `skip`, `sample_map_row`,
+`map_transform`, `exclude_columns`. `count_id_type` is `ENTREZID`, `ENSEMBL` or
+`SYMBOL`.
+
+`sample_map_row` names a second header row carrying the real sample names. It is
+extracted as a map, used to rename the columns, and removed **before** anything
+is coerced to numeric — left in place it turns every count column into character
+and the matrix silently becomes text. `map_transform` reconciles labels that
+differ from the phenotype table (`Control_Lille 389` against `Control_389`), and
+every substitution is recorded next to the raw value in `count_column_map.tsv`
+with whether it matched. A regular expression that rewrites sample names and
+leaves no table behind is not a mapping, it is a guess.
 
 ## Running
 
@@ -324,8 +430,60 @@ cut -f3 $TSF_INTERIM_DIR/GSE135251/samples.tsv | sort | uniq -c
 cut -f3 $TSF_INTERIM_DIR/GSE162694/samples.tsv | sort | uniq -c
 ```
 
-GSE162694 must contain no `Control` rows; GSE135251 must show `Control` and `F0`
-as separate, non-identical counts. If both hold, the label fix is in effect.
+No cohort should show a class it does not contribute: GSE162694 has no
+`Control_*`, GSE135251 has no `Normal_histology`, and `Control_disease_cohort`
+and `F0` are separate with different counts. Compare against the cohort table
+above; a count that differs means a label went somewhere unexpected, and nothing
+downstream is worth reading until it is reconciled.
+
+## TissueSpect-AE, the learned layer
+
+A complementary layer, not a replacement. The statistical results — permutation
+p-values, consensus spectra, replication across cohorts — remain the evidence.
+
+> **A peak reconstructed by TissueSpect-AE is not statistical or causal evidence
+> on its own. Components only the model finds are reported as AI candidates.**
+
+What exists today is the data layer and the evaluation harness. Neither needs
+`torch`; the R pipeline and its tests do not need Python at all.
+
+```bash
+pip install -r requirements-ml.txt          # optional
+./tsf ae-prepare --interim-dir interim --results-dir results_pc
+python3 scripts/run_baselines.py --data results_pc/autoencoder/data \
+                                 --out  results_pc/autoencoder/baselines
+python3 -m pytest tests/ml/ -q
+```
+
+`ae-prepare` exports the per-sample spectra as plain TSVs plus a manifest, and
+refuses when cohorts disagree on annotation, gene universe, grid digest or
+expression unit — a model trained across two grids would be learning the grids.
+Every frequency is exported, not a peak list: a fingerprint does not need any
+component to be individually significant, and filtering first would remove
+exactly what makes classes separable.
+
+Missing frequencies are carried as a mask with four levels, distinguishing what
+is above a chromosome's Nyquist limit (structurally absent, identical for every
+sample) from what this sample could not estimate (varies by sample, and so
+correlates with cohort). Arrays are rectangular, so unobserved positions hold
+zero — but only after the mask exists, and normalisation re-zeroes them, because
+subtracting a centre would otherwise turn every hole into a constant the network
+could read as a missingness flag.
+
+### The baselines come first, deliberately
+
+`run_baselines.py` runs a cohort-balanced nearest centroid, elastic net and
+random forest through leave-one-cohort-out, and prints a per-class report saying
+which classes were actually evaluated and which exist in one cohort only and so
+contribute nothing to any average. A single macro-F1 presents every class as if
+it had been tested equally; with these cohorts it never is.
+
+The column that matters is `lift` over the training fold's majority class, not
+accuracy. This is the bar the autoencoder has to clear, fixed before the model
+exists so it cannot be set to fit the answer. If nothing lifts over the baseline,
+the spectra do not distinguish stages across cohorts and no architecture fixes
+that — a network with a domain adversary trained on a few hundred samples would
+find something, and that something would be the cohorts.
 
 ## The app
 
