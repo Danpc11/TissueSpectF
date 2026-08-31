@@ -137,7 +137,11 @@ list(
   ),
 
   # What decides which peaks go downstream.
-  #   "condition"   condition-level permutation test, q <= 0.05  (default)
+  #   "condition"       family-wise (maxT), very strict: a component has to
+  #                     dominate its chromosome. Expect single digits.
+  #   "condition_fdr"   pointwise p with BH across frequencies. Answers "which
+  #                     frequencies carry structure" rather than "which is the
+  #                     strongest", and selects far more.
   #   "consistency" >= stable_frac of samples individually significant
   # Both are always computed and written; this only picks which one drives
   # is_stable. See the note at the top of R/condition_test.R.
