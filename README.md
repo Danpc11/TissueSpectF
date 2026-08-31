@@ -3,7 +3,8 @@
 ![R](https://img.shields.io/badge/R-4.1%2B-276DC3?logo=r&logoColor=white)
 [![Tests](https://github.com/Danpc11/TissueSpectF/actions/workflows/tests.yml/badge.svg)](https://github.com/Danpc11/TissueSpectF/actions/workflows/tests.yml)
 [![Full pipeline](https://img.shields.io/badge/Colab-Full%20pipeline-4285F4?logo=googlecolab&logoColor=white)](https://colab.research.google.com/github/Danpc11/TissueSpectF/blob/main/TissueSpectF_colab.ipynb)
-![Datasets](https://img.shields.io/badge/GEO-GSE135251%20%7C%20GSE162694-1f6feb)
+![Cohorts](https://img.shields.io/badge/GEO-5%20liver%20cohorts-1f6feb)
+![Classes](https://img.shields.io/badge/classes-3%20healthy%20%7C%20F0--F4-1f6feb)
 ![Dependencies](https://img.shields.io/badge/dependencies-base%20R-success)
 
 Chromosome-ordered Fourier spectral analysis of tissue level transcriptomes.
