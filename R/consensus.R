@@ -95,7 +95,8 @@ prevalence_from_rank <- function(power_norm, sample_id, chr, quantile_cut = 0.95
 #' @param maxt optional per-sample maxT table; when present, prevalence is the
 #'   fraction of samples in which the frequency is significant
 consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
-                               alpha = 0.05, seed = 42L, quantile_cut = 0.95) {
+                               alpha = 0.05, seed = 42L, quantile_cut = 0.95,
+                               n_cores = 1L) {
   d <- spectra_samples
   needed <- c("chr", "N", "k", "sample", "power", "amplitude", "phase")
   missing <- setdiff(needed, colnames(d))
@@ -134,9 +135,16 @@ consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
   key <- paste(d$chr, d$N, d$k, sep = "|")
   groups <- split(seq_len(nrow(d)), key)
   n_samples_total <- length(unique(d$sample))
-  set.seed(seed)
+  group_names <- names(groups)
+  n_cores <- max(1L, min(as.integer(n_cores), length(group_names)))
 
-  rows <- lapply(names(groups), function(g) {
+  # Parallelise the expensive observed bootstrap over frequency groups. Each
+  # group receives its own deterministic seed, so results do not change with
+  # core count or scheduling order. The permutation null calls this function
+  # with n_boot = 0 and n_cores = 1 to avoid nested parallelism.
+  rows <- parallel::mclapply(seq_along(group_names), function(group_index) {
+    g <- group_names[[group_index]]
+    set.seed(as.integer((as.double(seed) + group_index) %% .Machine$integer.max))
     i <- groups[[g]]
     ok <- is.finite(d$power[i]) & is.finite(d$phase[i])
     i <- i[ok]
@@ -191,7 +199,7 @@ consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
       median_power_ci_upper = unname(ci_p[2]),
       plv_ci_lower = unname(ci_v[1]), plv_ci_upper = unname(ci_v[2]),
       stringsAsFactors = FALSE)
-  })
+  }, mc.cores = n_cores, mc.preschedule = TRUE, mc.set.seed = FALSE)
 
   rows <- rows[!vapply(rows, is.null, logical(1))]
   if (!length(rows)) return(NULL)
@@ -224,7 +232,8 @@ consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
 #' in exactly the situation where independence fails.
 null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
                                         seed = 42L, quantile_cut = 0.95,
-                                        q_global = 0.95, blocks = NULL) {
+                                        q_global = 0.95, blocks = NULL,
+                                        n_cores = 1L) {
   samples <- unique(spectra_all$sample)
   if (length(samples) <= n_samples || n_null < 10L) return(NULL)
   set.seed(seed)
@@ -246,19 +255,30 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
     }
   }
 
-  per_key <- list(); best <- numeric(0)
-  for (b in seq_len(n_null)) {
-    pick <- draw()
-    sub <- spectra_all[spectra_all$sample %in% pick, , drop = FALSE]
+  # Generate every draw in the parent process. This makes the null exactly
+  # reproducible for a fixed seed regardless of worker count.
+  picks <- lapply(seq_len(n_null), function(b) draw())
+  rows_by_sample <- split(seq_len(nrow(spectra_all)), spectra_all$sample)
+  n_cores <- max(1L, min(as.integer(n_cores), n_null))
+
+  draws <- parallel::mclapply(seq_len(n_null), function(b) {
+    pick <- picks[[b]]
+    idx <- unlist(rows_by_sample[pick], use.names = FALSE)
+    sub <- spectra_all[idx, , drop = FALSE]
     cs <- tryCatch(consensus_spectrum(sub, n_boot = 0L, seed = seed + b,
-                                      quantile_cut = quantile_cut),
+                                      quantile_cut = quantile_cut,
+                                      n_cores = 1L),
                    error = function(e) NULL)
-    if (is.null(cs) || !nrow(cs)) next
+    if (is.null(cs) || !nrow(cs)) return(NULL)
     key <- paste(cs$chr, cs$N, cs$k, sep = "|")
-    per_key[[b]] <- stats::setNames(cs$consensus_score_rank, key)
-    best <- c(best, max(cs$consensus_score_rank, na.rm = TRUE))
-  }
-  per_key <- per_key[!vapply(per_key, is.null, logical(1))]
+    list(values = stats::setNames(cs$consensus_score_rank, key),
+         best = max(cs$consensus_score_rank, na.rm = TRUE))
+  }, mc.cores = n_cores, mc.preschedule = TRUE, mc.set.seed = FALSE)
+
+  draws <- draws[!vapply(draws, is.null, logical(1))]
+  if (!length(draws)) return(NULL)
+  per_key <- lapply(draws, `[[`, "values")
+  best <- vapply(draws, `[[`, numeric(1), "best")
   if (!length(per_key)) return(NULL)
 
   keys <- Reduce(union, lapply(per_key, names))
