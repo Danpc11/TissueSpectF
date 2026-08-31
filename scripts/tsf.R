@@ -121,6 +121,8 @@ OPTION_ALIASES <- c(
   out = "out", outputdir = "output_dir", output_dir = "output_dir",
   kmax = "k_max", k_max = "k_max", seed = "seed",
   chromosomes = "chromosomes", chrom = "chromosomes",
+  annotation = "annotation", annotationformat = "annotation_format",
+  annotation_format = "annotation_format",
   nnull = "n_null", n_null = "n_null",
   nboot = "n_boot", n_boot = "n_boot",
   nmasks = "n_masks", n_masks = "n_masks",
@@ -191,6 +193,8 @@ apply_cli_overrides <- function(project, opt) {
   set("interim_dir", opt$interim_dir)
   set("results_dir", opt$results_dir)
   set("gene_universe", opt$gene_universe)
+  set("annotation_file", opt$annotation)
+  set("annotation_format", opt$annotation_format)
   # Restricting the chromosomes is what makes an exploratory run possible on a
   # small machine: cost scales with how many there are, and one chromosome
   # exercises every stage. It is a scope switch, never a result -- a signature
