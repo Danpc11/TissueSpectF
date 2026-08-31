@@ -11,3 +11,8 @@ interim/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
