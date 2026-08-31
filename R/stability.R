@@ -159,11 +159,33 @@ attach_condition_test <- function(st, paths, cond, branch, criterion = "conditio
 }
 
 #' Stability table built from the condition test alone (no per-sample maxT).
-stability_from_condition <- function(paths, cond, branch) {
+stability_from_condition <- function(paths, cond, branch, criterion = "condition") {
   path <- file.path(paths$base, "condition",
                     sprintf("condition_significance_%s_%s.tsv", branch, cond))
   cs <- read_tsv_tsf(path, required = FALSE)
   if (is.null(cs)) return(NULL)
+
+  # This path -- no per-sample maxT, everything from the condition test -- used
+  # to select on q_condition whatever the caller declared, so
+  # --criterion condition_fdr changed nothing and produced exactly the
+  # family-wise result under a different name. The criterion is honoured here as
+  # it is everywhere else.
+  has_fdr <- "q_condition_fdr" %in% colnames(cs) && any(is.finite(cs$q_condition_fdr))
+  if (identical(criterion, "condition_fdr") && !has_fdr) {
+    tsf_abort("--criterion condition_fdr, but ", basename(path), " has no ",
+              "q_condition_fdr column. It predates the pointwise null: re-run ",
+              "./tsf condition to regenerate it. Selecting on q_condition ",
+              "instead would silently give the family-wise result under the ",
+              "name of the other one.")
+  }
+  selected <- switch(criterion,
+    condition     = !is.na(cs$q_condition) & cs$q_condition <= 0.05,
+    condition_fdr = !is.na(cs$q_condition_fdr) & cs$q_condition_fdr <= 0.05,
+    consistency   = tsf_abort("--criterion consistency needs per-sample maxT, ",
+                              "which this run does not have"),
+    tsf_abort("stability_criterion must be 'condition', 'condition_fdr' or ",
+              "'consistency'"))
+
   data.frame(
     chr = cs$chr, N = cs$N, k = cs$k, freq = cs$freq, period = cs$period,
     n_samples_with_result = NA_integer_, n_samples_significant = NA_integer_,
@@ -173,8 +195,10 @@ stability_from_condition <- function(paths, cond, branch) {
     q_condition_fdr = if ("q_condition_fdr" %in% colnames(cs))
       cs$q_condition_fdr else NA_real_,
     is_significant_condition = !is.na(cs$q_condition) & cs$q_condition <= 0.05,
-    is_stable = !is.na(cs$q_condition) & cs$q_condition <= 0.05,
-    is_stable_consistency = NA, criterion = "condition",
+    is_significant_condition_fdr = if (has_fdr)
+      !is.na(cs$q_condition_fdr) & cs$q_condition_fdr <= 0.05 else NA,
+    is_stable = selected,
+    is_stable_consistency = NA, criterion = criterion,
     window_power = cs$window_power, window_rank = cs$window_rank,
     stringsAsFactors = FALSE)
 }
