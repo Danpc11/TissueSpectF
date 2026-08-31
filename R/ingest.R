@@ -383,6 +383,15 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
     merged$gene_id <- as.character(merged$source_id)
   }
 
+  # The same merge behaviour applies to SYMBOL: gene_name is the right-hand
+  # join key and is therefore consumed into source_id.  Restore it so every
+  # common-format genes.tsv carries the annotation symbol, including cohorts
+  # such as GSE276114 whose count matrix itself is keyed by gene symbol.
+  if (identical(cfg$count_id_type, "SYMBOL") &&
+      !"gene_name" %in% colnames(merged)) {
+    merged$gene_name <- as.character(merged$source_id)
+  }
+
   merged <- merged[!duplicated(merged$gene_id), ]
   # merge() consumed the join key into source_id; restore it under its own name
   # so a query keyed on Entrez ids can be matched without conversion.
