@@ -15,7 +15,29 @@ list(
   results_dir = Sys.getenv("TSF_RESULTS_DIR",
                            "/scratch/home/dperez/GPIB/gene_notes/TissueSpectF/results"),
 
-  annotation_file = "Human.GRCh38.p13.annot.tsv.gz",
+  # --- annotation ------------------------------------------------------------
+  # Two formats are supported and they name the biotype field differently:
+  #
+  #   ncbi   GeneType   "protein-coding"   (hyphen)
+  #   gtf    gene_type  "protein_coding"   (underscore)
+  #
+  # gene_universe is a regular expression matched against that field, so a
+  # pattern written for one source matches nothing in the other. Ingest aborts
+  # with the right pattern rather than building an empty or accidental grid.
+  #
+  # GENCODE:
+  #   annotation_file   = "gencode.v50.basic.annotation.gtf.gz"
+  #   annotation_format = "gtf"
+  #   gene_universe     = "^protein_coding$"
+  #   annotation_release = "GENCODE v50 basic"
+  annotation_file   = "Human.GRCh38.p13.annot.tsv.gz",
+  annotation_format = Sys.getenv("TSF_ANNOTATION_FORMAT", "ncbi"),
+
+  # Exonic union length, which is what TPM needs. "span" (end - start) is not a
+  # transcript length and inflates long genes; it exists only for annotations
+  # with no exon features.
+  gene_length_mode  = "exonic",
+  strip_gene_version = TRUE,
 
   # Provenance of the annotation. Recorded in every output and checked before
   # two datasets are allowed into the same reference: a feature named chrX_k7
