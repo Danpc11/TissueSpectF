@@ -371,6 +371,18 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
                      "symbols are not unique identifiers and this is the cost ",
                      "of a count table keyed on them")
   }
+
+  # merge() names its output join column after by.x (source_id). When counts
+  # are keyed directly on Ensembl, the annotation's gene_id is therefore
+  # consumed by the join. Restore the canonical identifier BEFORE duplicate
+  # removal: subsetting with duplicated(merged$gene_id) while gene_id is absent
+  # produces a zero-row data frame and later looks like an expression filter
+  # removed every gene.
+  if (identical(cfg$count_id_type, "ENSEMBL") &&
+      !"gene_id" %in% colnames(merged)) {
+    merged$gene_id <- as.character(merged$source_id)
+  }
+
   merged <- merged[!duplicated(merged$gene_id), ]
   # merge() consumed the join key into source_id; restore it under its own name
   # so a query keyed on Entrez ids can be matched without conversion.
