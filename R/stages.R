@@ -20,6 +20,43 @@ stage_datasets <- function(opt) {
   else sub("\\.R$", "", list.files("config/datasets", pattern = "\\.R$"))
 }
 
+#' Worker budget for the local process manager.
+#'
+#' There is deliberately no scheduler detection here: this project runs on a
+#' host whose resource manager exposes a local process budget.  An explicit
+#' --cores value wins, followed by N_WORKERS, then a conservative automatic
+#' default.  BLAS is kept at one thread so that each fork remains one CPU task.
+local_workers <- function(opt, n_tasks = Inf, default_max = 8L) {
+  valid_int <- function(x) {
+    x <- suppressWarnings(as.integer(x))
+    if (length(x) != 1L || is.na(x) || x < 1L) NA_integer_ else x
+  }
+
+  requested <- valid_int(opt$cores %||% NA_integer_)
+  source <- "--cores"
+  if (is.na(requested)) {
+    requested <- valid_int(Sys.getenv("N_WORKERS", unset = NA_character_))
+    source <- "N_WORKERS"
+  }
+
+  detected <- suppressWarnings(parallel::detectCores(logical = TRUE))
+  if (length(detected) != 1L || is.na(detected) || detected < 1L) detected <- 1L
+  if (is.na(requested)) {
+    requested <- min(as.integer(default_max), max(1L, detected - 1L))
+    source <- "automatic"
+  }
+
+  n_tasks <- suppressWarnings(as.integer(n_tasks))
+  if (length(n_tasks) != 1L || is.na(n_tasks) || n_tasks < 1L) n_tasks <- detected
+  workers <- max(1L, min(requested, detected, n_tasks))
+
+  Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1",
+             MKL_NUM_THREADS = "1", BLIS_NUM_THREADS = "1",
+             VECLIB_MAXIMUM_THREADS = "1")
+  attr(workers, "source") <- source
+  workers
+}
+
 # --- 01 ingest ---------------------------------------------------------------
 stage_ingest <- function(project, opt) {
   ids <- stage_datasets(opt)
@@ -367,18 +404,28 @@ stage_compare <- function(project, opt) {
   }
   tsf_log("Comparison groups: ", paste(names(groups), collapse = " | "))
 
+  # The expensive independent unit is a dataset.  Groups and branches stay
+  # sequential; within a branch compare_one_group forks at most one worker per
+  # cohort, then the parent performs the cross-dataset joins.  This gives one
+  # global CPU budget and prevents nested parallelism.
+  max_group_size <- max(lengths(groups))
+  n_cores <- local_workers(opt, n_tasks = max_group_size)
+  tsf_log("compare: ", n_cores, " local worker(s) [",
+          attr(n_cores, "source"), "]; BLAS threads per worker = 1")
+
   # EVERY group is processed, each into its own directory. Taking only the
   # largest group would silently drop, say, the lung datasets whenever the liver
   # ones outnumbered them.
   results <- vapply(names(groups), function(gname) {
     compare_one_group(project, loaded[groups[[gname]]], groups[[gname]],
-                      gname, opt)
+                      gname, opt, n_cores = n_cores)
   }, character(1))
   return(paste(results, collapse = "; "))
 }
 
 #' Compare the datasets of one tissue/vocabulary group.
-compare_one_group <- function(project, loaded, ids, group_name, opt) {
+compare_one_group <- function(project, loaded, ids, group_name, opt,
+                              n_cores = 1L) {
   compare_dir <- file.path(project$results_dir, "comparison", group_name)
   ensure_dir(compare_dir)
   tsf_log("=== group ", group_name, ": ", paste(ids, collapse = ", "), " ===")
@@ -399,9 +446,9 @@ compare_one_group <- function(project, loaded, ids, group_name, opt) {
 
   for (branch in opt$branches) {
     tsf_log("branch: ", branch)
-    signature_by_ds <- list(); transitions_by_ds <- list(); conditions_by_ds <- list()
+    workers_now <- max(1L, min(as.integer(n_cores), length(ids)))
 
-    for (id in ids) {
+    per_dataset <- parallel::mclapply(ids, function(id) {
       x <- loaded[[id]]
       sig <- constant_signature(x$stability, common)
       if (!is.null(sig)) {
@@ -410,9 +457,7 @@ compare_one_group <- function(project, loaded, ids, group_name, opt) {
                                      sprintf("constant_signature_%s.tsv", branch)))
         tsf_log("  ", id, ": constant signature = ", nrow(sig), " peak(s)")
       } else tsf_log("  ", id, ": constant signature is empty")
-      signature_by_ds[[id]] <- sig
-
-      conditions_by_ds[[id]] <- do.call(rbind, lapply(common, function(c) {
+      conditions <- do.call(rbind, lapply(common, function(c) {
         p <- x$peaks[[branch]][[c]]
         if (is.null(p) || !nrow(p)) return(NULL)
         p$condition <- c
@@ -438,8 +483,21 @@ compare_one_group <- function(project, loaded, ids, group_name, opt) {
         write_tsv_tsf(trans, file.path(x$paths$base, "comparison",
                                        sprintf("transitions_%s.tsv", branch)))
       }
-      transitions_by_ds[[id]] <- trans
+      list(signature = sig, conditions = conditions, transitions = trans)
+    }, mc.cores = workers_now, mc.preschedule = TRUE, mc.set.seed = FALSE)
+    names(per_dataset) <- ids
+
+    failed <- vapply(per_dataset, inherits, logical(1), what = "try-error")
+    if (any(failed)) {
+      detail <- paste(vapply(per_dataset[failed], as.character, character(1)),
+                      collapse = "; ")
+      tsf_abort("compare failed for ", paste(ids[failed], collapse = ", "),
+                ": ", detail)
     }
+
+    signature_by_ds <- lapply(per_dataset, `[[`, "signature")
+    conditions_by_ds <- lapply(per_dataset, `[[`, "conditions")
+    transitions_by_ds <- lapply(per_dataset, `[[`, "transitions")
 
     sig_cross <- cross_datasets(signature_by_ds, c("chr", "N", "k"))
     if (!is.null(sig_cross)) {
