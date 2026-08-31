@@ -369,6 +369,33 @@ check("scaffolds are dropped", {
   a <- read_gtf_annotation(mini_gtf(), CHR_LEVELS)
   !("SCAF" %in% a$gene_name) })
 
+check("an identifier map adds Entrez ids a GTF does not carry", {
+  # GENCODE has Ensembl ids and symbols, never Entrez, and three cohorts publish
+  # counts keyed on Entrez. Without the map the join is empty and ingest stops.
+  m <- tempfile(fileext = ".tsv")
+  writeLines(c("GeneID\tSymbol\tEnsemblGeneID",
+               "111\tAAA\tENSG1.9", "222\tBBB\tENSG2.3"), m)
+  p <- list(geo_dir = dirname(mini_gtf()), annotation_format = "gtf",
+            chrom_levels = CHR_LEVELS, gene_universe = "^protein_coding$",
+            id_map = list(file = basename(m), ensembl_column = "EnsemblGeneID",
+                          entrez_column = "GeneID"))
+  p$annotation_file <- basename(mini_gtf())
+  p$geo_dir <- dirname(m)
+  file.copy(mini_gtf(), file.path(dirname(m), p$annotation_file), overwrite = TRUE)
+  a <- read_annotation(p)
+  identical(sort(a$entrez_id[!is.na(a$entrez_id)]), c("111", "222")) })
+
+check("a map that matches nothing aborts instead of ingesting an empty join", {
+  m <- tempfile(fileext = ".tsv")
+  writeLines(c("GeneID\tEnsemblGeneID", "111\tSOMETHING_ELSE"), m)
+  p <- list(geo_dir = dirname(m), annotation_format = "gtf",
+            chrom_levels = CHR_LEVELS, gene_universe = "^protein_coding$",
+            id_map = list(file = basename(m), ensembl_column = "EnsemblGeneID",
+                          entrez_column = "GeneID"))
+  p$annotation_file <- basename(mini_gtf())
+  file.copy(mini_gtf(), file.path(dirname(m), p$annotation_file), overwrite = TRUE)
+  inherits(tryCatch(read_annotation(p), error = function(e) e), "error") })
+
 check("each format gets its own protein-coding pattern", {
   identical(default_gene_universe("ncbi"), "^protein-coding$") &&
     identical(default_gene_universe("gtf"), "^protein_coding$") })
