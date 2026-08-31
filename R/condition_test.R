@@ -83,6 +83,7 @@ condition_significance <- function(dataset, cond, chrom_idx, maxt_cfg,
       amplitude = res$amplitude, phase = res$phase, power = res$power,
       power_normalised = res$power_normalised, window_power = res$window_power,
       p_condition = res$p_empirical_maxT,
+      p_condition_pointwise = res$p_pointwise %||% NA_real_,
       p_condition_full = res$p_empirical_maxT_full,
       p_condition_all = res$p_empirical_maxT_all,
       stringsAsFactors = FALSE)
@@ -109,7 +110,33 @@ condition_significance <- function(dataset, cond, chrom_idx, maxt_cfg,
   # chromosomes). The stage warns when B is too small to be able to conclude.
   n_chr <- length(unique(out$chr))
   out$n_chromosomes_tested <- n_chr
+
+  # TWO MULTIPLICITY REGIMES, BOTH REPORTED, ONE DECLARED AS THE CRITERION.
+  #
+  # fwer: the maxT p-value already controls the family-wise error across the
+  #   frequencies of a chromosome, so only the chromosome multiplicity is left.
+  #   It asks whether a frequency beats the strongest frequency of a permuted
+  #   spectrum, which on 500-800 frequencies is close to asking whether it is
+  #   the dominant component of its chromosome. Almost nothing passes, and what
+  #   does is worth believing.
+  #
+  # fdr: the pointwise p-value asks whether a frequency beats its own null, with
+  #   BH across every frequency of every chromosome. It answers the question a
+  #   signature is actually about -- which frequencies carry structure -- and
+  #   controls the expected proportion of false ones rather than the probability
+  #   of any. It selects far more, and a fraction of them are false by design.
+  #
+  # Neither is more correct in the abstract. Which one a claim rests on is a
+  # stated choice, and both columns are always written so the effect of that
+  # choice is visible without a rerun.
   out$q_condition <- pmin(1, out$p_condition * n_chr)
+  out$q_condition_fdr <- if (all(is.na(out$p_condition_pointwise))) NA_real_ else
+    stats::p.adjust(out$p_condition_pointwise, method = "BH")
+
+  n_fwer <- sum(out$q_condition <= 0.05, na.rm = TRUE)
+  n_fdr <- sum(out$q_condition_fdr <= 0.05, na.rm = TRUE)
+  tsf_log("  ", cond, "/", branch, ": ", n_fwer, " frequencies at FWER q<=0.05, ",
+          n_fdr, " at FDR q<=0.05 (of ", nrow(out), ")")
   min_attainable <- n_chr / (B + 1)
   if (min_attainable > 0.05) {
     tsf_warn("B = ", B, " over ", n_chr, " chromosomes: the smallest attainable ",
