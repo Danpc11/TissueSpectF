@@ -57,6 +57,35 @@ tsf_class_id <- function(tissue, condition, voc) {
          paste(tissue %||% "unknown", state, cond_name, sep = "::"))
 }
 
+#' The role a class plays: control, disease, or something in between.
+#'
+#' Derived from the vocabulary's `cohort_roles` when it declares them. The old
+#' rule -- equal to the baseline means control, anything else means disease --
+#' broke as soon as there was more than one healthy class: Control_external_study
+#' is not the baseline, so it was labelled disease. That column feeds reports and
+#' any future balancing, so the error would have propagated quietly.
+#'
+#' Without cohort_roles the baseline comparison is kept, which is right for a
+#' two-group vocabulary and is what those declare.
+tsf_cohort_role <- function(condition, voc) {
+  roles <- voc$cohort_roles
+  if (!is.null(roles)) {
+    out <- unname(roles[condition])
+    out[is.na(condition)] <- NA_character_
+    unknown <- !is.na(condition) & is.na(out)
+    if (any(unknown)) {
+      tsf_warn("No cohort_role declared for: ",
+               paste(unique(condition[unknown]), collapse = ", "),
+               "; recorded as unknown rather than guessed")
+      out[unknown] <- "unknown"
+    }
+    return(out)
+  }
+  baseline <- voc$baseline %||% "Control"
+  ifelse(is.na(condition), NA_character_,
+         ifelse(condition == baseline, "control", "disease"))
+}
+
 #' Levels of a dataset's vocabulary, in order.
 tsf_levels <- function(x) {
   if (is.character(x)) return(x)
@@ -235,9 +264,8 @@ harmonize_conditions <- function(pheno, dataset_config) {
     fibrosis_stage_reported = fibrosis_stage,
     label_rule     = rule_used,
     label_mismatch = mismatch,
-    cohort         = ifelse(is.na(condition), NA_character_,
-                            ifelse(!is.null(baseline) & condition == baseline,
-                                   "control", "disease")),
+    cohort         = tsf_cohort_role(condition,
+                                     dataset_config$vocabulary_spec %||% list()),
     keep           = !is.na(condition),
     stringsAsFactors = FALSE
   )
