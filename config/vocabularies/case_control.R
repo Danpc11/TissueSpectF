@@ -9,6 +9,7 @@ list(
   levels   = c("Control", "Case"),
   states   = c(Control = "healthy", Case = "disease"),
   conditions = c(Control = "Control", Case = "Case"),
+  cohort_roles = NULL,   # falls back to baseline comparison
   progression = NULL,
   ordered  = FALSE,
   baseline = "Control",
