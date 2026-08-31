@@ -1,11 +1,14 @@
 data/
+data*/
 results/
+results*/
 resultados*/
 *.Rproj.user
 .Rhistory
 .RData
 *.log
 interim/
+interim*/
 
 # Python
 __pycache__/
