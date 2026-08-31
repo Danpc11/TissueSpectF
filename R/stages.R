@@ -351,7 +351,8 @@ stage_peaks <- function(project, opt) {
       for (branch in opt$branches) {
         peaks <- read_tsv_tsf(p_peaks(inp$paths, branch, cond), required = FALSE)
         if (is.null(peaks) || !nrow(peaks)) {
-          tsf_warn("  ", cond, "/", branch, ": no peak table; run the stability stage")
+          tsf_log("  ", cond, "/", branch,
+                  ": no selected peak (the stability result may legitimately be zero)")
           next
         }
         out_dir <- p_peak_genes_dir(inp$paths, branch, cond)
@@ -432,12 +433,20 @@ compare_one_group <- function(project, loaded, ids, group_name, opt,
   n_replicated <- 0L
 
   voc <- load_dataset_config(ids[1])$vocabulary_spec
-  common <- comparable_conditions(lapply(loaded, function(x) x$conditions),
-                                  levels_now = tsf_levels(voc))
+  declared <- tsf_levels(voc)
+  available <- intersect(declared, unique(unlist(lapply(loaded, function(x)
+    as.character(x$conditions)), use.names = FALSE)))
+  contributors <- stats::setNames(vapply(available, function(cond)
+    sum(vapply(loaded, function(x) cond %in% x$conditions, logical(1))), integer(1)),
+    available)
+  tsf_log("Condition coverage: ", paste0(names(contributors), "=",
+          contributors, collapse = ", "))
+  one_only <- names(contributors)[contributors < 2L]
+  if (length(one_only)) {
+    tsf_warn("No cross-dataset replication for condition(s) contributed by one ",
+             "dataset only: ", paste(one_only, collapse = ", "))
+  }
   ordered_voc <- isTRUE(voc$ordered)
-  # Transitions run over the declared progression only, intersected with what
-  # is actually present. Healthy states are compared as classes, never as steps.
-  progression <- intersect(tsf_progression(voc), common)
   if (!ordered_voc) {
     tsf_log("Vocabulary '", voc$id, "' is unordered: reporting per-level ",
             "comparisons, no transitions")
@@ -450,14 +459,16 @@ compare_one_group <- function(project, loaded, ids, group_name, opt,
 
     per_dataset <- parallel::mclapply(ids, function(id) {
       x <- loaded[[id]]
-      sig <- constant_signature(x$stability, common)
+      dataset_conditions <- intersect(declared, as.character(x$conditions))
+      dataset_progression <- intersect(tsf_progression(voc), dataset_conditions)
+      sig <- constant_signature(x$stability, dataset_conditions)
       if (!is.null(sig)) {
         sig$branch <- branch
         write_tsv_tsf(sig, file.path(x$paths$base, "comparison",
                                      sprintf("constant_signature_%s.tsv", branch)))
         tsf_log("  ", id, ": constant signature = ", nrow(sig), " peak(s)")
       } else tsf_log("  ", id, ": constant signature is empty")
-      conditions <- do.call(rbind, lapply(common, function(c) {
+      conditions <- do.call(rbind, lapply(dataset_conditions, function(c) {
         p <- x$peaks[[branch]][[c]]
         if (is.null(p) || !nrow(p)) return(NULL)
         p$condition <- c
@@ -465,15 +476,15 @@ compare_one_group <- function(project, loaded, ids, group_name, opt,
       }))
 
       trans <- list()
-      for (i in if (ordered_voc) seq_len(max(0L, length(progression) - 1L)) else integer(0)) {
-        t <- transition_table(progression[i], progression[i + 1L], x$peaks[[branch]],
+      for (i in if (ordered_voc) seq_len(max(0L, length(dataset_progression) - 1L)) else integer(0)) {
+        t <- transition_table(dataset_progression[i], dataset_progression[i + 1L], x$peaks[[branch]],
                               x$stability, x$maxt, branch)
         if (is.null(t)) {
-          tsf_log("  ", id, ": ", progression[i], " -> ", progression[i + 1L],
+          tsf_log("  ", id, ": ", dataset_progression[i], " -> ", dataset_progression[i + 1L],
                   ": no shared stable peak")
           next
         }
-        tsf_log("  ", id, ": ", progression[i], " -> ", progression[i + 1L], ": ", nrow(t),
+        tsf_log("  ", id, ": ", dataset_progression[i], " -> ", dataset_progression[i + 1L], ": ", nrow(t),
                 " shared, ", sum(t$p_power_fdr <= 0.05, na.rm = TRUE),
                 " with a significant power change")
         trans[[length(trans) + 1]] <- t
@@ -504,22 +515,67 @@ compare_one_group <- function(project, loaded, ids, group_name, opt,
       write_tsv_tsf(sig_cross, file.path(compare_dir,
                                          sprintf("constant_signature_shared_%s.tsv", branch)))
     }
-    cond_cross <- cross_datasets(conditions_by_ds, c("chr", "N", "k", "condition"))
-    if (!is.null(cond_cross)) {
-      write_tsv_tsf(cond_cross, file.path(compare_dir,
-                                          sprintf("conditions_shared_%s.tsv", branch)))
-    }
-    trans_cross <- cross_datasets(transitions_by_ds, c("chr", "N", "k", "transition"))
-    if (!is.null(trans_cross)) {
-      trans_cross <- add_replication_flags(trans_cross, ids)
-      if (!is.null(trans_cross$replicated)) {
-        n_replicated <- n_replicated + sum(trans_cross$replicated, na.rm = TRUE)
+    # A global intersection would let a healthy-only cohort erase every
+    # fibrosis comparison, and a late-stage cohort erase F0--F2.  Cross each
+    # biological condition independently, using only its contributors.
+    cond_cross <- cross_by_level(conditions_by_ds, "condition", available,
+                                 c("chr", "N", "k", "condition"))
+    write_cross_level_tables(cond_cross, compare_dir,
+                             paste0("conditions_shared_", branch))
+
+    transition_levels <- unique(unlist(lapply(transitions_by_ds, function(x)
+      if (is.null(x)) character(0) else as.character(x$transition)),
+      use.names = FALSE))
+    trans_cross <- cross_by_level(transitions_by_ds, "transition",
+                                  transition_levels,
+                                  c("chr", "N", "k", "transition"))
+    if (length(trans_cross)) {
+      for (nm in names(trans_cross)) {
+        contributing <- ids[vapply(transitions_by_ds, function(x)
+          !is.null(x) && any(x$transition == nm), logical(1))]
+        trans_cross[[nm]] <- add_replication_flags(trans_cross[[nm]], contributing)
+        if (!is.null(trans_cross[[nm]]$replicated)) {
+          n_replicated <- n_replicated +
+            sum(trans_cross[[nm]]$replicated, na.rm = TRUE)
+        }
       }
-      write_tsv_tsf(trans_cross, file.path(compare_dir,
-                                           sprintf("transitions_shared_%s.tsv", branch)))
+      write_cross_level_tables(trans_cross, compare_dir,
+                               paste0("transitions_shared_", branch))
     }
   }
   sprintf("%s: %d replicated", group_name, n_replicated)
+}
+
+#' Cross tables independently at each biological level.
+cross_by_level <- function(tables_by_dataset, level_col, levels_now, key_cols) {
+  out <- list()
+  for (level in levels_now) {
+    subset <- lapply(tables_by_dataset, function(x) {
+      if (is.null(x) || !nrow(x) || !level_col %in% colnames(x)) return(NULL)
+      y <- x[!is.na(x[[level_col]]) & x[[level_col]] == level, , drop = FALSE]
+      if (nrow(y)) y else NULL
+    })
+    keep <- vapply(subset, function(x) !is.null(x) && nrow(x) > 0, logical(1))
+    if (sum(keep) < 2L) {
+      tsf_log("  ", level_col, " ", level, ": ", sum(keep),
+              " non-empty dataset(s); no replication table")
+      next
+    }
+    crossed <- cross_datasets(subset[keep], key_cols)
+    if (!is.null(crossed) && nrow(crossed)) out[[level]] <- crossed
+  }
+  out
+}
+
+#' Write one unambiguous table per condition or transition.
+write_cross_level_tables <- function(tables, out_dir, stem) {
+  if (!length(tables)) return(invisible(0L))
+  safe <- function(x) gsub("[^A-Za-z0-9_.-]+", "_", x)
+  for (nm in names(tables)) {
+    write_tsv_tsf(tables[[nm]], file.path(out_dir,
+      sprintf("%s_%s.tsv", stem, safe(nm))))
+  }
+  invisible(length(tables))
 }
 
 # --- reference library -------------------------------------------------------
