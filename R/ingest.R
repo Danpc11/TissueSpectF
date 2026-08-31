@@ -91,11 +91,29 @@ read_counts <- function(path, id_type = "ENTREZID", spec = list()) {
     if (row < 1L || row > nrow(dt)) {
       tsf_abort("sample_map_row = ", row, " is out of range for ", basename(path))
     }
-    labels <- as.character(unlist(dt[row, ], use.names = FALSE))
-    sample_map <- data.frame(count_column = colnames(dt), mapped_id = labels,
-                             stringsAsFactors = FALSE)
+    raw <- as.character(unlist(dt[row, ], use.names = FALSE))
+    mapped <- raw
+
+    # The descriptive row rarely matches the phenotype table verbatim. In
+    # GSE142530 it reads "Control_Lille 389" and "Control_TPF 111484" while the
+    # series matrix says "Control_389" and "Control_111484": a recruiting-site
+    # token the accessions do not carry. Declared substitutions bring the two
+    # into line, and every one of them is recorded next to the raw value in
+    # count_column_map.tsv, so the correspondence can be checked rather than
+    # trusted. A regular expression that silently rewrites sample names and
+    # leaves no table behind is not a mapping, it is a guess.
+    for (tr in spec$map_transform %||% list()) {
+      mapped <- gsub(tr$pattern, tr$replacement %||% "", mapped, perl = TRUE)
+    }
+    mapped <- trimws(mapped)
+
+    sample_map <- data.frame(count_column = colnames(dt), raw_label = raw,
+                             mapped_id = mapped, stringsAsFactors = FALSE)
     dt <- dt[-row, , drop = FALSE]
-    tsf_log("Counts: second header row consumed as the sample map")
+    tsf_log("Counts: second header row consumed as the sample map",
+            if (length(spec$map_transform %||% list()))
+              paste0(" (", length(spec$map_transform), " substitution(s) applied)")
+            else "")
   }
 
   id_col <- spec$id_column %||% 1L
@@ -108,7 +126,38 @@ read_counts <- function(path, id_type = "ENTREZID", spec = list()) {
   symbol_col <- spec$symbol_column
   if (is.numeric(symbol_col)) symbol_col <- colnames(dt)[symbol_col]
   value_cols <- setdiff(colnames(dt), c(id_col, symbol_col))
+
+  # Columns a submitter left in the file but did not use. Naming them in the
+  # config is better than letting them fail to match later, where the symptom is
+  # an unexplained missing sample rather than a stated exclusion.
+  # Matched against the column name AND the descriptive label, because a
+  # submitter's "not.used" lives in the descriptive row while the column itself
+  # is called RB_N3. Matching only the column name would leave it in, and the
+  # symptom would be one sample that never maps to a phenotype.
+  drop_cols <- spec$exclude_columns %||% character(0)
+  if (length(drop_cols)) {
+    pattern <- paste(drop_cols, collapse = "|")
+    by_name <- grepl(pattern, value_cols, fixed = FALSE)
+    by_label <- rep(FALSE, length(value_cols))
+    if (!is.null(sample_map)) {
+      lab <- sample_map$raw_label[match(value_cols, sample_map$count_column)]
+      by_label <- !is.na(lab) & grepl(pattern, lab)
+    }
+    hit <- value_cols[by_name | by_label]
+    if (length(hit)) {
+      tsf_log("Counts: excluding declared column(s): ", paste(hit, collapse = ", "))
+      value_cols <- setdiff(value_cols, hit)
+      if (!is.null(sample_map)) sample_map <- sample_map[!sample_map$count_column %in% hit, ]
+    }
+  }
   for (cl in value_cols) dt[[cl]] <- suppressWarnings(as.numeric(dt[[cl]]))
+
+  # The map describes SAMPLE columns. Leaving the id and symbol columns in it
+  # puts two NA rows in count_column_map.tsv and makes any count of mapped
+  # samples wrong by two.
+  if (!is.null(sample_map)) {
+    sample_map <- sample_map[sample_map$count_column %in% value_cols, , drop = FALSE]
+  }
 
   out <- dt[, c(id_col, value_cols), drop = FALSE]
   colnames(out)[1] <- "source_id"
@@ -240,8 +289,7 @@ labels_from_metadata <- function(pheno, cfg) {
     fibrosis_stage = NA_real_,
     fibrosis_stage_reported = NA_real_, label_rule = "metadata_column",
     label_mismatch = FALSE,
-    cohort = if (is.null(baseline)) NA_character_ else
-      ifelse(is.na(cond), NA_character_, ifelse(cond == baseline, "control", "disease")),
+    cohort = tsf_cohort_role(cond, cfg$vocabulary_spec),
     keep = !is.na(cond), stringsAsFactors = FALSE)
 }
 
@@ -278,10 +326,22 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
                         cfg$count_id_type, cfg$counts_spec %||% list())
   sample_map <- attr(counts, "sample_map")
   if (!is.null(sample_map)) {
-    write_tsv_tsf(sample_map, file.path(out_dir, "count_column_map.tsv"))
     keep_map <- sample_map$count_column %in% colnames(counts)
     colnames(counts)[match(sample_map$count_column[keep_map], colnames(counts))] <-
       sample_map$mapped_id[keep_map]
+    # Written with the match recorded, so a failed mapping is visible in the
+    # file rather than only as an empty intersection three steps later.
+    sample_map$matched_phenotype <- sample_map$mapped_id %in% labels$sample_id
+    write_tsv_tsf(sample_map, file.path(out_dir, "count_column_map.tsv"))
+    n_matched <- sum(sample_map$matched_phenotype & keep_map)
+    tsf_log("Count columns matched to phenotype: ", n_matched, "/",
+            sum(keep_map))
+    if (n_matched == 0L) {
+      tsf_abort("No count column matches a phenotype sample id for ", cfg$id,
+                ". The map is in ", file.path(out_dir, "count_column_map.tsv"),
+                "; compare mapped_id there against samples.tsv and add a ",
+                "counts_spec$map_transform entry.")
+    }
   }
   genes <- read_gene_annotation(file.path(project$geo_dir, project$annotation_file),
                                 project$chrom_levels)
@@ -326,6 +386,17 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   if (!length(sample_cols)) {
     tsf_abort("Sample ids in the series matrix do not match count columns for ", cfg$id,
                " -- check quoting/prefixes in sample_id_column.")
+  }
+  # A cohort that declares how many samples it should contribute gets checked.
+  # Silently ingesting eleven where twelve were expected is how a count in a
+  # manuscript stops matching the data behind it.
+  if (!is.null(cfg$expected_n_samples)) {
+    if (nrow(samples) != as.integer(cfg$expected_n_samples)) {
+      tsf_abort(cfg$id, " yields ", nrow(samples), " samples but its config ",
+                "declares ", cfg$expected_n_samples, ". Reconcile the two ",
+                "before proceeding: see count_column_map.tsv and label_audit.tsv.")
+    }
+    tsf_log("Sample count matches the declared ", cfg$expected_n_samples)
   }
 
   count_mat <- as.matrix(merged[, sample_cols, drop = FALSE])
