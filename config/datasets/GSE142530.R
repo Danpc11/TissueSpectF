@@ -32,7 +32,7 @@
 # from MASLD fibrosis, and this project does not have an alcohol vocabulary yet.
 # When it does, they become liver::disease::ALD_* without any change here.
 #
-# Twelve samples is also near the floor for phase alignment (about nine are
+# Eleven samples is also near the floor for phase alignment (about nine are
 # needed to make a Rayleigh test reachable), so expect this class to sit close
 # to exploratory.
 list(
@@ -53,8 +53,25 @@ list(
   series_matrix = "GSE142530_series_matrix.txt.gz",
   count_id_type = "ENSEMBL",
 
-  counts_spec = list(sep = ",", id_column = 1L, symbol_column = 2L,
-                     sample_map_row = 1L),
+  counts_spec = list(
+    sep = ",", id_column = 1L, symbol_column = 2L, sample_map_row = 1L,
+    # The descriptive row carries a recruiting-site token the series matrix does
+    # not: "Control_Lille 389" there against "Control_389" here. The two
+    # substitutions below reconcile them, and count_column_map.tsv records the
+    # raw label, the mapped id and whether it matched, so the correspondence is
+    # auditable rather than asserted.
+    map_transform = list(
+      list(pattern = "_(Lille|TPF)\\s+", replacement = "_")
+    ),
+    # One column reads not.used. It is excluded by name rather than left to fail
+    # matching, where the symptom would be an unexplained missing sample.
+    exclude_columns = c("not.used")
+  ),
+
+  # Eleven, not twelve: the file carries twelve control labels but one column is
+  # not.used. Ingest aborts if the count changes, so a number quoted anywhere
+  # else cannot drift away from the data.
+  expected_n_samples = 11L,
 
   has_control_cohort = TRUE,
 
@@ -78,5 +95,8 @@ list(
     )
   ),
 
-  notes = "Verified: Control = 12. The 16 alcohol-related samples are excluded."
+  notes = paste(
+    "Series lists 12 Normal samples; the count matrix has one not.used column,",
+    "so 11 are usable. The 16 alcohol-related samples are excluded."
+  )
 )
