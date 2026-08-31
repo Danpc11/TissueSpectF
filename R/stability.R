@@ -112,7 +112,12 @@ condition_peak_table <- function(stability, spectra, branch) {
 #' a declared choice (`stability_criterion` in config/project.R), and both
 #' columns are always written so the sensitivity is visible without a rerun:
 #'
-#'   "condition"   q_condition <= 0.05 on the summary signal  (default)
+#'   "condition"       family-wise: q_condition <= 0.05 (maxT within a
+#'                     chromosome, Bonferroni across chromosomes). Very strict:
+#'                     it selects components that dominate their chromosome.
+#'   "condition_fdr"   false discovery rate: q_condition_fdr <= 0.05 (pointwise
+#'                     p, BH across every frequency). Selects far more, and a
+#'                     fraction are false by construction.
 #'   "consistency" >= stable_frac of samples individually significant
 #'
 #' The consistency figure never disappears -- it stays as a reproducibility
@@ -136,13 +141,19 @@ attach_condition_test <- function(st, paths, cond, branch, criterion = "conditio
   i <- match(paste(st$chr, st$N, st$k), paste(cs$chr, cs$N, cs$k))
   st$p_condition <- cs$p_condition[i]
   st$q_condition <- cs$q_condition[i]
+  st$q_condition_fdr <- if ("q_condition_fdr" %in% colnames(cs))
+    cs$q_condition_fdr[i] else NA_real_
+  st$is_significant_condition_fdr <- !is.na(st$q_condition_fdr) &
+    st$q_condition_fdr <= 0.05
   if ("q_stouffer" %in% colnames(cs)) st$q_stouffer <- cs$q_stouffer[i]
   st$is_significant_condition <- !is.na(st$q_condition) & st$q_condition <= 0.05
 
   st$is_stable <- switch(criterion,
-    condition   = st$is_significant_condition,
+    condition     = st$is_significant_condition,
+    condition_fdr = st$is_significant_condition_fdr,
     consistency = st$is_stable_consistency,
-    tsf_abort("stability_criterion must be 'condition' or 'consistency'"))
+    tsf_abort("stability_criterion must be 'condition', 'condition_fdr' or ",
+              "'consistency'"))
   st$criterion <- criterion
   st
 }
@@ -159,6 +170,8 @@ stability_from_condition <- function(paths, cond, branch) {
     n_samples_expected = NA_integer_, pct_samples_significant = NA_real_,
     mean_power = cs$power, median_power = cs$power,
     p_condition = cs$p_condition, q_condition = cs$q_condition,
+    q_condition_fdr = if ("q_condition_fdr" %in% colnames(cs))
+      cs$q_condition_fdr else NA_real_,
     is_significant_condition = !is.na(cs$q_condition) & cs$q_condition <= 0.05,
     is_stable = !is.na(cs$q_condition) & cs$q_condition <= 0.05,
     is_stable_consistency = NA, criterion = "condition",
