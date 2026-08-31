@@ -387,8 +387,16 @@ about 460 for 23 chromosomes. The stage warns when B is too small to conclude.
 
 ## Running on Colab
 
-`TissueSpectF_colab.ipynb` runs the whole thing on a free VM, starting
-from `./tsf fetch` so no data needs copying. Two cores make the per-sample
+`TissueSpectF_colab.ipynb` is where to try a change online: it runs the tests
+and the self-check with no data at all, then fetches the five cohorts, checks the
+labels against the cohort table, and runs the spectral stages restricted with
+`--chromosomes` so they finish. It ends with the baselines, which are worth
+running there even when nothing else is.
+
+Two cores make the per-sample `maxt` stage impractical, so the notebook skips
+it; the rank-based statistics carry the analysis without it. **Nothing produced
+on a partial genome is a result** — it is a rehearsal that proves the code runs
+and the labels are right. Two cores make the per-sample
 `maxt` stage impractical (roughly 8 hours), so the notebook runs
 `--from=condition`, which is about 1/n the cost and answers the primary
 question. The stability stage falls back to the condition test on its own when
