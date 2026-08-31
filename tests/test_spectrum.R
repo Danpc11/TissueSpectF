@@ -415,6 +415,36 @@ check("the pooled null is calibrated on noise", {
   m <- permutation_gls_test(rnorm(N), gls_prepare(tt, N), B = 200L, seed = 3L)
   mean(m$p_pointwise <= 0.05) < 0.12 })
 
+check("the no-maxT path honours the declared criterion", {
+  # This path used to select on q_condition whatever the caller asked for, so
+  # --criterion condition_fdr silently returned the family-wise result.
+  d <- file.path(tempdir(), "crit", "condition")
+  dir.create(d, recursive = TRUE, showWarnings = FALSE)
+  write.table(data.frame(chr = "1", N = 200L, k = 1:3, freq = (1:3) / 200,
+                         period = 200 / (1:3), power = 1,
+                         window_power = 0, window_rank = 1,
+                         p_condition = c(0.001, 0.20, 0.30),
+                         q_condition = c(0.02, 0.90, 0.99),
+                         q_condition_fdr = c(0.001, 0.01, 0.60)),
+              file.path(d, "condition_significance_average_F0.tsv"),
+              sep = "\t", row.names = FALSE, quote = FALSE)
+  p <- list(base = dirname(d))
+  fwer <- stability_from_condition(p, "F0", "average", "condition")
+  fdr <- stability_from_condition(p, "F0", "average", "condition_fdr")
+  sum(fwer$is_stable) == 1 && sum(fdr$is_stable) == 2 })
+
+check("asking for FDR against a file that predates it aborts", {
+  d <- file.path(tempdir(), "old", "condition")
+  dir.create(d, recursive = TRUE, showWarnings = FALSE)
+  write.table(data.frame(chr = "1", N = 200L, k = 1L, freq = 0.005, period = 200,
+                         power = 1, window_power = 0, window_rank = 1,
+                         p_condition = 0.001, q_condition = 0.02),
+              file.path(d, "condition_significance_average_F0.tsv"),
+              sep = "\t", row.names = FALSE, quote = FALSE)
+  inherits(tryCatch(stability_from_condition(list(base = dirname(d)), "F0",
+                                             "average", "condition_fdr"),
+                    error = function(e) e), "error") })
+
 # --- consensus spectrum ------------------------------------------------------
 check("PLV is 1 for aligned phases and near 0 for scattered ones", {
   set.seed(81)
