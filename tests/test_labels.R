@@ -1,7 +1,8 @@
 #!/usr/bin/env Rscript
 # Dependency-free tests for the label layer. Run: Rscript tests/test_labels.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/grid.R"); source("R/ingest.R"); source("R/fingerprint.R")
+source("R/grid.R"); source("R/ingest.R"); source("R/annotation.R")
+source("R/fingerprint.R")
 source("R/reference.R"); source("R/bundle.R")
 
 failures <- 0L
@@ -317,6 +318,69 @@ check("no module is missing from the load order", {
   env <- new.env(); sys.source("R/utils_io.R", envir = env)
   files <- basename(get("tsf_module_order", envir = env)())
   setequal(files, list.files("R", pattern = "\\.R$")) })
+
+# --- GTF / GENCODE annotation ------------------------------------------------
+mini_gtf <- function() {
+  f <- tempfile(fileext = ".gtf")
+  a <- function(g, n, ty) sprintf('gene_id "%s"; gene_type "%s"; gene_name "%s";', g, ty, n)
+  writeLines(c(
+    "##description: synthetic",
+    paste("chr1\tH\tgene\t1000\t5000\t.\t+\t.", a("ENSG1.5", "AAA", "protein_coding"), sep = "\t"),
+    paste("chr1\tH\texon\t1000\t1500\t.\t+\t.", a("ENSG1.5", "AAA", "protein_coding"), sep = "\t"),
+    paste("chr1\tH\texon\t1400\t2000\t.\t+\t.", a("ENSG1.5", "AAA", "protein_coding"), sep = "\t"),
+    paste("chr1\tH\texon\t4000\t4200\t.\t+\t.", a("ENSG1.5", "AAA", "protein_coding"), sep = "\t"),
+    paste("chr1\tH\tgene\t8000\t9000\t.\t+\t.", a("ENSG2.1", "BBB", "lncRNA"), sep = "\t"),
+    paste("chr1\tH\texon\t8000\t9000\t.\t+\t.", a("ENSG2.1", "BBB", "lncRNA"), sep = "\t"),
+    paste("chrY\tH\tgene\t100\t200\t.\t+\t.", a("ENSG1.5_PAR_Y", "AAA", "protein_coding"), sep = "\t"),
+    paste("chrY\tH\texon\t100\t200\t.\t+\t.", a("ENSG1.5_PAR_Y", "AAA", "protein_coding"), sep = "\t"),
+    paste("GL000009.2\tH\tgene\t1\t100\t.\t+\t.", a("ENSG4.1", "SCAF", "protein_coding"), sep = "\t"),
+    paste("GL000009.2\tH\texon\t1\t100\t.\t+\t.", a("ENSG4.1", "SCAF", "protein_coding"), sep = "\t")), f)
+  f
+}
+CHR_LEVELS <- c(as.character(1:22), "X", "Y")
+
+check("a GTF is read into the common annotation shape", {
+  a <- read_gtf_annotation(mini_gtf(), CHR_LEVELS)
+  all(c("gene_id", "gene_name", "chr", "start", "end", "strand",
+        "gene_length", "gene_type") %in% colnames(a)) &&
+    identical(sort(a$gene_id), c("ENSG1", "ENSG2")) })
+
+check("chromosome names and gene versions are normalised", {
+  a <- read_gtf_annotation(mini_gtf(), CHR_LEVELS)
+  all(a$chr == "1") && !any(grepl("\\.", a$gene_id)) })
+
+check("exonic length is the union of exons, not their sum", {
+  # 1000-1500 and 1400-2000 overlap: 1001 together, not 1102. Plus 4000-4200.
+  a <- read_gtf_annotation(mini_gtf(), CHR_LEVELS, length_mode = "exonic")
+  a$gene_length[a$gene_name == "AAA"] == 1202 })
+
+check("the genomic span is not a transcript length", {
+  a <- read_gtf_annotation(mini_gtf(), CHR_LEVELS, length_mode = "span")
+  a$gene_length[a$gene_name == "AAA"] == 4001 })
+
+check("PAR_Y features are dropped from every feature type", {
+  # Stripping the version makes ENSG1.5_PAR_Y collide with its X copy, so a
+  # PAR_Y exon left behind is summed into the X gene's length -- silently, and
+  # only in the length, which nothing downstream would flag.
+  a <- read_gtf_annotation(mini_gtf(), CHR_LEVELS)
+  nrow(a) == 2 && a$gene_length[a$gene_name == "AAA"] == 1202 })
+
+check("scaffolds are dropped", {
+  a <- read_gtf_annotation(mini_gtf(), CHR_LEVELS)
+  !("SCAF" %in% a$gene_name) })
+
+check("each format gets its own protein-coding pattern", {
+  identical(default_gene_universe("ncbi"), "^protein-coding$") &&
+    identical(default_gene_universe("gtf"), "^protein_coding$") })
+
+check("a universe pattern from the wrong format aborts with the right one", {
+  # GENCODE writes protein_coding, NCBI writes protein-coding. A pattern for one
+  # matches nothing in the other, and "nothing" would build an empty grid.
+  p <- list(geo_dir = dirname(mini_gtf()), annotation_format = "gtf",
+            chrom_levels = CHR_LEVELS, gene_universe = "^protein-coding$")
+  p$annotation_file <- basename(mini_gtf())
+  e <- tryCatch(read_annotation(p), error = function(e) conditionMessage(e))
+  is.character(e) && grepl("\\^protein_coding\\$", e) })
 
 # --- the distributable bundle ------------------------------------------------
 check("the bundle carries every module the app sources", {
