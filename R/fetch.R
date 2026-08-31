@@ -20,8 +20,11 @@ geo_series_url <- function(gse, file) {
 
 download_if_missing <- function(url, dest, force = FALSE) {
   if (!force && file.exists(dest) && file.size(dest) > 0) {
+    sz <- file.size(dest)
     tsf_log("  have: ", basename(dest), " (",
-            round(file.size(dest) / 1024^2, 1), " MB)")
+            if (sz >= 1024^2) paste0(round(sz / 1024^2, 1), " MB")
+            else if (sz >= 1024) paste0(round(sz / 1024), " KB")
+            else paste0(sz, " B"), ")")
     return(invisible(TRUE))
   }
   ensure_dir(dirname(dest))
