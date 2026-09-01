@@ -148,15 +148,8 @@ discover_inputs <- function(opt) {
     files <- list.files(cdir, pattern = "^consensus_spectrum_.*\\.tsv$", full.names = TRUE)
     for (path in files) {
       cond <- sub("^consensus_spectrum_(.*)\\.tsv$", "\\1", basename(path))
-      requested_inputs <- opt$conditions
-      # Healthy is a library-level superclass. Its source labels remain
-      # separate in the cohort outputs and are only combined at meta-analysis.
-      if (!is.null(requested_inputs) && "Healthy" %in% requested_inputs) {
-        requested_inputs <- union(requested_inputs,
-          c("Normal_histology", "Control_disease_cohort",
-            "Control_external_study"))
-      }
-      if (!is.null(requested_inputs) && !cond %in% requested_inputs) next
+      # Load every available condition even when only one output is requested.
+      # Non-target conditions provide the within-cohort enrichment background.
       d <- read_tsv(path)
       needed <- c("chr", "N", "k", "period", "median_power_normalised",
                   "prevalence_rank", "plv", "mean_phase")
@@ -453,13 +446,16 @@ aggregate_condition <- function(inputs, condition, min_cohorts, window_cut,
     out$signature_replication_fraction >= 0.5 & !out$window_suspect &
     is.finite(out$median_prevalence) & out$median_prevalence >= min_prevalence
   out$signature_class[candidate] <- "candidate"
-  robust <- candidate & out$n_signature_cohorts >= 2L &
-    out$phase_coherence_between_cohorts >= coherence_floor &
-    out$n_confirmed_cohorts >= 1L
 
-  # Calibrated membership of the signature, independent of any rank.
+  # Calibrated membership of the final cross-cohort signature. A meta-analysis
+  # exists precisely to recover effects that are individually underpowered but
+  # reproducible. Requiring one cohort to be confirmed here would discard that
+  # gain and make robust empty whenever every single study falls just short.
   out$signature_selected <- if (all(is.na(out$q_meta_null))) candidate else
     candidate & !is.na(out$q_meta_null) & out$q_meta_null <= signature_q
+  robust <- candidate & out$signature_selected &
+    out$n_signature_cohorts >= 2L &
+    out$phase_coherence_between_cohorts >= coherence_floor
   out$signature_class[robust] <- "robust"
   out$signature_class[out$window_suspect & out$eligible] <- "window_suspect"
   out[order(match(out$chr, c(as.character(1:22), "X", "Y")), out$k), ]
@@ -633,7 +629,9 @@ main <- function() {
     full_path <- file.path(opt$out_dir, paste0("condition_spectrum_", cond, ".tsv"))
     write_tsv(tab, full_path)
 
-    sig <- tab[tab$eligible & tab$signature_selected, , drop = FALSE]
+    # Avoid NA indices creating all-NA rows and invalid plotting ranges.
+    sig <- tab[tab$eligible %in% TRUE &
+                 tab$signature_selected %in% TRUE, , drop = FALSE]
     sig <- sig[order(-sig$meta_score, -sig$final_power), , drop = FALSE]
     # --top is a safety cap on file size, not the criterion. When it bites, say
     # so, because a truncated signature and a signature are different objects.
@@ -653,10 +651,17 @@ main <- function() {
       tab, sig, file.path(opt$out_dir, paste0("genome_spectrum_", cond, ".png")), cond)
 
     if (sum(tab$n_confirmed_cohorts, na.rm = TRUE) == 0L) {
-      message("  NOTE: no cohort confirmed any component for ", cond,
-              ", so `robust` is empty by construction, not by the data. ",
-              "Confirmation needs the permutation null: re-run ./tsf consensus ",
-              "with --n-null 199 or more.")
+      has_meta_null <- any(is.finite(tab$q_meta_null))
+      n_draws_here <- suppressWarnings(max(tab$n_null_draws, na.rm = TRUE))
+      if (has_meta_null && is.finite(n_draws_here) && n_draws_here > 0) {
+        message("  NOTE: no component retained after chromosome/period filters ",
+                "was confirmed by one cohort alone for ", cond, ". The final ",
+                "robust call uses the calibrated cross-cohort q_meta_null; ",
+                n_draws_here, " null draws are already present.")
+      } else {
+        message("  NOTE: no usable permutation null is present for ", cond,
+                ". Re-run ./tsf consensus with --n-null 199 or more.")
+      }
     }
     manifest[[cond]] <- data.frame(
       condition = cond, n_cohorts_max = max(tab$n_cohorts),
