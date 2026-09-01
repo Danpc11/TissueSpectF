@@ -667,12 +667,32 @@ summarise_genes <- function(long) {
     NA_real_
   )
 
+  out$phase_consistency_evaluable <-
+    is.finite(out$chromosome_peak_count) &
+    out$chromosome_peak_count >= 2
+
+  out$mode_extreme_score <- out$max_weighted_score
+
+  out$recurrent_architecture_score <- ifelse(
+    out$phase_consistency_evaluable,
+    out$peak_participation_fraction *
+      out$mean_abs_loading *
+      out$phase_consistency *
+      out$mean_weighted_score,
+    NA_real_
+  )
+
+  out$recurrent_architecture_eligible <-
+    out$phase_consistency_evaluable &
+    is.finite(out$recurrent_architecture_score)
+
   out <- out[
     order(
       out$source,
       out$peak_class,
-      -out$normalized_weighted_score,
-      -out$phase_consistency,
+      -out$recurrent_architecture_eligible,
+      -out$recurrent_architecture_score,
+      -out$mode_extreme_score,
       -out$mean_abs_loading
     ),
     ,
@@ -728,6 +748,26 @@ summarise_across_classes <- function(summary_table) {
         x$max_weighted_score,
         na.rm = TRUE
       ),
+      mode_extreme_score = max(
+        x$mode_extreme_score,
+        na.rm = TRUE
+      ),
+      recurrent_architecture_score = if (
+        any(x$recurrent_architecture_eligible, na.rm = TRUE)
+      ) {
+        max(
+          x$recurrent_architecture_score[
+            x$recurrent_architecture_eligible
+          ],
+          na.rm = TRUE
+        )
+      } else {
+        NA_real_
+      },
+      recurrent_architecture_eligible = any(
+        x$recurrent_architecture_eligible,
+        na.rm = TRUE
+      ),
       stringsAsFactors = FALSE
     )
   })
@@ -736,8 +776,9 @@ summarise_across_classes <- function(summary_table) {
   out <- out[
     order(
       out$source,
-      -out$normalized_weighted_score,
-      -out$phase_consistency,
+      -out$recurrent_architecture_eligible,
+      -out$recurrent_architecture_score,
+      -out$mode_extreme_score,
       -out$mean_abs_loading
     ),
     ,
@@ -769,9 +810,47 @@ write_condition_summaries <- function(condition_long, out_dir) {
       ,
       drop = FALSE
     ]
+
     write_tsv(
       sub,
       file.path(out_dir, paste0("condition_gene_summary_", cl, ".tsv"))
+    )
+
+    extreme <- sub[
+      order(
+        sub$source,
+        -sub$mode_extreme_score,
+        -sub$mean_abs_loading
+      ),
+      ,
+      drop = FALSE
+    ]
+
+    write_tsv(
+      extreme,
+      file.path(out_dir, paste0("condition_", cl, "_mode_extreme_genes.tsv"))
+    )
+
+    recurrent <- sub[
+      sub$recurrent_architecture_eligible %in% TRUE,
+      ,
+      drop = FALSE
+    ]
+
+    recurrent <- recurrent[
+      order(
+        recurrent$source,
+        -recurrent$recurrent_architecture_score,
+        -recurrent$peak_participation_fraction,
+        -recurrent$phase_consistency
+      ),
+      ,
+      drop = FALSE
+    ]
+
+    write_tsv(
+      recurrent,
+      file.path(out_dir, paste0("condition_", cl, "_recurrent_genes.tsv"))
     )
   }
 
@@ -784,6 +863,7 @@ write_condition_summaries <- function(condition_long, out_dir) {
       ,
       drop = FALSE
     ]
+
     write_tsv(
       zall,
       file.path(
@@ -799,6 +879,7 @@ write_condition_summaries <- function(condition_long, out_dir) {
         ,
         drop = FALSE
       ]
+
       write_tsv(
         z,
         file.path(
@@ -808,6 +889,57 @@ write_condition_summaries <- function(condition_long, out_dir) {
             "_",
             cl,
             "_genes.tsv"
+          )
+        )
+      )
+
+      extreme <- z[
+        order(
+          -z$mode_extreme_score,
+          -z$mean_abs_loading
+        ),
+        ,
+        drop = FALSE
+      ]
+
+      write_tsv(
+        extreme,
+        file.path(
+          by_condition_dir,
+          paste0(
+            safe_file_label(cond),
+            "_",
+            cl,
+            "_mode_extreme_genes.tsv"
+          )
+        )
+      )
+
+      recurrent <- z[
+        z$recurrent_architecture_eligible %in% TRUE,
+        ,
+        drop = FALSE
+      ]
+
+      recurrent <- recurrent[
+        order(
+          -recurrent$recurrent_architecture_score,
+          -recurrent$peak_participation_fraction,
+          -recurrent$phase_consistency
+        ),
+        ,
+        drop = FALSE
+      ]
+
+      write_tsv(
+        recurrent,
+        file.path(
+          by_condition_dir,
+          paste0(
+            safe_file_label(cond),
+            "_",
+            cl,
+            "_recurrent_genes.tsv"
           )
         )
       )
@@ -853,33 +985,70 @@ write_invariant_summaries <- function(
     file.path(out_dir, "invariant_core_gene_summary.tsv")
   )
 
-  if (nrow(core)) {
-    core_top <- core[
-      order(
-        -core$normalized_weighted_score,
-        -core$phase_consistency,
-        -core$mean_abs_loading
-      ),
-      ,
-      drop = FALSE
-    ]
+  core_extreme <- core[
+    order(
+      -core$mode_extreme_score,
+      -core$mean_abs_loading
+    ),
+    ,
+    drop = FALSE
+  ]
 
-    write_tsv(
-      utils::head(core_top, top_n),
-      file.path(out_dir, "invariant_core_top_genes.tsv")
-    )
+  write_tsv(
+    core_extreme,
+    file.path(out_dir, "invariant_core_mode_extreme_genes.tsv")
+  )
+
+  write_tsv(
+    utils::head(core_extreme, top_n),
+    file.path(out_dir, "invariant_core_mode_extreme_top_genes.tsv")
+  )
+
+  core_recurrent <- core[
+    core$recurrent_architecture_eligible %in% TRUE,
+    ,
+    drop = FALSE
+  ]
+
+  core_recurrent <- core_recurrent[
+    order(
+      -core_recurrent$recurrent_architecture_score,
+      -core_recurrent$peak_participation_fraction,
+      -core_recurrent$phase_consistency,
+      -core_recurrent$mean_abs_loading
+    ),
+    ,
+    drop = FALSE
+  ]
+
+  write_tsv(
+    core_recurrent,
+    file.path(out_dir, "invariant_core_recurrent_genes.tsv")
+  )
+
+  write_tsv(
+    utils::head(core_recurrent, top_n),
+    file.path(out_dir, "invariant_core_recurrent_top_genes.tsv")
+  )
+
+  preferred_top <- if (nrow(core_recurrent)) {
+    core_recurrent
   } else {
-    write_tsv(
-      core,
-      file.path(out_dir, "invariant_core_top_genes.tsv")
-    )
+    core_extreme
   }
+
+  write_tsv(
+    utils::head(preferred_top, top_n),
+    file.path(out_dir, "invariant_core_top_genes.tsv")
+  )
 
   invisible(
     list(
       by_class = summary_by_class,
       all = summary_all,
-      core = core
+      core = core,
+      core_extreme = core_extreme,
+      core_recurrent = core_recurrent
     )
   )
 }
