@@ -103,7 +103,15 @@ discover_inputs <- function(opt) {
     files <- list.files(cdir, pattern = "^consensus_spectrum_.*\\.tsv$", full.names = TRUE)
     for (path in files) {
       cond <- sub("^consensus_spectrum_(.*)\\.tsv$", "\\1", basename(path))
-      if (!is.null(opt$conditions) && !cond %in% opt$conditions) next
+      requested_inputs <- opt$conditions
+      # Healthy is a library-level superclass. Its source labels remain
+      # separate in the cohort outputs and are only combined at meta-analysis.
+      if (!is.null(requested_inputs) && "Healthy" %in% requested_inputs) {
+        requested_inputs <- union(requested_inputs,
+          c("Normal_histology", "Control_disease_cohort",
+            "Control_external_study"))
+      }
+      if (!is.null(requested_inputs) && !cond %in% requested_inputs) next
       d <- read_tsv(path)
       needed <- c("chr", "N", "k", "period", "median_power_normalised",
                   "prevalence_rank", "plv", "mean_phase")
@@ -143,6 +151,25 @@ discover_inputs <- function(opt) {
   }
   if (!length(out)) abort("No consensus spectra matched the requested inputs")
   out
+}
+
+#' Add a broad healthy-liver view without erasing control provenance.
+#'
+#' These labels answer slightly different sampling questions, so the original
+#' condition is retained in source_condition. They may nevertheless contribute
+#' to a deliberately broad Healthy reference used by the downstream library.
+add_healthy_superclass <- function(inputs) {
+  healthy_labels <- c("Normal_histology", "Control_disease_cohort",
+                      "Control_external_study")
+  source_names <- names(inputs)[vapply(inputs, function(x)
+    x$condition[1] %in% healthy_labels, logical(1))]
+  for (nm in source_names) {
+    d <- inputs[[nm]]
+    d$source_condition <- d$condition
+    d$condition <- "Healthy"
+    inputs[[paste0(nm, "\rHealthy")]] <- d
+  }
+  inputs
 }
 
 add_within_cohort_effect <- function(inputs) {
@@ -191,6 +218,9 @@ aggregate_condition <- function(inputs, condition, min_cohorts, window_cut) {
       period = x$N[1] / x$k[1],
       n_cohorts = length(unique(x$dataset)),
       cohorts = paste(sort(unique(x$dataset)), collapse = ","),
+      source_conditions = paste(sort(unique(if ("source_condition" %in% names(x))
+        as.character(x$source_condition) else as.character(x$condition))),
+        collapse = ","),
       final_power = median_finite(x$median_power_normalised),
       final_power_min = min_finite(x$median_power_normalised),
       final_power_max = max_finite(x$median_power_normalised),
@@ -225,8 +255,29 @@ aggregate_condition <- function(inputs, condition, min_cohorts, window_cut) {
   out[order(match(out$chr, c(as.character(1:22), "X", "Y")), out$k), ]
 }
 
+open_plot_device <- function(path, width = 2400, height = 1800, res = 180) {
+  # Compute nodes commonly have no DISPLAY. The default png(type = "Xlib")
+  # therefore fails even though no interactive graphics are needed.
+  if (requireNamespace("ragg", quietly = TRUE)) {
+    ragg::agg_png(path, width = width, height = height, units = "px", res = res)
+    return(path)
+  }
+  if (isTRUE(capabilities("cairo"))) {
+    grDevices::png(path, width = width, height = height, res = res,
+                   type = "cairo")
+    return(path)
+  }
+
+  pdf_path <- sub("\\.png$", ".pdf", path, ignore.case = TRUE)
+  warning("Neither ragg nor Cairo is available; writing PDF instead: ", pdf_path,
+          call. = FALSE)
+  grDevices::pdf(pdf_path, width = width / res, height = height / res,
+                 onefile = TRUE)
+  pdf_path
+}
+
 plot_condition <- function(tab, signature, path, condition) {
-  grDevices::png(path, width = 2400, height = 1800, res = 180)
+  actual_path <- open_plot_device(path)
   on.exit(grDevices::dev.off(), add = TRUE)
   old <- graphics::par(no.readonly = TRUE)
   on.exit(graphics::par(old), add = TRUE)
@@ -252,16 +303,20 @@ plot_condition <- function(tab, signature, path, condition) {
                   side = 1, line = 1.2)
   graphics::mtext("Mediana intercohorte de potencia normalizada (escala log)",
                   outer = TRUE, side = 2, line = 2)
+  invisible(actual_path)
 }
 
 main <- function() {
   opt <- parse_args(commandArgs(trailingOnly = TRUE))
   dir.create(opt$out_dir, recursive = TRUE, showWarnings = FALSE)
-  inputs <- add_within_cohort_effect(discover_inputs(opt))
+  inputs <- add_healthy_superclass(add_within_cohort_effect(discover_inputs(opt)))
   conditions <- unique(vapply(inputs, function(x) x$condition[1], character(1)))
-  preferred <- c("Normal_histology", "Control_disease_cohort",
+  preferred <- c("Healthy", "Normal_histology", "Control_disease_cohort",
                  "Control_external_study", "F0", "F1", "F2", "F3", "F4")
   conditions <- c(intersect(preferred, conditions), setdiff(sort(conditions), preferred))
+  if (!is.null(opt$conditions)) {
+    conditions <- opt$conditions[opt$conditions %in% conditions]
+  }
 
   manifest <- list()
   for (cond in conditions) {
@@ -276,13 +331,14 @@ main <- function() {
     sig_path <- file.path(opt$out_dir, paste0("condition_signature_", cond, ".tsv"))
     write_tsv(sig, sig_path)
     png_path <- file.path(opt$out_dir, paste0("power_spectrum_", cond, ".png"))
-    plot_condition(tab, sig, png_path, cond)
+    plot_path <- plot_condition(tab, sig, png_path, cond)
 
     manifest[[cond]] <- data.frame(
       condition = cond, n_cohorts_max = max(tab$n_cohorts),
       n_frequencies = nrow(tab), n_robust = sum(tab$signature_class == "robust"),
       n_candidates = sum(tab$signature_class == "candidate"),
       n_window_suspect = sum(tab$signature_class == "window_suspect"),
+      plot_file = basename(plot_path),
       stringsAsFactors = FALSE)
     messagef("%-24s cohorts=%d frequencies=%d robust=%d candidates=%d",
              cond, max(tab$n_cohorts), nrow(tab),
