@@ -374,24 +374,23 @@ aggregate_condition <- function(inputs, condition, min_cohorts, window_cut,
   # convention pretending to be a criterion: it returns N whether the evidence
   # supports N, none, or a thousand.
   #
-  # Each cohort already carries a family-wise permutation p-value per frequency
-  # (p_null_fwer, from the label-permuted null in the consensus stage). The
-  # cohorts are independent studies, so those combine by Stouffer, and the
-  # multiplicity across frequencies is handled by BH. The signature is then
-  # every frequency with q_meta below a stated rate -- a number the data
-  # decides, and one that can legitimately come out zero.
+  # Combine the *pointwise* permutation p-values across independent cohorts and
+  # apply BH once across frequencies.  p_null_fwer is already family-wise
+  # adjusted inside each cohort; combining it and then applying BH again would
+  # correct twice for the same frequency search and drive q_meta_null toward 1.
+  # Keep p_null_fwer only as the separate single-cohort confirmation field.
   stouffer <- function(p, floor_p) {
     p <- p[is.finite(p)]
     if (!length(p)) return(NA_real_)
     p <- pmin(pmax(p, floor_p), 1 - floor_p)
     stats::pnorm(sum(stats::qnorm(1 - p)) / sqrt(length(p)), lower.tail = FALSE)
   }
-  if ("p_null_fwer" %in% names(long)) {
+  if ("p_null" %in% names(long)) {
     # The permutation floor is 1/(B+1); capping z at it stops one cohort's
     # impossible precision from carrying the combination.
     n_draws <- suppressWarnings(max(long$n_null, na.rm = TRUE))
     floor_p <- if (is.finite(n_draws) && n_draws > 0) 1 / (n_draws + 1) else 1e-4
-    meta_p <- vapply(split(long$p_null_fwer, feature_key(long)),
+    meta_p <- vapply(split(long$p_null, feature_key(long)),
                      stouffer, numeric(1), floor_p = floor_p)
     out$p_meta_null <- unname(meta_p[feature_key(out)])
     out$q_meta_null <- stats::p.adjust(out$p_meta_null, method = "BH")
@@ -420,7 +419,7 @@ aggregate_condition <- function(inputs, condition, min_cohorts, window_cut,
   } else {
     out$p_meta_null <- NA_real_
     out$q_meta_null <- NA_real_
-    message("  NOTE: the consensus spectra carry no p_null_fwer, so the ",
+    message("  NOTE: the consensus spectra carry no pointwise p_null, so the ",
             "signature falls back to the rank cut. Re-run ./tsf consensus ",
             "with a permutation null to get a calibrated one.")
   }
