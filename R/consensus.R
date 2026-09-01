@@ -230,10 +230,85 @@ consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
 #' land together, while the observed condition may consist largely of them. The
 #' null then looks more variable than the data and the test is anti-conservative
 #' in exactly the situation where independence fails.
+#' Prepare frequency x sample matrices once for the permutation null.
+#'
+#' The original null rebuilt a data frame, split ~10,000 frequency groups and
+#' called consensus_spectrum() for every draw. None of that structure changes
+#' between draws. This representation pays the reshape cost once and lets every
+#' permutation reduce three shared matrices: normalised power, rank prevalence
+#' and unit phase vectors.
+prepare_null_consensus_matrices <- function(spectra_all, quantile_cut = 0.95) {
+  needed <- c("chr", "N", "k", "sample", "power", "phase")
+  missing <- setdiff(needed, colnames(spectra_all))
+  if (length(missing)) tsf_abort("null consensus needs columns: ",
+                                 paste(missing, collapse = ", "))
+  d <- spectra_all
+  if ("power_normalised" %in% colnames(d)) {
+    pnorm <- d$power_normalised
+  } else {
+    tot <- stats::ave(d$power, paste(d$sample, d$chr),
+                      FUN = function(x) sum(x, na.rm = TRUE))
+    pnorm <- d$power / pmax(tot, .Machine$double.eps)
+  }
+  stands <- prevalence_from_rank(pnorm, d$sample, d$chr, quantile_cut)
+  key <- paste(d$chr, d$N, d$k, sep = "|")
+  keys <- sort(unique(key))             # same key order as split()
+  samples <- unique(as.character(d$sample))
+  ri <- match(key, keys); ci <- match(as.character(d$sample), samples)
+  cell <- paste(ri, ci, sep = "|")
+  if (anyDuplicated(cell)) {
+    tsf_abort("The null matrix has duplicated frequency/sample rows; expected ",
+              "one value per chr/N/k/sample")
+  }
+
+  dims <- c(length(keys), length(samples))
+  pn <- matrix(NA_real_, nrow = dims[1], ncol = dims[2],
+               dimnames = list(keys, samples))
+  so <- matrix(NA_real_, nrow = dims[1], ncol = dims[2],
+               dimnames = list(keys, samples))
+  ph <- matrix(NA_complex_, nrow = dims[1], ncol = dims[2],
+               dimnames = list(keys, samples))
+  valid <- is.finite(d$power) & is.finite(d$phase)
+  pos <- cbind(ri[valid], ci[valid])
+  pn[pos] <- pnorm[valid]
+  so[pos] <- as.numeric(stands[valid])
+  ph[pos] <- exp(1i * d$phase[valid])
+  list(pnorm = pn, stands = so, phase = ph, keys = keys, samples = samples)
+}
+
+row_medians_tsf <- function(x) {
+  if (requireNamespace("matrixStats", quietly = TRUE)) {
+    matrixStats::rowMedians(x, na.rm = TRUE)
+  } else {
+    apply(x, 1L, stats::median, na.rm = TRUE)
+  }
+}
+
+#' Consensus scores for one selected set of matrix columns.
+null_matrix_draw <- function(prepared, picked_samples) {
+  j <- match(picked_samples, prepared$samples)
+  j <- j[!is.na(j)]
+  if (length(j) < 2L) return(NULL)
+  pn <- prepared$pnorm[, j, drop = FALSE]
+  so <- prepared$stands[, j, drop = FALSE]
+  ph <- prepared$phase[, j, drop = FALSE]
+  n_valid <- rowSums(!is.na(ph))
+  med <- row_medians_tsf(pn)
+  prev <- rowMeans(so, na.rm = TRUE)
+  plv <- Mod(rowMeans(ph, na.rm = TRUE))
+  score <- med * prev * plv
+  score[n_valid < 2L | !is.finite(score)] <- NA_real_
+  names(score) <- prepared$keys
+  score
+}
+
 null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
                                         seed = 42L, quantile_cut = 0.95,
                                         q_global = 0.95, blocks = NULL,
-                                        n_cores = 1L) {
+                                        n_cores = 1L,
+                                        engine = c("matrix", "reference"),
+                                        prepared = NULL) {
+  engine <- match.arg(engine)
   samples <- unique(spectra_all$sample)
   if (length(samples) <= n_samples || n_null < 10L) return(NULL)
   set.seed(seed)
@@ -258,21 +333,31 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
   # Generate every draw in the parent process. This makes the null exactly
   # reproducible for a fixed seed regardless of worker count.
   picks <- lapply(seq_len(n_null), function(b) draw())
-  rows_by_sample <- split(seq_len(nrow(spectra_all)), spectra_all$sample)
   n_cores <- max(1L, min(as.integer(n_cores), n_null))
+
+  prepared <- if (engine == "matrix" && is.null(prepared))
+    prepare_null_consensus_matrices(spectra_all, quantile_cut) else prepared
+  rows_by_sample <- if (engine == "reference")
+    split(seq_len(nrow(spectra_all)), spectra_all$sample) else NULL
 
   draws <- parallel::mclapply(seq_len(n_null), function(b) {
     pick <- picks[[b]]
-    idx <- unlist(rows_by_sample[pick], use.names = FALSE)
-    sub <- spectra_all[idx, , drop = FALSE]
-    cs <- tryCatch(consensus_spectrum(sub, n_boot = 0L, seed = seed + b,
-                                      quantile_cut = quantile_cut,
-                                      n_cores = 1L),
-                   error = function(e) NULL)
-    if (is.null(cs) || !nrow(cs)) return(NULL)
-    key <- paste(cs$chr, cs$N, cs$k, sep = "|")
-    list(values = stats::setNames(cs$consensus_score_rank, key),
-         best = max(cs$consensus_score_rank, na.rm = TRUE))
+    values <- if (engine == "matrix") {
+      tryCatch(null_matrix_draw(prepared, pick), error = function(e) NULL)
+    } else {
+      idx <- unlist(rows_by_sample[pick], use.names = FALSE)
+      sub <- spectra_all[idx, , drop = FALSE]
+      cs <- tryCatch(consensus_spectrum(sub, n_boot = 0L, seed = seed + b,
+                                        quantile_cut = quantile_cut,
+                                        n_cores = 1L),
+                     error = function(e) NULL)
+      if (is.null(cs) || !nrow(cs)) NULL else
+        stats::setNames(cs$consensus_score_rank,
+                        paste(cs$chr, cs$N, cs$k, sep = "|"))
+    }
+    values <- values[is.finite(values)]
+    if (!length(values)) return(NULL)
+    list(values = values, best = max(values))
   }, mc.cores = n_cores, mc.preschedule = TRUE, mc.set.seed = FALSE)
 
   draws <- draws[!vapply(draws, is.null, logical(1))]
