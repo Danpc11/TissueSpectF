@@ -1,13 +1,10 @@
 #!/usr/bin/env Rscript
 
-# Lightweight regression tests for the invariant layer in
+# Regression tests for the invariant layer in
 # scripts/build_final_condition_spectra.R.
 #
 # Run:
 #   Rscript tests/test_condition_invariants.R
-#
-# The constructor is sourced without executing main() because its bottom guard
-# uses sys.nframe() == 0L.
 
 source("scripts/build_final_condition_spectra.R")
 
@@ -47,38 +44,28 @@ make_row <- function(
   )
 }
 
+# -------------------------------------------------------------------------
+# A genuinely stable component across all conditions must become core.
+# -------------------------------------------------------------------------
 inputs <- list(
-  "A\rF0" = make_row(
-    "A", "F0",
-    power = 1.00,
-    phase = 0.10
-  ),
-  "B\rF0" = make_row(
-    "B", "F0",
-    power = 1.05,
-    phase = 0.12
-  ),
-  "A\rF1" = make_row(
-    "A", "F1",
-    power = 0.98,
-    phase = 0.11
-  ),
-  "B\rF1" = make_row(
-    "B", "F1",
-    power = 1.02,
-    phase = 0.09
-  )
+  "A\rF0" = make_row("A", "F0", power = 1.00, phase = 0.10, enrichment = 0.10),
+  "B\rF0" = make_row("B", "F0", power = 1.05, phase = 0.12, enrichment = 0.08),
+  "A\rF1" = make_row("A", "F1", power = 0.98, phase = 0.11, enrichment = 0.09),
+  "B\rF1" = make_row("B", "F1", power = 1.02, phase = 0.09, enrichment = 0.07)
 )
 
 inv <- build_invariant_spectrum(
   inputs = inputs,
   conditions = c("F0", "F1"),
   min_cohorts = 2,
-  min_condition_fraction = 1,
+  min_condition_fraction = 0.70,
   min_prevalence = 0.5,
   min_phase_coherence = 0.8,
-  max_power_cv = 0.2,
+  max_power_cv = 1.0,
   max_abs_log2_enrichment = 0.5,
+  core_phase_coherence = 0.90,
+  core_max_power_cv = 0.30,
+  core_max_abs_log2_enrichment = 0.50,
   window_cut = 1
 )
 
@@ -87,13 +74,78 @@ stopifnot(
   inv$n_conditions == 2L,
   inv$n_cohorts == 2L,
   abs(inv$condition_fraction - 1) < 1e-12,
-  identical(
-    inv$invariant_class,
-    "robust"
+  isTRUE(inv$shared_candidate),
+  isTRUE(inv$shared_robust),
+  isTRUE(inv$core_invariant),
+  identical(inv$invariant_class, "core_invariant")
+)
+
+# -------------------------------------------------------------------------
+# Shared robust does not imply core: one condition may be missing.
+# -------------------------------------------------------------------------
+inputs_partial <- c(
+  inputs,
+  list(
+    "A\rF2" = make_row("A", "F2", prevalence = 0.1),
+    "B\rF2" = make_row("B", "F2", prevalence = 0.1)
   )
 )
 
+inv_partial <- build_invariant_spectrum(
+  inputs = inputs_partial,
+  conditions = c("F0", "F1", "F2"),
+  min_cohorts = 2,
+  min_condition_fraction = 0.60,
+  min_prevalence = 0.5,
+  min_phase_coherence = 0.8,
+  max_power_cv = 1.0,
+  max_abs_log2_enrichment = 0.5,
+  core_phase_coherence = 0.90,
+  core_max_power_cv = 0.30,
+  core_max_abs_log2_enrichment = 0.50,
+  window_cut = 1
+)
+
+stopifnot(
+  abs(inv_partial$condition_fraction - (2 / 3)) < 1e-12,
+  isTRUE(inv_partial$shared_candidate),
+  isTRUE(inv_partial$shared_robust),
+  !isTRUE(inv_partial$core_invariant),
+  identical(inv_partial$invariant_class, "shared_robust")
+)
+
+# -------------------------------------------------------------------------
+# A component can be shared robust but fail core because one condition has
+# too large a maximum enrichment/depletion, even if the median is acceptable.
+# -------------------------------------------------------------------------
+inputs_outlier <- inputs
+inputs_outlier[["B\rF1"]]$cohort_log2_enrichment <- 0.8
+
+inv_outlier <- build_invariant_spectrum(
+  inputs = inputs_outlier,
+  conditions = c("F0", "F1"),
+  min_cohorts = 2,
+  min_condition_fraction = 0.70,
+  min_prevalence = 0.5,
+  min_phase_coherence = 0.8,
+  max_power_cv = 1.0,
+  max_abs_log2_enrichment = 0.5,
+  core_phase_coherence = 0.90,
+  core_max_power_cv = 0.30,
+  core_max_abs_log2_enrichment = 0.50,
+  window_cut = 1
+)
+
+stopifnot(
+  isTRUE(inv_outlier$shared_candidate),
+  isTRUE(inv_outlier$shared_robust),
+  !isTRUE(inv_outlier$core_invariant),
+  identical(inv_outlier$invariant_class, "shared_robust")
+)
+
+# -------------------------------------------------------------------------
 # Healthy must not double-count source observations.
+# -------------------------------------------------------------------------
 with_healthy <- add_healthy_superclass(inputs)
 
 inv2 <- build_invariant_spectrum(
@@ -103,8 +155,11 @@ inv2 <- build_invariant_spectrum(
   min_condition_fraction = 1,
   min_prevalence = 0.5,
   min_phase_coherence = 0.8,
-  max_power_cv = 0.2,
+  max_power_cv = 1.0,
   max_abs_log2_enrichment = 0.5,
+  core_phase_coherence = 0.90,
+  core_max_power_cv = 0.30,
+  core_max_abs_log2_enrichment = 0.50,
   window_cut = 1
 )
 
@@ -114,8 +169,9 @@ stopifnot(
   inv2$n_conditions == 2L
 )
 
-# A single-cohort condition must be reported as insufficient for meta-analysis,
-# not as merely missing a permutation null.
+# -------------------------------------------------------------------------
+# Evidence-status diagnostics remain distinct.
+# -------------------------------------------------------------------------
 single_cohort_tab <- data.frame(
   n_cohorts = 1L,
   q_meta_null = NA_real_,
@@ -125,15 +181,11 @@ single_cohort_tab <- data.frame(
 
 stopifnot(
   identical(
-    condition_evidence_status(
-      single_cohort_tab,
-      min_cohorts = 2L
-    ),
+    condition_evidence_status(single_cohort_tab, min_cohorts = 2L),
     "insufficient_cohorts_for_meta_analysis"
   )
 )
 
-# Missing null is a separate status when enough cohorts exist.
 missing_null_tab <- data.frame(
   n_cohorts = 2L,
   q_meta_null = NA_real_,
@@ -143,10 +195,7 @@ missing_null_tab <- data.frame(
 
 stopifnot(
   identical(
-    condition_evidence_status(
-      missing_null_tab,
-      min_cohorts = 2L
-    ),
+    condition_evidence_status(missing_null_tab, min_cohorts = 2L),
     "missing_meta_null"
   )
 )
