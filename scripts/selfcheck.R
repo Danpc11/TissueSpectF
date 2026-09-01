@@ -159,8 +159,13 @@ run_selfcheck <- function() {
                                 "constant_signature_average.tsv"), required = FALSE)
   check("a constant signature was found", !is.null(sig) && nrow(sig) >= 1)
   if (!is.null(sig) && nrow(sig)) {
-    check("the signature peak is the injected one",
-          any(sig$chr == "1" & sig$N == SELFCHECK_GENES_PER_CHR & sig$k == SELFCHECK_K))
+    # k23 is deliberately injected at the same amplitude in every condition,
+    # whereas k6 changes with fibrosis and is weak in the baseline groups. The
+    # invariant signature must recover the shared distractor; k6 is tested
+    # below through its transitions rather than as an invariant.
+    check("the invariant signature contains the shared injected component",
+          any(sig$chr == "1" & sig$N == SELFCHECK_GENES_PER_CHR &
+                sig$k == SELFCHECK_DISTRACTOR_K))
   }
 
   peaks <- read_tsv_tsf(file.path(project$results_dir, "GSE135251", "peaks",
@@ -178,14 +183,18 @@ run_selfcheck <- function() {
     check(paste0(id, ": amplitude increases across every transition"), ok)
   }
 
-  # compare/ is now grouped by tissue/vocabulary, so the file lives one or two
-  # directories deeper. Find it rather than hard-coding the layout.
+  # compare/ is grouped by tissue/vocabulary and each biological transition
+  # has its own file. Read every transition table rather than looking for the
+  # obsolete combined file.
   hits <- list.files(file.path(project$results_dir, "comparison"),
-                     pattern = "^transitions_shared_average\\.tsv$",
+                     pattern = "^transitions_shared_average_.*\\.tsv$",
                      recursive = TRUE, full.names = TRUE)
-  shared <- if (length(hits)) read_tsv_tsf(hits[1], required = FALSE) else NULL
+  shared_parts <- lapply(hits, read_tsv_tsf, required = FALSE)
+  shared_parts <- shared_parts[!vapply(shared_parts, is.null, logical(1))]
+  shared <- if (length(shared_parts)) do.call(rbind, shared_parts) else NULL
   check("the increase replicates across datasets",
-        !is.null(shared) && sum(shared$replicated, na.rm = TRUE) >= 3)
+        !is.null(shared) && "replicated" %in% colnames(shared) &&
+          sum(shared$replicated, na.rm = TRUE) >= 3)
 
   # --- the matcher, end to end -----------------------------------------------
   # Stages alone do not exercise stage_reference, the coverage calibration or
@@ -284,3 +293,4 @@ run_selfcheck <- function() {
   tsf_warn("selfcheck: ", failures, " check(s) failed.")
   1L
 }
+
