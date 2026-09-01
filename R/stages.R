@@ -168,28 +168,65 @@ stage_condition <- function(project, opt) {
 }
 
 # --- consensus spectrum ------------------------------------------------------
+
+null_cache_metadata <- function(pool_paths, n_samples, project, blocks) {
+  info <- file.info(pool_paths)
+  list(
+    algorithm = "matrix-null-v1",
+    files = data.frame(path = normalizePath(pool_paths, mustWork = FALSE),
+                       size = as.numeric(info$size),
+                       mtime = as.numeric(info$mtime),
+                       stringsAsFactors = FALSE),
+    n_samples = as.integer(n_samples),
+    n_null = as.integer(project$consensus$n_null %||% 50L),
+    seed = as.integer(project$maxt$seed),
+    quantile_cut = as.numeric(project$consensus$quantile_cut %||% 0.95),
+    blocks = if (is.null(blocks)) NULL else
+      data.frame(sample = names(blocks), block = as.character(blocks),
+                 stringsAsFactors = FALSE)
+  )
+}
+
+read_null_cache <- function(path, metadata) {
+  if (!file.exists(path) || file.size(path) <= 0) return(NULL)
+  obj <- tryCatch(readRDS(path), error = function(e) NULL)
+  if (is.null(obj) || !identical(obj$metadata, metadata) || is.null(obj$result))
+    return(NULL)
+  obj$result
+}
+
+write_null_cache <- function(path, metadata, result) {
+  ensure_dir(dirname(path))
+  tmp <- paste0(path, ".tmp.", Sys.getpid())
+  on.exit(unlink(tmp), add = TRUE)
+  # The per-key matrix is tens of MB. Compression costs substantial CPU and
+  # buys no statistical value; an uncompressed RDS loads much faster on resume.
+  saveRDS(list(metadata = metadata, result = result), tmp, compress = FALSE)
+  if (!file.rename(tmp, path)) tsf_warn("Could not atomically install null cache: ", path)
+  invisible(path)
+}
+
 stage_consensus <- function(project, opt) {
   n_sig <- 0L
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id, need = "maxt")
-    detected <- suppressWarnings(parallel::detectCores(logical = TRUE))
-    if (is.na(detected) || detected < 1L) detected <- 1L
-    requested <- suppressWarnings(as.integer(opt$cores %||% NA_integer_))
-    # Consensus workers each touch a large spectral table. Eight is a safer
-    # default than blindly forking once per chromosome; --cores can raise or
-    # lower it after checking available RAM.
-    n_cores <- if (is.na(requested)) min(8L, max(1L, detected - 1L)) else
-      max(1L, min(requested, detected))
+    n_cores <- local_workers(opt,
+      n_tasks = max(project$consensus$n_null %||% 50L, 1L), default_max = 8L)
     tsf_log(id, ": consensus spectra from per-sample spectra (", n_cores,
-            " worker(s))")
+            " worker(s), matrix null)")
     # The label-permuted null needs every sample of the dataset, not just the
     # condition's, so it is assembled once.
-    pool <- do.call(rbind, lapply(inp$conditions, function(c)
-      read_tsv_tsf(p_spectra_samples(inp$paths, c), required = FALSE)))
+    pool_paths <- vapply(inp$conditions, function(c)
+      p_spectra_samples(inp$paths, c), character(1))
+    pool_paths <- pool_paths[file.exists(pool_paths)]
+    pool_parts <- lapply(pool_paths, read_tsv_tsf, required = FALSE)
+    pool_parts <- pool_parts[!vapply(pool_parts, is.null, logical(1))]
+    pool <- if (length(pool_parts)) do.call(rbind, pool_parts) else NULL
     # The null depends only on how many samples are drawn, so conditions of the
     # same size share it. Without this the same permutation set is recomputed
     # once per condition, which dominates the stage's cost on real data.
     null_cache <- list()
+    prepared_null <- NULL
     # Samples are not always independent. When the metadata names a blocking
     # variable, the null draws whole blocks so its dependence structure matches
     # the data's.
@@ -226,17 +263,41 @@ stage_consensus <- function(project, opt) {
       null_dist <- NULL
       if (!is.null(pool)) {
         if (is.null(null_cache[[key]])) {
-          t0 <- Sys.time()
-          null_cache[[key]] <- list(d = null_consensus_distribution(
-            pool, n_here, n_null = project$consensus$n_null %||% 50L,
-            seed = project$maxt$seed,
-            quantile_cut = project$consensus$quantile_cut %||% 0.95,
-            blocks = blocks, n_cores = n_cores))
-          tsf_log("  null for n = ", n_here, ": global q95 = ",
-                  signif(null_cache[[key]]$d$global %||% NA, 3), " over ",
-                  null_cache[[key]]$d$n_null %||% 0, " draws (",
-                  round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 2),
-                  " min)")
+          cache_dir <- file.path(inp$paths$base, "consensus", "null_cache")
+          cache_path <- file.path(cache_dir, sprintf("null_n%04d.rds", n_here))
+          metadata <- null_cache_metadata(pool_paths, n_here, project, blocks)
+          cached <- if (!isTRUE(opt$force)) read_null_cache(cache_path, metadata) else NULL
+          if (!is.null(cached)) {
+            null_cache[[key]] <- list(d = cached)
+            tsf_log("  null for n = ", n_here, ": reused persistent cache (",
+                    cached$n_null %||% 0, " draws)")
+          } else {
+            t0 <- Sys.time()
+            if (is.null(prepared_null)) {
+              prep_t0 <- Sys.time()
+              prepared_null <- prepare_null_consensus_matrices(
+                pool, project$consensus$quantile_cut %||% 0.95)
+              tsf_log("  prepared null matrices: ",
+                      nrow(prepared_null$pnorm), " frequencies x ",
+                      ncol(prepared_null$pnorm), " samples in ",
+                      round(as.numeric(difftime(Sys.time(), prep_t0,
+                                                units = "secs")), 1), " s")
+            }
+            computed_null <- null_consensus_distribution(
+              pool, n_here, n_null = project$consensus$n_null %||% 50L,
+              seed = project$maxt$seed,
+              quantile_cut = project$consensus$quantile_cut %||% 0.95,
+              blocks = blocks, n_cores = n_cores, engine = "matrix",
+              prepared = prepared_null)
+            null_cache[[key]] <- list(d = computed_null)
+            if (!is.null(computed_null))
+              write_null_cache(cache_path, metadata, computed_null)
+            tsf_log("  null for n = ", n_here, ": global q95 = ",
+                    signif(computed_null$global %||% NA, 3), " over ",
+                    computed_null$n_null %||% 0, " draws (",
+                    round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 2),
+                    " min; cached)")
+          }
         }
         null_dist <- null_cache[[key]]$d
       }
@@ -306,8 +367,7 @@ stage_stability <- function(project, opt) {
       m <- inp$maxt[[cond]]
       if (is.null(m)) {
         # No per-sample maxT: fall back to the condition-level result alone.
-        st <- stability_from_condition(inp$paths, cond, opt$branches[1],
-                                       project$stability_criterion %||% "condition")
+        st <- stability_from_condition(inp$paths, cond, opt$branches[1])
         if (is.null(st)) {
           tsf_warn("  ", cond, ": neither maxT nor a condition test; run one of them")
           next
