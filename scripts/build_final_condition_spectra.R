@@ -16,7 +16,8 @@ messagef <- function(...) message(sprintf(...))
 parse_args <- function(x) {
   out <- list(results_dir = "results_gencode_v2", out_dir = NULL,
               datasets = NULL, conditions = NULL, min_cohorts = 2L,
-              top = 50L, window_cut = 1)
+              top = 50L, window_cut = 1, min_prevalence = 0.5,
+              exclude_chromosomes = "Y,MT", healthy_superclass = "no")
   i <- 1L
   while (i <= length(x)) {
     a <- x[[i]]
@@ -36,6 +37,10 @@ parse_args <- function(x) {
   if (!is.null(out$datasets)) out$datasets <- strsplit(out$datasets, ",", fixed = TRUE)[[1]]
   if (!is.null(out$conditions)) out$conditions <- strsplit(out$conditions, ",", fixed = TRUE)[[1]]
   out$min_cohorts <- as.integer(out$min_cohorts)
+  out$min_prevalence <- as.numeric(out$min_prevalence)
+  out$exclude_chromosomes <- if (nzchar(out$exclude_chromosomes))
+    strsplit(out$exclude_chromosomes, ",", fixed = TRUE)[[1]] else character(0)
+  out$healthy_superclass <- tolower(out$healthy_superclass) %in% c("yes", "true", "1")
   out$top <- as.integer(out$top)
   out$window_cut <- as.numeric(out$window_cut)
   if (is.na(out$min_cohorts) || out$min_cohorts < 2L) abort("--min-cohorts must be >= 2")
@@ -174,9 +179,20 @@ discover_inputs <- function(opt) {
 
 #' Add a broad healthy-liver view without erasing control provenance.
 #'
-#' These labels answer slightly different sampling questions, so the original
-#' condition is retained in source_condition. They may nevertheless contribute
-#' to a deliberately broad Healthy reference used by the downstream library.
+#' OFF BY DEFAULT (--healthy-superclass yes to enable), because it merges three
+#' classes this project deliberately keeps apart:
+#'
+#'   Control_disease_cohort   subjects outside a NAFLD cohort -- two of the ten
+#'                            carry incidental fibrosis of stage 1 and 2, so it
+#'                            is not a strictly healthy extreme
+#'   Normal_histology         normal-looking biopsies within a disease series
+#'   Control_external_study   controls of a different disease study, recruited,
+#'                            sampled and processed under another protocol
+#'
+#' Taking a median across them treats them as cohorts of one class, which is
+#' precisely the equivalence worth testing rather than assuming. Compare the
+#' three spectra first; if they agree, the merge is a result and this flag
+#' records that it was a decision.
 add_healthy_superclass <- function(inputs) {
   healthy_labels <- c("Normal_histology", "Control_disease_cohort",
                       "Control_external_study")
@@ -219,10 +235,23 @@ add_within_cohort_effect <- function(inputs) {
   inputs
 }
 
-aggregate_condition <- function(inputs, condition, min_cohorts, window_cut) {
+aggregate_condition <- function(inputs, condition, min_cohorts, window_cut,
+                                min_prevalence = 0.5,
+                                exclude_chromosomes = character(0)) {
   pieces <- inputs[vapply(inputs, function(x) identical(x$condition[1], condition), logical(1))]
   if (!length(pieces)) return(NULL)
   long <- bind_rows_fill(pieces)
+  # Sex chromosomes and the mitochondrion are excluded by default. chrY carries
+  # a handful of genes, so its grid is short and its spectrum unstable, and its
+  # expression tracks the sex composition of a group -- which differs between
+  # conditions and between cohorts. A component there reports who was recruited,
+  # not what the disease does. (In this dataset the only "robust" component of
+  # F0 was chrY with a period of 3.6 genes.)
+  if (length(exclude_chromosomes)) {
+    drop <- as.character(long$chr) %in% exclude_chromosomes
+    if (any(drop)) long <- long[!drop, , drop = FALSE]
+  }
+  if (!nrow(long)) return(NULL)
   groups <- split(seq_len(nrow(long)), feature_key(long))
 
   rows <- lapply(groups, function(i) {
@@ -259,16 +288,29 @@ aggregate_condition <- function(inputs, condition, min_cohorts, window_cut) {
   out <- do.call(rbind, rows)
   out$window_suspect <- is.finite(out$worst_window_pct) & out$worst_window_pct <= window_cut
   out$eligible <- out$n_cohorts >= min_cohorts
+
+  # With k cohorts, the mean of k unit phase vectors has expected modulus about
+  # sqrt(pi)/(2*sqrt(k)) under random phases: 0.63 for two cohorts, 0.44 for
+  # four. A fixed 0.8 therefore filters almost nothing when k is small -- here
+  # 84% of frequencies clear it. The bar scales with k instead.
+  k_cohorts <- max(out$n_cohorts, na.rm = TRUE)
+  coherence_floor <- max(0.8, min(0.95, 2 * sqrt(pi) / (2 * sqrt(k_cohorts))))
+  out$coherence_floor <- coherence_floor
   out$meta_score <- with(out,
     condition_specific_power * median_prevalence * median_plv_within_cohort *
       phase_coherence_between_cohorts)
   out$meta_score[!is.finite(out$meta_score)] <- 0
   out$signature_class <- "background"
+  # Prevalence enters the rule, not only the score. Its median across
+  # frequencies is 0 here, so without a floor a component can be called a
+  # candidate while standing out in no sample at all.
   candidate <- out$eligible & out$condition_log2_enrichment > 0 &
-    out$signature_replication_fraction >= 0.5 & !out$window_suspect
+    out$signature_replication_fraction >= 0.5 & !out$window_suspect &
+    is.finite(out$median_prevalence) & out$median_prevalence >= min_prevalence
   out$signature_class[candidate] <- "candidate"
   robust <- candidate & out$n_signature_cohorts >= 2L &
-    out$phase_coherence_between_cohorts >= 0.8 & out$n_confirmed_cohorts >= 1L
+    out$phase_coherence_between_cohorts >= coherence_floor &
+    out$n_confirmed_cohorts >= 1L
   out$signature_class[robust] <- "robust"
   out$signature_class[out$window_suspect & out$eligible] <- "window_suspect"
   out[order(match(out$chr, c(as.character(1:22), "X", "Y")), out$k), ]
@@ -328,7 +370,13 @@ plot_condition <- function(tab, signature, path, condition) {
 main <- function() {
   opt <- parse_args(commandArgs(trailingOnly = TRUE))
   dir.create(opt$out_dir, recursive = TRUE, showWarnings = FALSE)
-  inputs <- add_healthy_superclass(add_within_cohort_effect(discover_inputs(opt)))
+  inputs <- add_within_cohort_effect(discover_inputs(opt))
+  if (opt$healthy_superclass) {
+    message("NOTE: --healthy-superclass merges three healthy classes whose ",
+            "equivalence has not been demonstrated. source_conditions records ",
+            "what went in.")
+    inputs <- add_healthy_superclass(inputs)
+  }
   conditions <- unique(vapply(inputs, function(x) x$condition[1], character(1)))
   preferred <- c("Healthy", "Normal_histology", "Control_disease_cohort",
                  "Control_external_study", "F0", "F1", "F2", "F3", "F4")
@@ -339,7 +387,8 @@ main <- function() {
 
   manifest <- list()
   for (cond in conditions) {
-    tab <- aggregate_condition(inputs, cond, opt$min_cohorts, opt$window_cut)
+    tab <- aggregate_condition(inputs, cond, opt$min_cohorts, opt$window_cut,
+                               opt$min_prevalence, opt$exclude_chromosomes)
     if (is.null(tab)) next
     full_path <- file.path(opt$out_dir, paste0("condition_spectrum_", cond, ".tsv"))
     write_tsv(tab, full_path)
@@ -352,8 +401,19 @@ main <- function() {
     png_path <- file.path(opt$out_dir, paste0("power_spectrum_", cond, ".png"))
     plot_path <- plot_condition(tab, sig, png_path, cond)
 
+    if (sum(tab$n_confirmed_cohorts, na.rm = TRUE) == 0L) {
+      message("  NOTE: no cohort confirmed any component for ", cond,
+              ", so `robust` is empty by construction, not by the data. ",
+              "Confirmation needs the permutation null: re-run ./tsf consensus ",
+              "with --n-null 199 or more.")
+    }
     manifest[[cond]] <- data.frame(
       condition = cond, n_cohorts_max = max(tab$n_cohorts),
+      coherence_floor = tab$coherence_floor[1],
+      min_prevalence = opt$min_prevalence,
+      window_cut_pct = opt$window_cut,
+      excluded_chromosomes = paste(opt$exclude_chromosomes, collapse = ","),
+      healthy_superclass = opt$healthy_superclass,
       n_frequencies = nrow(tab), n_robust = sum(tab$signature_class == "robust"),
       n_candidates = sum(tab$signature_class == "candidate"),
       n_window_suspect = sum(tab$signature_class == "window_suspect"),
