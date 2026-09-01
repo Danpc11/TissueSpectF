@@ -16,7 +16,8 @@ messagef <- function(...) message(sprintf(...))
 parse_args <- function(x) {
   out <- list(results_dir = "results_gencode_v2", out_dir = NULL,
               datasets = NULL, conditions = NULL, min_cohorts = 2L,
-              top = 50L, window_cut = 1, min_prevalence = 0.5,
+              top = NA_integer_, signature_q = 0.05,
+              window_cut = 1, min_prevalence = 0.5,
               exclude_chromosomes = "Y,MT", healthy_superclass = "no")
   i <- 1L
   while (i <= length(x)) {
@@ -41,10 +42,14 @@ parse_args <- function(x) {
   out$exclude_chromosomes <- if (nzchar(out$exclude_chromosomes))
     strsplit(out$exclude_chromosomes, ",", fixed = TRUE)[[1]] else character(0)
   out$healthy_superclass <- tolower(out$healthy_superclass) %in% c("yes", "true", "1")
-  out$top <- as.integer(out$top)
+  out$top <- suppressWarnings(as.integer(out$top))
+  out$signature_q <- as.numeric(out$signature_q)
   out$window_cut <- as.numeric(out$window_cut)
   if (is.na(out$min_cohorts) || out$min_cohorts < 2L) abort("--min-cohorts must be >= 2")
-  if (is.na(out$top) || out$top < 1L) abort("--top must be >= 1")
+  if (!is.na(out$top) && out$top < 1L) abort("--top must be >= 1 when given")
+  if (!is.finite(out$signature_q) || out$signature_q <= 0 || out$signature_q > 1) {
+    abort("--signature-q must be in (0, 1]")
+  }
   out
 }
 
@@ -237,7 +242,8 @@ add_within_cohort_effect <- function(inputs) {
 
 aggregate_condition <- function(inputs, condition, min_cohorts, window_cut,
                                 min_prevalence = 0.5,
-                                exclude_chromosomes = character(0)) {
+                                exclude_chromosomes = character(0),
+                                signature_q = 0.05) {
   pieces <- inputs[vapply(inputs, function(x) identical(x$condition[1], condition), logical(1))]
   if (!length(pieces)) return(NULL)
   long <- bind_rows_fill(pieces)
@@ -287,6 +293,63 @@ aggregate_condition <- function(inputs, condition, min_cohorts, window_cut,
   })
   out <- do.call(rbind, rows)
   out$window_suspect <- is.finite(out$worst_window_pct) & out$worst_window_pct <= window_cut
+  # --- a cut chosen by the data, not by a rank ---------------------------------
+  #
+  # `--top N` selects the N highest-scoring components, which is a display
+  # convention pretending to be a criterion: it returns N whether the evidence
+  # supports N, none, or a thousand.
+  #
+  # Each cohort already carries a family-wise permutation p-value per frequency
+  # (p_null_fwer, from the label-permuted null in the consensus stage). The
+  # cohorts are independent studies, so those combine by Stouffer, and the
+  # multiplicity across frequencies is handled by BH. The signature is then
+  # every frequency with q_meta below a stated rate -- a number the data
+  # decides, and one that can legitimately come out zero.
+  stouffer <- function(p, floor_p) {
+    p <- p[is.finite(p)]
+    if (!length(p)) return(NA_real_)
+    p <- pmin(pmax(p, floor_p), 1 - floor_p)
+    stats::pnorm(sum(stats::qnorm(1 - p)) / sqrt(length(p)), lower.tail = FALSE)
+  }
+  if ("p_null_fwer" %in% names(long)) {
+    # The permutation floor is 1/(B+1); capping z at it stops one cohort's
+    # impossible precision from carrying the combination.
+    n_draws <- suppressWarnings(max(long$n_null, na.rm = TRUE))
+    floor_p <- if (is.finite(n_draws) && n_draws > 0) 1 / (n_draws + 1) else 1e-4
+    meta_p <- vapply(split(long$p_null_fwer, feature_key(long)),
+                     stouffer, numeric(1), floor_p = floor_p)
+    out$p_meta_null <- unname(meta_p[feature_key(out)])
+    out$q_meta_null <- stats::p.adjust(out$p_meta_null, method = "BH")
+    out$n_null_draws <- n_draws
+    # Reachability, computed on the COMBINED p rather than on one cohort's.
+    # Stouffer over k cohorts each at the permutation floor gives a far smaller
+    # value than the floor itself -- with four cohorts at 1/100 the combination
+    # reaches 1.6e-6, which BH over ten thousand frequencies can still use. The
+    # obvious calculation (floor x n_frequencies) is the single-cohort one and
+    # would have declared the cut unusable when it is not.
+    k_min <- suppressWarnings(min(out$n_cohorts[out$n_cohorts >= min_cohorts],
+                                  na.rm = TRUE))
+    if (is.finite(k_min) && k_min >= 1) {
+      best_meta <- stouffer(rep(floor_p, k_min), floor_p)
+      reachable <- best_meta * nrow(out)
+      msg <- paste0("  calibrated cut: ", n_draws, " draws, ", k_min,
+                    " cohort(s), ", nrow(out), " frequencies -> smallest ",
+                    "reachable BH q = ", signif(reachable, 2))
+      if (reachable > signature_q) {
+        message(msg, ". Nothing can pass at q <= ", signature_q,
+                "; raise --n-null in the consensus stage.")
+      } else {
+        message(msg, " (usable).")
+      }
+    }
+  } else {
+    out$p_meta_null <- NA_real_
+    out$q_meta_null <- NA_real_
+    message("  NOTE: the consensus spectra carry no p_null_fwer, so the ",
+            "signature falls back to the rank cut. Re-run ./tsf consensus ",
+            "with a permutation null to get a calibrated one.")
+  }
+
   out$eligible <- out$n_cohorts >= min_cohorts
 
   # With k cohorts, the mean of k unit phase vectors has expected modulus about
@@ -311,6 +374,10 @@ aggregate_condition <- function(inputs, condition, min_cohorts, window_cut,
   robust <- candidate & out$n_signature_cohorts >= 2L &
     out$phase_coherence_between_cohorts >= coherence_floor &
     out$n_confirmed_cohorts >= 1L
+
+  # Calibrated membership of the signature, independent of any rank.
+  out$signature_selected <- if (all(is.na(out$q_meta_null))) candidate else
+    candidate & !is.na(out$q_meta_null) & out$q_meta_null <= signature_q
   out$signature_class[robust] <- "robust"
   out$signature_class[out$window_suspect & out$eligible] <- "window_suspect"
   out[order(match(out$chr, c(as.character(1:22), "X", "Y")), out$k), ]
@@ -388,14 +455,22 @@ main <- function() {
   manifest <- list()
   for (cond in conditions) {
     tab <- aggregate_condition(inputs, cond, opt$min_cohorts, opt$window_cut,
-                               opt$min_prevalence, opt$exclude_chromosomes)
+                               opt$min_prevalence, opt$exclude_chromosomes,
+                               opt$signature_q)
     if (is.null(tab)) next
     full_path <- file.path(opt$out_dir, paste0("condition_spectrum_", cond, ".tsv"))
     write_tsv(tab, full_path)
 
-    sig <- tab[tab$eligible & tab$signature_class %in% c("robust", "candidate"), , drop = FALSE]
+    sig <- tab[tab$eligible & tab$signature_selected, , drop = FALSE]
     sig <- sig[order(-sig$meta_score, -sig$final_power), , drop = FALSE]
-    sig <- utils::head(sig, opt$top)
+    # --top is a safety cap on file size, not the criterion. When it bites, say
+    # so, because a truncated signature and a signature are different objects.
+    if (!is.na(opt$top) && nrow(sig) > opt$top) {
+      message("  NOTE: ", nrow(sig), " components passed the calibrated cut for ",
+              cond, "; writing the ", opt$top, " highest-scoring. Raise --top ",
+              "to keep them all.")
+      sig <- utils::head(sig, opt$top)
+    }
     sig_path <- file.path(opt$out_dir, paste0("condition_signature_", cond, ".tsv"))
     write_tsv(sig, sig_path)
     png_path <- file.path(opt$out_dir, paste0("power_spectrum_", cond, ".png"))
@@ -416,6 +491,8 @@ main <- function() {
       healthy_superclass = opt$healthy_superclass,
       n_frequencies = nrow(tab), n_robust = sum(tab$signature_class == "robust"),
       n_candidates = sum(tab$signature_class == "candidate"),
+      n_signature_calibrated = sum(tab$signature_selected, na.rm = TRUE),
+      signature_q = opt$signature_q,
       n_window_suspect = sum(tab$signature_class == "window_suspect"),
       plot_file = basename(plot_path),
       stringsAsFactors = FALSE)
