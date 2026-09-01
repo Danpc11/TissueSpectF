@@ -18,7 +18,9 @@ parse_args <- function(x) {
               datasets = NULL, conditions = NULL, min_cohorts = 2L,
               top = NA_integer_, signature_q = 0.05,
               window_cut = 1, min_prevalence = 0.5,
-              exclude_chromosomes = "Y,MT", healthy_superclass = "no")
+              exclude_chromosomes = "Y,MT", healthy_superclass = "no",
+              min_period = "off", period_margin = 2, margin_mode = "add",
+              min_period_biological = 0)
   i <- 1L
   while (i <= length(x)) {
     a <- x[[i]]
@@ -44,6 +46,17 @@ parse_args <- function(x) {
   out$healthy_superclass <- tolower(out$healthy_superclass) %in% c("yes", "true", "1")
   out$top <- suppressWarnings(as.integer(out$top))
   out$signature_q <- as.numeric(out$signature_q)
+  out$period_margin <- as.numeric(out$period_margin)
+  out$min_period_biological <- as.numeric(out$min_period_biological)
+  out$margin_mode <- tolower(out$margin_mode)
+  if (!out$margin_mode %in% c("add", "mult")) {
+    abort("--margin-mode must be add or mult")
+  }
+  if (!identical(tolower(out$min_period), "off") &&
+      !identical(tolower(out$min_period), "auto")) {
+    v <- suppressWarnings(as.numeric(out$min_period))
+    if (!is.finite(v) || v <= 0) abort("--min-period must be off, auto or a number")
+  }
   out$window_cut <- as.numeric(out$window_cut)
   if (is.na(out$min_cohorts) || out$min_cohorts < 2L) abort("--min-cohorts must be >= 2")
   if (!is.na(out$top) && out$top < 1L) abort("--top must be >= 1 when given")
@@ -111,7 +124,11 @@ read_window_map <- function(results_dir, dataset) {
     }
     w$window_rank <- rank(-w$window_power, ties.method = "min", na.last = "keep")
     w$window_pct <- 100 * w$window_rank / sum(is.finite(w$window_power))
-    w[, c("chr", "k", "window_power", "window_rank", "window_pct")]
+    # Coverage travels with the window map: it is the fraction of this
+    # chromosome's grid the cohort observed, and the technical period floor is
+    # derived from it. The consensus spectrum does not carry it.
+    if (!"coverage" %in% names(w)) w$coverage <- NA_real_
+    w[, c("chr", "k", "window_power", "window_rank", "window_pct", "coverage")]
   })
   rows <- rows[!vapply(rows, is.null, logical(1))]
   if (!length(rows)) NULL else do.call(rbind, rows)
@@ -158,8 +175,10 @@ discover_inputs <- function(opt) {
           d$window_power <- wm$window_power[m]
           d$window_rank <- wm$window_rank[m]
           d$window_pct <- wm$window_pct[m]
+          d$coverage <- wm$coverage[m]
         } else {
           d$window_power <- d$window_rank <- d$window_pct <- NA_real_
+          d$coverage <- NA_real_
         }
       }
 
@@ -243,7 +262,9 @@ add_within_cohort_effect <- function(inputs) {
 aggregate_condition <- function(inputs, condition, min_cohorts, window_cut,
                                 min_prevalence = 0.5,
                                 exclude_chromosomes = character(0),
-                                signature_q = 0.05) {
+                                signature_q = 0.05, min_period = "off",
+                                period_margin = 2, margin_mode = "add",
+                                min_period_biological = 0) {
   pieces <- inputs[vapply(inputs, function(x) identical(x$condition[1], condition), logical(1))]
   if (!length(pieces)) return(NULL)
   long <- bind_rows_fill(pieces)
@@ -258,6 +279,67 @@ aggregate_condition <- function(inputs, condition, min_cohorts, window_cut,
     if (any(drop)) long <- long[!drop, , drop = FALSE]
   }
   if (!nrow(long)) return(NULL)
+
+  # --- period floor ------------------------------------------------------------
+  #
+  # Frequencies below a stated period are removed from the analysis AND from the
+  # multiple-testing family. That is legitimate here for one specific reason:
+  # the period of a frequency is N/k, a property of the annotation grid alone.
+  # It does not depend on expression, on condition labels or on the null, so the
+  # filter can be decided before a single spectrum is seen. Filtering by
+  # enrichment or prevalence instead would invalidate the error control, since
+  # those feed the same score the p-value comes from.
+  #
+  # Two floors, and the effective one is whichever is higher:
+  #
+  #   technical    2 / coverage, the Nyquist limit corrected for the gaps this
+  #                chromosome actually has. Below it a "periodicity" is the
+  #                sampling pattern, not the expression. A margin is added
+  #                because the estimator is noisiest and window effects
+  #                concentrate right at that boundary, so the useful floor sits
+  #                above it rather than on it. Additive by default; multiplicative
+  #                scales with each chromosome's own resolution, which matters
+  #                here because coverage runs from 16% to 78%.
+  #
+  #   biological   a scale the mechanisms of interest could plausibly produce.
+  #                Co-regulation domains, chromatin loops and replication timing
+  #                act over tens to hundreds of genes; nothing known produces
+  #                alternation gene by gene across a genome. This one is a scope
+  #                decision and must be declared before looking at results, not
+  #                chosen once the answer is visible.
+  if (!identical(tolower(min_period), "off")) {
+    cov <- if ("coverage" %in% names(long))
+      suppressWarnings(as.numeric(long$coverage)) else rep(NA_real_, nrow(long))
+    if (identical(tolower(min_period), "auto") && all(is.na(cov))) {
+      abort("--min-period auto needs per-chromosome coverage, which comes from ",
+            "the window maps. Run ./tsf window first, or give --min-period a ",
+            "number.")
+    }
+    cov[!is.finite(cov) | cov <= 0] <- NA_real_
+    technical <- if (identical(tolower(min_period), "auto")) {
+      base <- 2 / cov
+      if (identical(margin_mode, "mult")) base * (1 + period_margin)
+      else base + period_margin
+    } else {
+      rep(as.numeric(min_period), nrow(long))
+    }
+    floor_period <- pmax(technical, min_period_biological, na.rm = TRUE)
+    keep <- !is.finite(long$period) | long$period >= floor_period
+    n_drop <- sum(!keep)
+    if (n_drop) {
+      message(sprintf("  period floor (%s%s, biological >= %g): removed %d of %d frequencies (%.0f%%)",
+                      min_period,
+                      if (identical(tolower(min_period), "auto"))
+                        paste0(" ", margin_mode, " ", period_margin) else "",
+                      min_period_biological, n_drop, nrow(long),
+                      100 * n_drop / nrow(long)))
+      long <- long[keep, , drop = FALSE]
+    }
+    if (!nrow(long)) {
+      message("  every frequency fell below the period floor for ", condition)
+      return(NULL)
+    }
+  }
   groups <- split(seq_len(nrow(long)), feature_key(long))
 
   rows <- lapply(groups, function(i) {
@@ -456,7 +538,9 @@ main <- function() {
   for (cond in conditions) {
     tab <- aggregate_condition(inputs, cond, opt$min_cohorts, opt$window_cut,
                                opt$min_prevalence, opt$exclude_chromosomes,
-                               opt$signature_q)
+                               opt$signature_q, opt$min_period,
+                               opt$period_margin, opt$margin_mode,
+                               opt$min_period_biological)
     if (is.null(tab)) next
     full_path <- file.path(opt$out_dir, paste0("condition_spectrum_", cond, ".tsv"))
     write_tsv(tab, full_path)
@@ -493,6 +577,10 @@ main <- function() {
       n_candidates = sum(tab$signature_class == "candidate"),
       n_signature_calibrated = sum(tab$signature_selected, na.rm = TRUE),
       signature_q = opt$signature_q,
+      min_period = opt$min_period,
+      period_margin = opt$period_margin,
+      margin_mode = opt$margin_mode,
+      min_period_biological = opt$min_period_biological,
       n_window_suspect = sum(tab$signature_class == "window_suspect"),
       plot_file = basename(plot_path),
       stringsAsFactors = FALSE)
