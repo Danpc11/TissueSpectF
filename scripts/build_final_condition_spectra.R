@@ -486,6 +486,94 @@ open_plot_device <- function(path, width = 2400, height = 1800, res = 180) {
   pdf_path
 }
 
+#' Signature-only view, one panel per chromosome.
+#'
+#' The full spectrum panel shows every frequency with the selected ones marked,
+#' which is right for judging whether a component stands out from its
+#' neighbourhood. This one drops the background entirely and plots only what was
+#' selected, against period rather than k: period is comparable across
+#' chromosomes, k is not, since a given k means a different scale on a
+#' chromosome with a different N.
+#'
+#' A chromosome with nothing selected is drawn empty rather than skipped. That
+#' absence is a result, and a grid with holes in it says so more plainly than a
+#' figure that quietly renumbers the panels it has.
+plot_signature_by_chromosome <- function(signature, path, condition,
+                                         chr_order = c(as.character(1:22), "X", "Y")) {
+  actual_path <- open_plot_device(path)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  old <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(old), add = TRUE)
+  graphics::par(mfrow = c(6, 4), mar = c(2.6, 3.2, 2.1, 0.8), oma = c(4, 4, 4, 1))
+
+  amp <- if (nrow(signature)) pmax(signature$final_power, 1e-15) else numeric(0)
+  ylim <- if (length(amp)) range(amp) * c(0.5, 2) else c(1e-6, 1)
+  xlim <- if (nrow(signature)) range(signature$period) * c(0.8, 1.2) else c(1, 100)
+
+  for (chr in chr_order) {
+    s <- signature[as.character(signature$chr) == chr, , drop = FALSE]
+    graphics::plot(NA, xlim = xlim, ylim = ylim, log = "xy",
+                   xlab = "period (genes)", ylab = "power",
+                   main = paste0("chr", chr, if (nrow(s)) paste0(" (", nrow(s), ")") else ""),
+                   col.main = if (nrow(s)) "black" else "grey60")
+    if (!nrow(s)) next
+    col <- ifelse(s$signature_class == "robust", "#B2182B", "#2166AC")
+    graphics::segments(s$period, ylim[1], s$period, pmax(s$final_power, 1e-15),
+                       col = col, lwd = 1.2)
+    graphics::points(s$period, pmax(s$final_power, 1e-15), pch = 19, cex = 0.8, col = col)
+  }
+  graphics::mtext(paste("Selected components:", condition), outer = TRUE,
+                  side = 3, line = 1.5, cex = 1.35, font = 2)
+  graphics::mtext("period (genes per cycle, log scale)", outer = TRUE,
+                  side = 1, line = 1.4)
+  graphics::mtext("median normalised power across cohorts", outer = TRUE,
+                  side = 2, line = 2)
+  graphics::mtext("red: robust    blue: candidate    grey panel: no components selected",
+                  outer = TRUE, side = 1, line = 2.6, cex = 0.85)
+  invisible(actual_path)
+}
+
+#' The whole genome on one axis, chromosomes concatenated in order.
+#'
+#' Useful for seeing where the selected components sit relative to everything
+#' else at a glance. The x axis is a running index, NOT a genomic coordinate and
+#' not comparable between chromosomes: each contributes as many positions as it
+#' has frequencies, so a long chromosome occupies more of the axis than a short
+#' one regardless of its physical size.
+plot_genome_wide <- function(tab, signature, path, condition,
+                             chr_order = c(as.character(1:22), "X", "Y")) {
+  actual_path <- open_plot_device(path, width = 3600, height = 1200)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  old <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(old), add = TRUE)
+  graphics::par(mar = c(4.2, 4.5, 3.2, 1))
+
+  present <- chr_order[chr_order %in% as.character(tab$chr)]
+  tab <- tab[order(match(as.character(tab$chr), present), tab$k), , drop = FALSE]
+  tab$pos <- seq_len(nrow(tab))
+  bounds <- cumsum(as.integer(table(factor(as.character(tab$chr), levels = present))))
+  mids <- c(0, utils::head(bounds, -1)) + diff(c(0, bounds)) / 2
+
+  y <- pmax(tab$final_power, 1e-15)
+  graphics::plot(tab$pos, y, type = "h", log = "y", lwd = 0.4, col = "grey78",
+                 xlab = "", ylab = "power (median across cohorts)",
+                 main = paste("Full spectrum:", condition), xaxt = "n")
+  graphics::abline(v = utils::head(bounds, -1), col = "grey90", lwd = 0.6)
+  graphics::axis(1, at = mids, labels = present, tick = FALSE, las = 1,
+                 cex.axis = 0.8, line = -0.5)
+
+  if (nrow(signature)) {
+    m <- match(feature_key(signature), feature_key(tab))
+    ok <- !is.na(m)
+    col <- ifelse(signature$signature_class[ok] == "robust", "#B2182B", "#2166AC")
+    graphics::points(tab$pos[m[ok]], pmax(signature$final_power[ok], 1e-15),
+                     pch = 19, cex = 0.7, col = col)
+  }
+  graphics::mtext("chromosome (axis: running frequency index, not a genomic coordinate)",
+                  side = 1, line = 3, cex = 0.9)
+  invisible(actual_path)
+}
+
 plot_condition <- function(tab, signature, path, condition) {
   actual_path <- open_plot_device(path)
   on.exit(grDevices::dev.off(), add = TRUE)
@@ -499,7 +587,7 @@ plot_condition <- function(tab, signature, path, condition) {
     if (!nrow(x)) { graphics::plot.new(); next }
     y <- pmax(x$final_power, 1e-15)
     graphics::plot(x$k, y, type = "l", log = "y", lwd = 0.7,
-                   xlab = "k", ylab = "potencia", main = paste0("chr", chr),
+                   xlab = "k", ylab = "power", main = paste0("chr", chr),
                    col = "grey25")
     s <- signature[as.character(signature$chr) == chr, , drop = FALSE]
     if (nrow(s)) {
@@ -559,6 +647,10 @@ main <- function() {
     write_tsv(sig, sig_path)
     png_path <- file.path(opt$out_dir, paste0("power_spectrum_", cond, ".png"))
     plot_path <- plot_condition(tab, sig, png_path, cond)
+    sig_png <- plot_signature_by_chromosome(
+      sig, file.path(opt$out_dir, paste0("signature_peaks_", cond, ".png")), cond)
+    genome_png <- plot_genome_wide(
+      tab, sig, file.path(opt$out_dir, paste0("genome_spectrum_", cond, ".png")), cond)
 
     if (sum(tab$n_confirmed_cohorts, na.rm = TRUE) == 0L) {
       message("  NOTE: no cohort confirmed any component for ", cond,
@@ -576,6 +668,8 @@ main <- function() {
       n_frequencies = nrow(tab), n_robust = sum(tab$signature_class == "robust"),
       n_candidates = sum(tab$signature_class == "candidate"),
       n_signature_calibrated = sum(tab$signature_selected, na.rm = TRUE),
+      plot_signature = basename(sig_png),
+      plot_genome = basename(genome_png),
       signature_q = opt$signature_q,
       min_period = opt$min_period,
       period_margin = opt$period_margin,
