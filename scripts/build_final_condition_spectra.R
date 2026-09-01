@@ -53,6 +53,24 @@ write_tsv <- function(x, path) {
                      col.names = TRUE, quote = FALSE, na = "NA")
 }
 
+# Base rbind refuses data frames whose optional inferential columns differ.
+# Align by column name and represent unavailable quantities as NA; this is
+# essential for healthy controls such as GSE142530, whose within-cohort null is
+# not estimable and therefore may not have every null-derived column.
+bind_rows_fill <- function(xs) {
+  xs <- xs[!vapply(xs, is.null, logical(1))]
+  if (!length(xs)) return(NULL)
+  cols <- unique(unlist(lapply(xs, names), use.names = FALSE))
+  aligned <- lapply(xs, function(x) {
+    missing <- setdiff(cols, names(x))
+    for (nm in missing) x[[nm]] <- NA
+    x[, cols, drop = FALSE]
+  })
+  out <- do.call(rbind, aligned)
+  rownames(out) <- NULL
+  out
+}
+
 feature_key <- function(x) paste(x$chr, x$N, x$k, sep = "|")
 
 median_finite <- function(x) {
@@ -119,6 +137,7 @@ discover_inputs <- function(opt) {
       if (length(miss)) abort(path, " lacks: ", paste(miss, collapse = ", "))
       d$dataset <- id
       d$condition <- cond
+      d$source_condition <- cond
 
       # Current consensus files may not yet carry window annotations. Join the
       # raw chromosome window files when needed.
@@ -203,7 +222,7 @@ add_within_cohort_effect <- function(inputs) {
 aggregate_condition <- function(inputs, condition, min_cohorts, window_cut) {
   pieces <- inputs[vapply(inputs, function(x) identical(x$condition[1], condition), logical(1))]
   if (!length(pieces)) return(NULL)
-  long <- do.call(rbind, pieces)
+  long <- bind_rows_fill(pieces)
   groups <- split(seq_len(nrow(long)), feature_key(long))
 
   rows <- lapply(groups, function(i) {
