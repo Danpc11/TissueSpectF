@@ -8,7 +8,7 @@
 #
 # Invariant axis:
 #   invariants/invariant_spectrum.tsv   -> complete invariant spectrum
-#   invariants/invariant_components.tsv -> candidate/robust invariant components
+#   invariants/invariant_components.tsv -> shared/core invariant components
 #   invariants/invariant_manifest.tsv   -> thresholds and summary
 #
 # The invariant layer is intentionally separate from condition signatures:
@@ -17,6 +17,8 @@
 #
 # where I_tissue is shared architecture and D_c is condition-specific deviation.
 # Existing per-cohort constant_signature() outputs are NOT replaced.
+
+TSF_BUILD_VERSION <- "2026-09-01-core-invariant-v4"
 
 `%||%` <- function(x, y) if (is.null(x) || !length(x)) y else x
 abort <- function(...) stop(paste0(...), call. = FALSE)
@@ -47,7 +49,10 @@ parse_args <- function(x) {
     invariant_min_prevalence = 0.50,
     invariant_min_phase_coherence = 0.80,
     invariant_max_power_cv = 1.00,
-    invariant_max_abs_log2_enrichment = 0.50
+    invariant_max_abs_log2_enrichment = 0.50,
+    invariant_core_phase_coherence = 0.90,
+    invariant_core_max_power_cv = 0.30,
+    invariant_core_max_abs_log2_enrichment = 0.50
   )
 
   i <- 1L
@@ -101,6 +106,12 @@ parse_args <- function(x) {
     as.numeric(out$invariant_max_power_cv)
   out$invariant_max_abs_log2_enrichment <-
     as.numeric(out$invariant_max_abs_log2_enrichment)
+  out$invariant_core_phase_coherence <-
+    as.numeric(out$invariant_core_phase_coherence)
+  out$invariant_core_max_power_cv <-
+    as.numeric(out$invariant_core_max_power_cv)
+  out$invariant_core_max_abs_log2_enrichment <-
+    as.numeric(out$invariant_core_max_abs_log2_enrichment)
 
   out$exclude_chromosomes <- split_csv(out$exclude_chromosomes) %||%
     character(0)
@@ -164,6 +175,22 @@ parse_args <- function(x) {
   if (!is.finite(out$invariant_max_abs_log2_enrichment) ||
       out$invariant_max_abs_log2_enrichment < 0) {
     abort("--invariant-max-abs-log2-enrichment must be >= 0")
+  }
+
+  if (!is.finite(out$invariant_core_phase_coherence) ||
+      out$invariant_core_phase_coherence < 0 ||
+      out$invariant_core_phase_coherence > 1) {
+    abort("--invariant-core-phase-coherence must be in [0, 1]")
+  }
+
+  if (!is.finite(out$invariant_core_max_power_cv) ||
+      out$invariant_core_max_power_cv < 0) {
+    abort("--invariant-core-max-power-cv must be >= 0")
+  }
+
+  if (!is.finite(out$invariant_core_max_abs_log2_enrichment) ||
+      out$invariant_core_max_abs_log2_enrichment < 0) {
+    abort("--invariant-core-max-abs-log2-enrichment must be >= 0")
   }
 
   out
@@ -1035,39 +1062,28 @@ aggregate_condition <- function(
         floor_p
       )
 
-      reachable <- best_meta *
+      conservative_singleton_q <- best_meta *
         nrow(out)
 
-      msg <- paste0(
-        "  calibrated cut: ",
+      # This is only the BH value one would obtain if a single feature alone
+      # occupied the smallest p-value rank. It is NOT a hard lower bound on BH
+      # q because multiple tied/extreme p-values receive larger ranks i and can
+      # yield smaller p_(i) * m / i values. Therefore never use this diagnostic
+      # to claim that significance is mathematically impossible.
+      message(
+        "  calibrated null: ",
         n_draws,
         " draws, ",
         k_min,
         " cohort(s), ",
         nrow(out),
-        " frequencies -> smallest ",
-        "reachable BH q = ",
-        signif(
-          reachable,
-          2
-        )
+        " frequencies; pointwise floor p ~= ",
+        signif(floor_p, 3),
+        "; conservative rank-1 BH diagnostic ~= ",
+        signif(conservative_singleton_q, 3),
+        ". Final significance is determined from the observed BH-adjusted ",
+        "p-value distribution, including ties/ranks."
       )
-
-      if (is.finite(reachable) &&
-          reachable > signature_q) {
-        message(
-          msg,
-          ". Nothing can pass at q <= ",
-          signature_q,
-          "; raise --n-null in the ",
-          "consensus stage."
-        )
-      } else {
-        message(
-          msg,
-          " (usable)."
-        )
-      }
     }
   } else {
     out$p_meta_null <- NA_real_
@@ -1340,6 +1356,9 @@ build_invariant_spectrum <- function(
   min_phase_coherence = 0.80,
   max_power_cv = 1.00,
   max_abs_log2_enrichment = 0.50,
+  core_phase_coherence = 0.90,
+  core_max_power_cv = 0.30,
+  core_max_abs_log2_enrichment = 0.50,
   window_cut = 1,
   exclude_chromosomes = c("Y", "MT"),
   min_period = "off",
@@ -1804,7 +1823,7 @@ build_invariant_spectrum <- function(
 
   out$invariant_class <- "background"
 
-  candidate <-
+  shared_candidate <-
     out$n_cohorts >=
       min_cohorts &
     out$condition_fraction >=
@@ -1817,11 +1836,11 @@ build_invariant_spectrum <- function(
     !out$window_suspect
 
   out$invariant_class[
-    candidate
-  ] <- "candidate"
+    shared_candidate
+  ] <- "shared_candidate"
 
-  robust <-
-    candidate &
+  shared_robust <-
+    shared_candidate &
     is.finite(
       out$phase_coherence
     ) &
@@ -1839,8 +1858,39 @@ build_invariant_spectrum <- function(
       max_abs_log2_enrichment
 
   out$invariant_class[
-    robust
-  ] <- "robust"
+    shared_robust
+  ] <- "shared_robust"
+
+  # Core invariants are the strict tissue baseline: the component must be
+  # prevalent in every requested biological condition, preserve phase, show
+  # low power heterogeneity, and have no single condition with a large
+  # enrichment/depletion. This is intentionally stricter than shared_robust.
+  core_invariant <-
+    shared_candidate &
+    abs(out$condition_fraction - 1) < 1e-12 &
+    is.finite(
+      out$phase_coherence
+    ) &
+    out$phase_coherence >=
+      core_phase_coherence &
+    is.finite(
+      out$power_cv
+    ) &
+    out$power_cv <=
+      core_max_power_cv &
+    is.finite(
+      out$max_abs_condition_log2_enrichment
+    ) &
+    out$max_abs_condition_log2_enrichment <=
+      core_max_abs_log2_enrichment
+
+  out$invariant_class[
+    core_invariant
+  ] <- "core_invariant"
+
+  out$shared_candidate <- shared_candidate
+  out$shared_robust <- shared_robust
+  out$core_invariant <- core_invariant
 
   order_spectrum(out)
 }
@@ -1851,8 +1901,9 @@ select_invariant_components <- function(
   out <- invariant_spectrum[
     invariant_spectrum$invariant_class %in%
       c(
-        "candidate",
-        "robust"
+        "shared_candidate",
+        "shared_robust",
+        "core_invariant"
       ),
     ,
     drop = FALSE
@@ -1862,10 +1913,18 @@ select_invariant_components <- function(
     return(out)
   }
 
+  class_rank <- match(
+    out$invariant_class,
+    c(
+      "core_invariant",
+      "shared_robust",
+      "shared_candidate"
+    )
+  )
+
   out[
     order(
-      out$invariant_class !=
-        "robust",
+      class_rank,
       -out$invariant_score,
       -out$median_power
     ),
@@ -2469,8 +2528,9 @@ plot_invariant_spectrum <- function(
     selected <- x[
       x$invariant_class %in%
         c(
-          "candidate",
-          "robust"
+          "shared_candidate",
+          "shared_robust",
+          "core_invariant"
         ),
       ,
       drop = FALSE
@@ -2487,9 +2547,14 @@ plot_invariant_spectrum <- function(
         cex = 0.65,
         col = ifelse(
           selected$invariant_class ==
-            "robust",
-          "#B2182B",
-          "#2166AC"
+            "core_invariant",
+          "#762A83",
+          ifelse(
+            selected$invariant_class ==
+              "shared_robust",
+            "#B2182B",
+            "#2166AC"
+          )
         )
       )
     }
@@ -2516,6 +2581,14 @@ plot_invariant_spectrum <- function(
     outer = TRUE,
     side = 2,
     line = 2
+  )
+
+  graphics::mtext(
+    "purple: core invariant    red: shared robust    blue: shared candidate",
+    outer = TRUE,
+    side = 1,
+    line = 2.5,
+    cex = 0.82
   )
 
   invisible(actual_path)
@@ -2547,6 +2620,11 @@ write_invariant_outputs <- function(
     "invariant_components.tsv"
   )
 
+  core_path <- file.path(
+    invariant_dir,
+    "invariant_core.tsv"
+  )
+
   manifest_path <- file.path(
     invariant_dir,
     "invariant_manifest.tsv"
@@ -2572,12 +2650,35 @@ write_invariant_outputs <- function(
     components_path
   )
 
+  invariant_core <- invariant_spectrum[
+    invariant_spectrum$core_invariant %in% TRUE,
+    ,
+    drop = FALSE
+  ]
+
+  if (nrow(invariant_core)) {
+    invariant_core <- invariant_core[
+      order(
+        -invariant_core$invariant_score,
+        -invariant_core$median_power
+      ),
+      ,
+      drop = FALSE
+    ]
+  }
+
+  write_tsv(
+    invariant_core,
+    core_path
+  )
+
   actual_plot <- plot_invariant_spectrum(
     invariant_spectrum,
     plot_path
   )
 
   manifest <- data.frame(
+    builder_version = TSF_BUILD_VERSION,
     n_conditions =
       length(conditions),
     conditions =
@@ -2589,16 +2690,25 @@ write_invariant_outputs <- function(
       nrow(
         invariant_spectrum
       ),
-    n_robust =
+    n_shared_selected =
       sum(
-        invariant_spectrum$invariant_class ==
-          "robust",
+        invariant_spectrum$shared_candidate,
         na.rm = TRUE
       ),
-    n_candidates =
+    n_shared_robust =
+      sum(
+        invariant_spectrum$shared_robust,
+        na.rm = TRUE
+      ),
+    n_shared_candidate_only =
       sum(
         invariant_spectrum$invariant_class ==
-          "candidate",
+          "shared_candidate",
+        na.rm = TRUE
+      ),
+    n_core_invariants =
+      sum(
+        invariant_spectrum$core_invariant,
         na.rm = TRUE
       ),
     min_cohorts =
@@ -2613,6 +2723,14 @@ write_invariant_outputs <- function(
       opt$invariant_max_power_cv,
     max_abs_log2_enrichment =
       opt$invariant_max_abs_log2_enrichment,
+    core_condition_fraction =
+      1.0,
+    core_phase_coherence =
+      opt$invariant_core_phase_coherence,
+    core_max_power_cv =
+      opt$invariant_core_max_power_cv,
+    core_max_abs_log2_enrichment =
+      opt$invariant_core_max_abs_log2_enrichment,
     window_cut_pct =
       opt$window_cut,
     excluded_chromosomes =
@@ -2641,19 +2759,21 @@ write_invariant_outputs <- function(
   )
 
   messagef(
-    "%-24s frequencies=%d robust=%d candidates=%d",
+    "%-24s frequencies=%d shared_selected=%d shared_robust=%d core=%d",
     "INVARIANTS",
     nrow(
       invariant_spectrum
     ),
     sum(
-      invariant_spectrum$invariant_class ==
-        "robust",
+      invariant_spectrum$shared_candidate,
       na.rm = TRUE
     ),
     sum(
-      invariant_spectrum$invariant_class ==
-        "candidate",
+      invariant_spectrum$shared_robust,
+      na.rm = TRUE
+    ),
+    sum(
+      invariant_spectrum$core_invariant,
       na.rm = TRUE
     )
   )
@@ -2662,6 +2782,7 @@ write_invariant_outputs <- function(
     list(
       spectrum = spectrum_path,
       components = components_path,
+      core = core_path,
       manifest = manifest_path,
       plot = actual_plot
     )
@@ -2669,6 +2790,8 @@ write_invariant_outputs <- function(
 }
 
 main <- function() {
+  message("TissueSpectF final-spectrum builder version: ", TSF_BUILD_VERSION)
+
   opt <- parse_args(
     commandArgs(
       trailingOnly = TRUE
@@ -2897,6 +3020,7 @@ main <- function() {
     )
 
     manifest[[cond]] <- data.frame(
+      builder_version = TSF_BUILD_VERSION,
       condition = cond,
       n_cohorts_max =
         max(
@@ -3065,6 +3189,12 @@ main <- function() {
           opt$invariant_max_power_cv,
         max_abs_log2_enrichment =
           opt$invariant_max_abs_log2_enrichment,
+        core_phase_coherence =
+          opt$invariant_core_phase_coherence,
+        core_max_power_cv =
+          opt$invariant_core_max_power_cv,
+        core_max_abs_log2_enrichment =
+          opt$invariant_core_max_abs_log2_enrichment,
         window_cut =
           opt$window_cut,
         exclude_chromosomes =
