@@ -74,6 +74,10 @@ Parameters (override config/project.R):
   --primary-scheme <s>  full | all
   --criterion <s>       condition | consistency
   --ebic-gamma <f>      CLEAN selection penalty
+  --min-period <s>      off | auto | <genes>   technical floor, before the null
+  --period-margin <f>   margin on the auto floor            (default 2)
+  --margin-mode <s>     add | mult                          (default add)
+  --min-period-biological <g>  flat floor in genes          (default 0)
   --n-null <n>          permutation draws for the consensus null
   --n-boot <n>          bootstrap resamples of the consensus score
   --n-masks <n>         masks per coverage band in the reference calibration
@@ -134,6 +138,11 @@ OPTION_ALIASES <- c(
   chromosomes = "chromosomes", chrom = "chromosomes",
   annotation = "annotation", annotationformat = "annotation_format",
   annotation_format = "annotation_format",
+  minperiod = "min_period", min_period = "min_period",
+  periodmargin = "period_margin", period_margin = "period_margin",
+  marginmode = "margin_mode", margin_mode = "margin_mode",
+  minperiodbiological = "min_period_biological",
+  min_period_biological = "min_period_biological",
   nnull = "n_null", n_null = "n_null",
   nboot = "n_boot", n_boot = "n_boot",
   nmasks = "n_masks", n_masks = "n_masks",
@@ -234,6 +243,14 @@ apply_cli_overrides <- function(project, opt) {
   set(c("maxt", "primary_scheme"), opt$primary_scheme)
   set(c("clean", "ebic_gamma"), opt$ebic_gamma, as.numeric)
   set(c("consensus", "n_null"), opt$n_null, as.integer)
+  # Period floors reach consensus, where they shrink the tested family before
+  # the null runs. They are pre-specifications, so they belong on the command
+  # line or in a config -- never adjusted after seeing which components survive.
+  set(c("consensus", "min_period"), opt$min_period, as.character)
+  set(c("consensus", "period_margin"), opt$period_margin, as.numeric)
+  set(c("consensus", "margin_mode"), opt$margin_mode, as.character)
+  set(c("consensus", "min_period_biological"),
+      opt$min_period_biological, as.numeric)
   set(c("consensus", "n_boot"), opt$n_boot, as.integer)
   set(c("fingerprint", "n_masks"), opt$n_masks, as.integer)
   set(c("clean", "per_sample"), opt$per_sample, isTRUE)
@@ -282,6 +299,26 @@ if (!identical(config_path, "config/project.R")) {
   tsf_log("config: ", config_path)
 }
 project <- apply_cli_overrides(load_project_config(config_path), opt)
+
+# Paths have no defaults, so check them here -- once, by name -- rather than
+# letting a NULL surface as an unrelated file.path() error inside a stage.
+# selfcheck runs on synthetic data in a directory it creates itself, so
+# requiring paths there would mean inventing three directories to run a
+# self-test. Every command that touches the user's data still requires them.
+if (!opt$command %in% c("selfcheck")) {
+for (spec in list(
+  list(key = "geo_dir",     flag = "--geo-dir",     env = "TSF_GEO_DIR"),
+  list(key = "interim_dir", flag = "--interim-dir", env = "TSF_INTERIM_DIR"),
+  list(key = "results_dir", flag = "--results-dir", env = "TSF_RESULTS_DIR"))) {
+  v <- project[[spec$key]]
+  if (is.null(v) || !nzchar(as.character(v))) {
+    tsf_abort(spec$key, " is not set. Pass ", spec$flag, " <dir>, or export ",
+              spec$env, ". There is no default: config/project.R names no ",
+              "paths, so every run records where it read and wrote.")
+  }
+}
+}
+
 
 # --- commands that are not stages -------------------------------------------
 if (opt$command == "check") {
