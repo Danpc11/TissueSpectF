@@ -461,6 +461,38 @@ check("clean_results.R lives in scripts/, not R/", {
   file.exists("scripts/clean_results.R") &&
     !file.exists("R/clean_results.R") })
 
+check("every option the CLI accepts is wired to something", {
+  # --seed was in OPTION_ALIASES and set() by nothing: accepted without
+  # complaint, then discarded. Every permutation and bootstrap derives from
+  # maxt$seed, so a run passing --seed got the default 42 and identical
+  # results -- a failure that looks like the seed not mattering.
+  src <- readLines("scripts/tsf.R", warn = FALSE)
+  alias_block <- src[seq(grep("^OPTION_ALIASES", src)[1],
+                         grep("^\\)", src)[grep("^\\)", src) >
+                                grep("^OPTION_ALIASES", src)[1]][1])]
+  targets <- unique(gsub('.*"([a-z_0-9]+)".*', "\\1",
+                         regmatches(alias_block,
+                                    regexpr('= "[a-z_0-9]+"', alias_block))))
+  body <- paste(src, collapse = " ")
+  # Paths and scope options are consumed directly rather than through set().
+  consumed_directly <- c("geo_dir", "interim_dir", "results_dir", "config",
+                         "from", "to", "cond", "branch", "force", "dry_run",
+                         "log", "help", "query", "reference", "input_unit",
+                         "out", "cores", "datasets")
+  unwired <- Filter(function(t) {
+    if (t %in% consumed_directly) return(FALSE)
+    !grepl(paste0('"', t, '"'), body, fixed = TRUE) ||
+      !grepl(paste0("opt$", t), body, fixed = TRUE)
+  }, targets)
+  length(unwired) == 0 })
+
+check("--seed reaches maxt$seed", {
+  out <- paste(suppressWarnings(system2("./tsf",
+    c("consensus", "--seed", "99", "--config", "config/project.R",
+      "--geo-dir", "d", "--interim-dir", "i", "--results-dir", "r",
+      "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
+  grepl("maxt$seed = 99", out, fixed = TRUE) })
+
 check("path requirements are per command, not in bulk", {
   # An earlier version demanded all three paths from every command. That broke
   # `./tsf fetch --geo-dir data` -- fetch downloads and has no results tree --
