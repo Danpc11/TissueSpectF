@@ -90,9 +90,17 @@ Other:
   --log <file>          append all output to this file
   --help                this message
 
-Stages, in order: ingest, spectra, maxt, condition, clean, stability, peaks,
-compare. Precedence: command line > environment (TSF_*) > config/project.R.
+Datasets are POSITIONAL, not a flag: `./tsf window GSE135251`, not
+`--datasets GSE135251`. With none given, every dataset in the configs is used.
+
+Precedence: command line > environment (TSF_*) > config/project.R.
 "
+
+# The stage list is built from stage_names rather than typed out. The typed
+# version had already drifted -- it omitted `consensus` -- and a help text that
+# lies about which stages exist is worse than no help text.
+USAGE <- paste0(USAGE, "\nStages, in order: ",
+                paste(stage_names, collapse = ", "), ".\n")
 
 # Options accept both `--key value` and `--key=value`, and key names are
 # matched case-insensitively with `-` and `_` interchangeable, so --results-dir,
@@ -149,7 +157,12 @@ parse_cli <- function(args) {
       opts[[FLAG_ALIASES[[key]]]] <- TRUE; i <- i + 1L; next
     }
     if (!key %in% names(OPTION_ALIASES)) {
-      cat(USAGE); tsf_abort("Unknown option: ", a)
+      cat(USAGE)
+      if (key %in% c("datasets", "dataset", "data-sets")) {
+        tsf_abort("Unknown option: ", a, ". Datasets are positional: ",
+                  "`./tsf <command> GSE135251`, with no flag.")
+      }
+      tsf_abort("Unknown option: ", a)
     }
     value <- inline
     if (is.null(value)) {
