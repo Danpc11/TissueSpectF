@@ -14,7 +14,14 @@ resultados*/
 .RData
 .Rproj.user/
 *.Rproj.user
+
+# Run logs from `./tsf --log <file>`: consensus_999.log and friends belong to
+# one run on one machine, not in the history.
 *.log
+
+# R's default graphics device writes this whenever a plot is made with no
+# device open. It is never wanted and it is never the same twice.
+Rplots.pdf
 
 # Python
 __pycache__/
