@@ -93,9 +93,48 @@ digest_config <- function(config) {
 #' while the unit tests kept passing because they source what they need
 #' explicitly. Globbing the directory removes that failure mode entirely: a file
 #' that exists is loaded.
+#' Is this file a module, or a script that happens to live in R/?
+#'
+#' tsf_load_all() sources every .R file in R/. That is fine for a module, which
+#' only defines things, and destructive for a script, which DOES things at the
+#' top level: a copy of scripts/clean_results.R placed in R/ deleted the results
+#' tree on every single `./tsf` invocation, before argument parsing had even
+#' run, so the deletion appeared in the log above an unrelated usage error.
+#'
+#' The signatures of a script are a shebang and a top-level commandArgs() call.
+#' Neither belongs in a module, so seeing either is enough to refuse -- loudly,
+#' naming the file and where it should go, rather than sourcing it and finding
+#' out what it does.
+tsf_script_not_module <- function(path) {
+  head <- tryCatch(readLines(path, n = 40, warn = FALSE),
+                   error = function(e) character(0))
+  if (!length(head)) return(NA_character_)
+  if (grepl("^#!", head[1])) return("it starts with a shebang")
+  body <- head[!grepl("^\\s*#", head)]
+  if (any(grepl("commandArgs\\s*\\(", body))) {
+    return("it reads commandArgs() at the top level")
+  }
+  NA_character_
+}
+
 tsf_module_order <- function(dir = "R") {
   first <- c("utils_io", "config", "labels", "paths")
-  files <- sort(sub("\\.R$", "", basename(list.files(dir, pattern = "\\.R$"))))
+  paths <- list.files(dir, pattern = "\\.R$", full.names = TRUE)
+
+  # Refuse before sourcing, not after. A script in here is a bug in the tree
+  # layout, and the cost of guessing wrong is whatever that script does.
+  for (p in paths) {
+    why <- tsf_script_not_module(p)
+    if (!is.na(why)) {
+      stop(p, " looks like a script, not a module: ", why, ".\n",
+           "  Everything in ", dir, "/ is sourced on every run, so a script ",
+           "here executes before any argument is parsed.\n",
+           "  Move it to scripts/ and call it explicitly.",
+           call. = FALSE)
+    }
+  }
+
+  files <- sort(sub("\\.R$", "", basename(paths)))
   ordered <- c(intersect(first, files), setdiff(files, first))
   file.path(dir, paste0(ordered, ".R"))
 }
@@ -143,6 +182,28 @@ local_workers <- function(opt, n_tasks = Inf, default_max = 8L) {
              VECLIB_MAXIMUM_THREADS = "1")
   attr(workers, "source") <- source
   workers
+}
+
+#' Order-independent fingerprint of a set of frequency keys.
+#'
+#' Used to decide whether a cached permutation null belongs to the family being
+#' tested now. It needs to be stable and to change when the family changes; it
+#' does not need to be cryptographic, since it is only ever compared against a
+#' cache this same installation wrote.
+#'
+#' No external dependency: the pipeline runs on base R, and adding `digest` for
+#' one cache key would be the first package in the tree.
+digest_keys <- function(keys) {
+  keys <- sort(unique(as.character(keys)))
+  if (!length(keys)) return("empty")
+  # Position-weighted sum of character codes, taken modulo a large prime so the
+  # value stays in double range for any family size.
+  acc <- 0
+  for (i in seq_along(keys)) {
+    codes <- utf8ToInt(keys[i])
+    acc <- (acc * 131 + sum(codes * seq_along(codes)) + i) %% 2147483647
+  }
+  sprintf("n%d-h%010.0f", length(keys), acc)
 }
 
 tsf_load_all <- function(dir = "R") {
