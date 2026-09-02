@@ -13,6 +13,20 @@
 
 library(shiny)
 
+# Shiny's default upload cap is 5 MB. A counts matrix over ~20,000 genes passes
+# that with a handful of samples, so the default rejected exactly the files this
+# app exists to read, with a generic "maximum upload size exceeded" and no hint
+# that the limit was ours. 512 MB is past any plausible single-cohort matrix.
+#
+# Nothing is uploaded anywhere: the limit governs a POST from the browser to the
+# R process on the same machine, and the file is read from a temporary directory
+# that Shiny cleans up. Raise it further with TSF_APP_MAX_UPLOAD_MB if a
+# genuinely larger matrix has to be read.
+.max_upload_mb <- suppressWarnings(
+  as.numeric(Sys.getenv("TSF_APP_MAX_UPLOAD_MB", "512")))
+if (!is.finite(.max_upload_mb) || .max_upload_mb <= 0) .max_upload_mb <- 512
+options(shiny.maxRequestSize = .max_upload_mb * 1024^2)
+
 # Only what a query needs. No ingest, no stages: the reference is
 # self-contained, so the app never rebuilds a grid from local config.
 #
@@ -62,6 +76,9 @@ ui <- fluidPage(
   hr(),
   fileInput("query", "Counts file (TSV: gene id column, then one column per sample)",
             accept = c(".tsv", ".txt", ".csv", ".gz")),
+  p(class = "muted",
+    sprintf("Up to %g MB, gzip accepted. Nothing leaves this machine.",
+            .max_upload_mb)),
   selectInput("unit", "What the values are",
               choices = c("Raw counts" = "counts", "TPM" = "tpm", "CPM" = "cpm",
                           "Already log/asinh transformed" = "logged"),
