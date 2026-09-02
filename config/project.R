@@ -1,19 +1,50 @@
 # Project-level paths and constants.
 #
-# Defaults point at the INMEGEN scratch layout; override with environment
-# variables (TSF_GEO_DIR, TSF_INTERIM_DIR, TSF_RESULTS_DIR) to run elsewhere.
+# PATHS
+# -----
+# The defaults are relative to the repository, so a fresh clone runs without
+# editing this file. No path here names a particular machine: a default that
+# points at one person's scratch directory makes `./tsf check` fail for
+# everyone else, and makes a config fingerprint record a location rather than a
+# choice.
+#
+# Resolution order, highest first:
+#
+#   1. the command line       --geo-dir / --interim-dir / --results-dir
+#   2. the environment        TSF_GEO_DIR / TSF_INTERIM_DIR / TSF_RESULTS_DIR
+#   3. <repo>/data, <repo>/interim, <repo>/results   (below)
+#
+# The repository is located by TSF_ROOT when set, and otherwise by the working
+# directory -- `./tsf` changes into the repository before doing anything, so
+# that is the repository for every invocation through the CLI. Set TSF_ROOT
+# when calling a script directly from somewhere else, or when the outputs
+# belong on a different filesystem from the code:
+#
+#   TSF_ROOT=/scratch/$USER/TissueSpectF ./tsf run
+#   TSF_RESULTS_DIR=/scratch/$USER/results ./tsf run
+#
+# All three directories are in .gitignore. They hold downloads and derived
+# output, never inputs that need versioning.
+
+.tsf_root <- Sys.getenv("TSF_ROOT", unset = getwd())
+
+# An environment override wins over the default, but an empty variable does
+# not: `export TSF_RESULTS_DIR=` in a stale shell profile should not silently
+# resolve every output path to the working directory.
+.tsf_dir <- function(var, default) {
+  v <- Sys.getenv(var, unset = "")
+  if (nzchar(v)) v else file.path(.tsf_root, default)
+}
+
 list(
   # Raw GEO downloads: count tables, series matrices, NCBI annotation.
-  geo_dir     = Sys.getenv("TSF_GEO_DIR",
-                           "/scratch/home/dperez/GPIB/gene_notes/TissueSpectF/data"),
+  geo_dir     = .tsf_dir("TSF_GEO_DIR", "data"),
 
-  # Common format written by the ingest stage. Kept outside the git tree.
-  interim_dir = Sys.getenv("TSF_INTERIM_DIR",
-                           "/scratch/home/dperez/GPIB/gene_notes/TissueSpectF/interim"),
+  # Common format written by the ingest stage.
+  interim_dir = .tsf_dir("TSF_INTERIM_DIR", "interim"),
 
   # Downstream spectral results.
-  results_dir = Sys.getenv("TSF_RESULTS_DIR",
-                           "/scratch/home/dperez/GPIB/gene_notes/TissueSpectF/results"),
+  results_dir = .tsf_dir("TSF_RESULTS_DIR", "results"),
 
   # --- annotation ------------------------------------------------------------
   # Two formats are supported and they name the biotype field differently:
