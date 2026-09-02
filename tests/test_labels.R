@@ -409,6 +409,49 @@ check("a universe pattern from the wrong format aborts with the right one", {
   e <- tryCatch(read_annotation(p), error = function(e) conditionMessage(e))
   is.character(e) && grepl("\\^protein_coding\\$", e) })
 
+# --- reproducibility of the shipped config -----------------------------------
+#
+# config/project.R used to default to one author's scratch directory, so a fresh
+# clone failed at `./tsf check` with paths belonging to a machine the user has
+# never seen. These assertions keep that from coming back: a default path is a
+# choice about layout, never a location.
+
+check("no default path names a particular machine", {
+  src <- readLines("config/project.R", warn = FALSE)
+  # An absolute path in a string literal, ignoring comments.
+  code <- src[!grepl("^\\s*#", src)]
+  !any(grepl('"(/home/|/Users/|/scratch/|/mnt/|[A-Za-z]:\\\\\\\\)', code)) })
+
+check("default paths resolve inside the repository", {
+  p <- load_project_config("config/project.R")
+  root <- normalizePath(".", mustWork = TRUE)
+  dirs <- vapply(c(p$geo_dir, p$interim_dir, p$results_dir),
+                 function(d) normalizePath(d, mustWork = FALSE), character(1))
+  all(startsWith(dirs, root)) && length(unique(dirs)) == 3L })
+
+check("an environment variable overrides a default path", {
+  old <- Sys.getenv("TSF_RESULTS_DIR", unset = NA)
+  Sys.setenv(TSF_RESULTS_DIR = "/tmp/tsf_results_override")
+  on.exit(if (is.na(old)) Sys.unsetenv("TSF_RESULTS_DIR") else
+    Sys.setenv(TSF_RESULTS_DIR = old), add = TRUE)
+  identical(load_project_config("config/project.R")$results_dir,
+            "/tmp/tsf_results_override") })
+
+check("an empty environment variable does not override anything", {
+  # `export TSF_RESULTS_DIR=` in a stale profile should not resolve every
+  # output path to the working directory.
+  old <- Sys.getenv("TSF_RESULTS_DIR", unset = NA)
+  Sys.setenv(TSF_RESULTS_DIR = "")
+  on.exit(if (is.na(old)) Sys.unsetenv("TSF_RESULTS_DIR") else
+    Sys.setenv(TSF_RESULTS_DIR = old), add = TRUE)
+  grepl("results$", load_project_config("config/project.R")$results_dir) })
+
+check("the clean guard refuses the repository itself", {
+  out <- suppressWarnings(system2("Rscript",
+    c("scripts/clean_results.R", "--results-dir", "."),
+    stdout = TRUE, stderr = TRUE))
+  !is.null(attr(out, "status")) && attr(out, "status") != 0L })
+
 # --- the distributable bundle ------------------------------------------------
 check("the bundle carries every module the app sources", {
   # Whatever app.R sources must be in BUNDLE_MODULES, or the bundle breaks on
