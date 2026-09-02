@@ -1,4 +1,4 @@
-.PHONY: test test-r test-ml check run selfcheck status clean clean-dry sonify
+.PHONY: test test-r test-ml check run selfcheck status clean clean-dry clean-force sonify
 
 # Every suite. `make test` used to run two of the three R files, so a failure in
 # tests/test_condition_invariants.R was invisible until someone ran it by hand.
@@ -32,10 +32,15 @@ selfcheck:
 status:
 	./tsf status
 
-# Deletes the contents of the results tree named in config/project.R. The guard
-# lives in the script, not here: see scripts/clean_results.R.
+# Deletes the contents of the results tree named in config/project.R. That is
+# the ACTIVE run tree, so this asks for typed confirmation first; the guard and
+# the prompt live in the script, not here. See scripts/clean_results.R.
 clean:
 	@Rscript scripts/clean_results.R
+
+# Same, with no prompt. For scripts that mean it.
+clean-force:
+	@Rscript scripts/clean_results.R --force
 
 # Print what clean would delete, without deleting it.
 clean-dry:
