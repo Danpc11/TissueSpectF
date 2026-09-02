@@ -61,6 +61,7 @@ Scope:
   --dry-run             print the plan, do nothing
 
 Paths:
+  --config <file>       config file to read   (default: config/project.R)
   --geo-dir <dir>       raw GEO downloads
   --interim-dir <dir>   the common format
   --results-dir <dir>   everything downstream
@@ -113,6 +114,7 @@ USAGE <- paste0(USAGE, "\nStages, in order: ",
 # so a flag never has to fight a stale export.
 
 OPTION_ALIASES <- c(
+  config = "config", conf = "config",
   from = "from", to = "to", cond = "cond", condition = "cond",
   branch = "branch", log = "log", query = "query", reference = "reference",
   geodir = "geo_dir", geo_dir = "geo_dir",
@@ -260,7 +262,26 @@ if (!is.null(opt$log)) {
   on.exit({ sink(type = "message"); sink(); close(con) }, add = TRUE)
 }
 
-project <- apply_cli_overrides(load_project_config("config/project.R"), opt)
+# Which config file to read. A run tree usually differs from its neighbours in
+# more than one setting -- a gene universe, a period floor, an output directory
+# -- and repeating those as flags on every command is how a stage ends up run
+# with one set of parameters and its successor with another. A config file makes
+# the whole set one name, and a name that can be committed: for a thesis, the
+# file IS the record of how a result was produced.
+#
+#   ./tsf window GSE135251 --config config/gencode_v2.R
+#
+# Still overridable per invocation: command line > environment > this file.
+config_path <- opt$config %||% "config/project.R"
+if (!file.exists(config_path)) {
+  tsf_abort("No such config file: ", config_path,
+            "\n  Copy config/project.R and edit it, or drop --config to use ",
+            "the default.")
+}
+if (!identical(config_path, "config/project.R")) {
+  tsf_log("config: ", config_path)
+}
+project <- apply_cli_overrides(load_project_config(config_path), opt)
 
 # --- commands that are not stages -------------------------------------------
 if (opt$command == "check") {
@@ -334,6 +355,11 @@ plan <- if (opt$command == "run") {
 }
 
 datasets <- stage_datasets(opt)
+# The resolved output tree, on every run and not only under `status`. Writing to
+# the wrong tree is silent by nature: the stage succeeds, the files land
+# somewhere else, and the next stage reports missing inputs for reasons that
+# look unrelated. One line here makes that visible before the work starts.
+tsf_log("results_dir: ", normalizePath(project$results_dir, mustWork = FALSE))
 tsf_log("datasets: ", paste(datasets, collapse = ", "))
 tsf_log("stages:   ", paste(plan, collapse = " -> "))
 if (!is.null(opt$cond))   tsf_log("conditions: ", opt$cond)
