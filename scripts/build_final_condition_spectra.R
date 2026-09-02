@@ -24,9 +24,21 @@ TSF_BUILD_VERSION <- "2026-09-01-core-invariant-v4"
 abort <- function(...) stop(paste0(...), call. = FALSE)
 messagef <- function(...) message(sprintf(...))
 
+# The results tree defaults the same way the rest of the pipeline does: the
+# environment first, then <repo>/results. It used to default to one particular
+# run directory ("results_gencode_v2"), which meant the script silently read
+# somebody else's tree on any other machine, or aborted on a path the user had
+# never created.
+default_results_dir <- function() {
+  v <- Sys.getenv("TSF_RESULTS_DIR", unset = "")
+  if (nzchar(v)) return(v)
+  root <- Sys.getenv("TSF_ROOT", unset = getwd())
+  file.path(root, "results")
+}
+
 parse_args <- function(x) {
   out <- list(
-    results_dir = "results_gencode_v2",
+    results_dir = default_results_dir(),
     out_dir = NULL,
     datasets = NULL,
     conditions = NULL,
