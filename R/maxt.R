@@ -194,8 +194,22 @@ maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L) {
   out
 }
 
-maxt_cores <- function(chrom_idx) {
-  detected <- suppressWarnings(parallel::detectCores(logical = TRUE))
-  if (is.na(detected) || detected < 1) return(1L)
-  max(1L, min(detected - 1L, length(chrom_idx)))
+#' Workers for the chromosome-parallel stages: maxT, condition, CLEAN.
+#'
+#' This used to read detectCores() directly and ignore both --cores and
+#' N_WORKERS, so the documented flag silently did nothing on three stages --
+#' including maxT, which the help calls the slow one. It now goes through
+#' local_workers() like consensus and compare do.
+#'
+#' `default_max` is the chromosome count rather than local_workers()' usual 8,
+#' which preserves what this function did when no flag is given: one worker per
+#' chromosome, minus one core for the parent.
+#'
+#' The ceiling is structural, not a setting. These stages split on chromosomes,
+#' so with 24 chromosomes the 25th core has nothing to do. Going wider means
+#' splitting on (chromosome, sample) instead, which is a change to the stage,
+#' not a larger number on the command line.
+maxt_cores <- function(chrom_idx, opt = NULL) {
+  n_chr <- max(1L, length(chrom_idx))
+  local_workers(opt %||% list(), n_tasks = n_chr, default_max = n_chr)
 }
