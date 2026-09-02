@@ -966,6 +966,36 @@ check("peaks and compare check grid compatibility", {
   grepl("assert_stage_grids", substr(peaks_body, 1, 400), fixed = TRUE) &&
     grepl("assert_stage_grids", substr(compare_body, 1, 600), fixed = TRUE) })
 
+check("the consensus table gets coverage joined from the per-sample spectra", {
+  # consensus_spectrum() builds its table from the (chr, N, k) key alone and has
+  # no coverage column, so `--min-period auto` -- whose technical floor is
+  # 2/coverage -- aborted the whole stage. The join happens in stage_consensus
+  # because the coverage that matters is the one the consensus was built from:
+  # gls_observed() drops unmeasured positions per signal, so per-signal and
+  # nominal chromosome coverage genuinely differ now.
+  sp <- data.frame(chr = c("21", "21", "21", "21"),
+                   N = c(100L, 100L, 100L, 100L),
+                   k = c(6L, 6L, 7L, 7L),
+                   coverage = c(0.40, 0.60, 0.50, 0.50),
+                   stringsAsFactors = FALSE)
+  cs <- data.frame(chr = "21", N = c(100L, 100L), k = c(6L, 7L),
+                   stringsAsFactors = FALSE)
+  sp_key <- paste(sp$chr, sp$N, sp$k, sep = "|")
+  cov_by_key <- tapply(sp$coverage, sp_key, stats::median, na.rm = TRUE)
+  # as.numeric(), not unname(): tapply returns a 1-d array and unname() leaves
+  # the dim attribute on, which would make this an array column.
+  cs$coverage <- as.numeric(cov_by_key[paste(cs$chr, cs$N, cs$k, sep = "|")])
+  # Median across contributing samples, not the worst or the best.
+  identical(cs$coverage, c(0.5, 0.5)) && is.null(dim(cs$coverage)) })
+
+check("auto floor fails with an actionable message, not a bare abort", {
+  bad <- data.frame(period = c(3, 40))
+  msg <- tryCatch(apply_period_floor(bad, label = "F2", min_period = "auto"),
+                  error = function(e) conditionMessage(e))
+  is.character(msg) &&
+    grepl("--min-period <genes>", msg, fixed = TRUE) &&
+    grepl("spectra", msg, fixed = TRUE) })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
