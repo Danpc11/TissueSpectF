@@ -439,18 +439,80 @@ check("an environment variable overrides a default path", {
 
 check("an empty environment variable does not override anything", {
   # `export TSF_RESULTS_DIR=` in a stale profile should not resolve every
-  # output path to the working directory.
+  # output path to the working directory. Compared against the unset case
+  # rather than a hardcoded directory name, so renaming the active tree in
+  # config/project.R does not break this.
   old <- Sys.getenv("TSF_RESULTS_DIR", unset = NA)
-  Sys.setenv(TSF_RESULTS_DIR = "")
   on.exit(if (is.na(old)) Sys.unsetenv("TSF_RESULTS_DIR") else
     Sys.setenv(TSF_RESULTS_DIR = old), add = TRUE)
-  grepl("results$", load_project_config("config/project.R")$results_dir) })
+  Sys.unsetenv("TSF_RESULTS_DIR")
+  unset <- load_project_config("config/project.R")$results_dir
+  Sys.setenv(TSF_RESULTS_DIR = "")
+  identical(load_project_config("config/project.R")$results_dir, unset) })
 
 check("the clean guard refuses the repository itself", {
   out <- suppressWarnings(system2("Rscript",
     c("scripts/clean_results.R", "--results-dir", "."),
     stdout = TRUE, stderr = TRUE))
   !is.null(attr(out, "status")) && attr(out, "status") != 0L })
+
+check("clean will not delete a non-empty tree unconfirmed", {
+  # results_dir points at the active run tree, so the default target of
+  # `make clean` is real work. An unanswered prompt must leave it alone.
+  tmp <- file.path(tempdir(), "tsf_clean_probe")
+  dir.create(file.path(tmp, "sub"), recursive = TRUE, showWarnings = FALSE)
+  writeLines("data", file.path(tmp, "sub", "keep.tsv"))
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  out <- suppressWarnings(system2("Rscript",
+    c("scripts/clean_results.R", "--results-dir", tmp),
+    stdin = "/dev/null", stdout = TRUE, stderr = TRUE))
+  file.exists(file.path(tmp, "sub", "keep.tsv")) &&
+    any(grepl("Nothing was deleted", paste(out, collapse = " "),
+              fixed = TRUE)) })
+
+check("clean with --force needs no prompt", {
+  tmp <- file.path(tempdir(), "tsf_force_probe")
+  dir.create(tmp, recursive = TRUE, showWarnings = FALSE)
+  writeLines("data", file.path(tmp, "gone.tsv"))
+  on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
+  suppressWarnings(system2("Rscript",
+    c("scripts/clean_results.R", "--results-dir", tmp, "--force"),
+    stdin = "/dev/null", stdout = TRUE, stderr = TRUE))
+  !file.exists(file.path(tmp, "gone.tsv")) })
+
+check("--config reads a different file and a flag still overrides it", {
+  # A derived config keeps one run tree's settings under one name instead of a
+  # row of flags retyped per command. It must inherit the defaults, and the
+  # command line must still win over it, or the precedence documented in the
+  # usage is a fiction.
+  tmp <- tempfile(fileext = ".R")
+  on.exit(unlink(tmp), add = TRUE)
+  writeLines(c(
+    'base <- local({',
+    '  .tsf_root <- Sys.getenv("TSF_ROOT", unset = getwd())',
+    '  source(file.path(.tsf_root, "config", "project.R"), local = TRUE)$value',
+    '})',
+    'modifyList(base, list(results_dir = "results_test_tree"))'
+  ), tmp)
+  cfg <- load_project_config(tmp)
+  base <- load_project_config("config/project.R")
+  identical(cfg$results_dir, "results_test_tree") &&
+    identical(cfg$geo_dir, base$geo_dir) &&
+    length(cfg) == length(base) })
+
+check("a missing --config file fails by name", {
+  out <- suppressWarnings(system2("./tsf",
+    c("status", "--config", "config/does_not_exist.R"),
+    stdout = TRUE, stderr = TRUE))
+  any(grepl("does_not_exist.R", paste(out, collapse = " "), fixed = TRUE)) })
+
+check("every run logs the results tree it resolved", {
+  # Writing to the wrong tree is silent by nature, so the resolved path is
+  # announced before any work happens.
+  out <- suppressWarnings(system2("./tsf",
+    c("window", "--results-dir", "results_probe_tree", "--dry-run"),
+    stdout = TRUE, stderr = TRUE))
+  any(grepl("results_probe_tree", paste(out, collapse = " "), fixed = TRUE)) })
 
 check("the help text lists every stage that exists", {
   # The stage list in the usage string used to be typed out by hand, and had
