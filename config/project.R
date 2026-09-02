@@ -44,7 +44,11 @@ list(
   interim_dir = .tsf_dir("TSF_INTERIM_DIR", "interim"),
 
   # Downstream spectral results.
-  results_dir = .tsf_dir("TSF_RESULTS_DIR", "results"),
+  #
+  # Still repository-relative, so a clone runs unconfigured and no path names a
+  # machine -- the name just records which tree is the active one. Change it
+  # here when you cut a new tree, or pass --results-dir for a one-off.
+  results_dir = .tsf_dir("TSF_RESULTS_DIR", "results_gencode_v2"),
 
   # --- annotation ------------------------------------------------------------
   # Two formats are supported and they name the biotype field differently:
