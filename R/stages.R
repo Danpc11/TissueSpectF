@@ -254,6 +254,32 @@ stage_consensus <- function(project, opt) {
       # from the config and the command line, before any result is seen. Tuning
       # them after looking at which components survive is a different procedure
       # with different guarantees, whatever the flags say.
+      # consensus_spectrum() builds its table from the (chr, N, k) key alone,
+      # so it has no coverage column -- and `--min-period auto` needs one,
+      # because the technical floor is 2/coverage. Attaching it here rather
+      # than inside consensus_spectrum(): the coverage that matters is the one
+      # the consensus was actually built from, which is the per-sample
+      # coverage across the samples that contributed to this frequency, not the
+      # chromosome's nominal figure. Since gls_observed() drops unmeasured
+      # positions per signal, those two now genuinely differ.
+      #
+      # Median across contributing samples: the floor should not be set by the
+      # one sample with the worst coverage, nor by the best.
+      if (!"coverage" %in% names(cs) && "coverage" %in% names(sp)) {
+        sp_key <- paste(sp$chr, sp$N, sp$k, sep = "|")
+        cov_by_key <- tapply(sp$coverage, sp_key, stats::median, na.rm = TRUE)
+        # as.numeric(), not unname(): tapply returns a 1-d array, and unname()
+        # leaves the dim attribute on, so cs$coverage would be an array column.
+        cs$coverage <- as.numeric(
+          cov_by_key[paste(cs$chr, cs$N, cs$k, sep = "|")])
+        n_no_cov <- sum(!is.finite(cs$coverage))
+        if (n_no_cov) {
+          tsf_warn("  ", cond, ": ", n_no_cov, " frequency(ies) have no ",
+                   "coverage from the per-sample spectra; the technical floor ",
+                   "cannot be computed for them and they are kept.")
+        }
+      }
+
       m_before <- nrow(cs)
       cs <- apply_period_floor(
         cs, label = cond,
