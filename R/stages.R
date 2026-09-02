@@ -20,42 +20,6 @@ stage_datasets <- function(opt) {
   else sub("\\.R$", "", list.files("config/datasets", pattern = "\\.R$"))
 }
 
-#' Worker budget for the local process manager.
-#'
-#' There is deliberately no scheduler detection here: this project runs on a
-#' host whose resource manager exposes a local process budget.  An explicit
-#' --cores value wins, followed by N_WORKERS, then a conservative automatic
-#' default.  BLAS is kept at one thread so that each fork remains one CPU task.
-local_workers <- function(opt, n_tasks = Inf, default_max = 8L) {
-  valid_int <- function(x) {
-    x <- suppressWarnings(as.integer(x))
-    if (length(x) != 1L || is.na(x) || x < 1L) NA_integer_ else x
-  }
-
-  requested <- valid_int(opt$cores %||% NA_integer_)
-  source <- "--cores"
-  if (is.na(requested)) {
-    requested <- valid_int(Sys.getenv("N_WORKERS", unset = NA_character_))
-    source <- "N_WORKERS"
-  }
-
-  detected <- suppressWarnings(parallel::detectCores(logical = TRUE))
-  if (length(detected) != 1L || is.na(detected) || detected < 1L) detected <- 1L
-  if (is.na(requested)) {
-    requested <- min(as.integer(default_max), max(1L, detected - 1L))
-    source <- "automatic"
-  }
-
-  n_tasks <- suppressWarnings(as.integer(n_tasks))
-  if (length(n_tasks) != 1L || is.na(n_tasks) || n_tasks < 1L) n_tasks <- detected
-  workers <- max(1L, min(requested, detected, n_tasks))
-
-  Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1",
-             MKL_NUM_THREADS = "1", BLIS_NUM_THREADS = "1",
-             VECLIB_MAXIMUM_THREADS = "1")
-  attr(workers, "source") <- source
-  workers
-}
 
 # --- 01 ingest ---------------------------------------------------------------
 stage_ingest <- function(project, opt) {
@@ -112,7 +76,7 @@ stage_maxt <- function(project, opt) {
   computed <- 0L; reused <- 0L
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id)
-    n_cores <- maxt_cores(inp$chrom_idx)
+    n_cores <- maxt_cores(inp$chrom_idx, opt)
     tsf_log(id, ": maxT (B = ", project$maxt$B, ", ", n_cores, " core(s))")
     for (cond in tsf_conditions(inp$conditions, opt)) {
       out_path <- p_maxt(inp$paths, cond)
@@ -141,7 +105,7 @@ stage_condition <- function(project, opt) {
   n_sig <- 0L
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id, need = "maxt")
-    n_cores <- maxt_cores(inp$chrom_idx)
+    n_cores <- maxt_cores(inp$chrom_idx, opt)
     tsf_log(id, ": condition-level test (B = ",
             project$maxt$condition_B %||% project$maxt$B, ", ", n_cores, " core(s))")
     for (cond in tsf_conditions(inp$conditions, opt)) {
@@ -335,7 +299,7 @@ stage_clean <- function(project, opt) {
   total <- 0L
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id)
-    n_cores <- maxt_cores(inp$chrom_idx)
+    n_cores <- maxt_cores(inp$chrom_idx, opt)
     tsf_log(id, ": CLEAN decomposition (EBIC gamma = ",
             project$clean$ebic_gamma %||% 1, ")")
     for (cond in tsf_conditions(inp$conditions, opt)) {
