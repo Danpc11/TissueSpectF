@@ -69,9 +69,13 @@ condition_significance <- function(dataset, cond, chrom_idx, maxt_cfg,
 
   per_chr <- parallel::mclapply(chrom_levels, function(chr_now) {
     ci <- chrom_idx[[chr_now]]
-    terms <- gls_prepare(ci$t, ci$N)
+    # Positions with no measurement in any sample of this condition are
+    # dropped, so the null permutes among the positions the summary signal was
+    # actually built from.
+    fit <- gls_observed(summary_signal[ci$rows], ci$t, ci$N)
+    if (is.null(fit)) return(NULL)
     res <- condition_permutation_test(
-      summary_signal[ci$rows], terms, B = B,
+      fit$y, fit$terms, B = B,
       seed = maxt_cfg$seed + 100000L * match(chr_now, chrom_levels),
       block_sizes = maxt_cfg$block_sizes,
       primary_scheme = maxt_cfg$primary_scheme %||% "full")
@@ -79,7 +83,7 @@ condition_significance <- function(dataset, cond, chrom_idx, maxt_cfg,
 
     out <- data.frame(
       chr = chr_now, N = res$N, k = res$k, freq = res$freq, period = res$period,
-      n_observed = res$n_observed, coverage = ci$coverage,
+      n_observed = res$n_observed, coverage = fit$terms$n / ci$N,
       amplitude = res$amplitude, phase = res$phase, power = res$power,
       power_normalised = res$power_normalised, window_power = res$window_power,
       p_condition = res$p_empirical_maxT,
