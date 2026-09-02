@@ -302,12 +302,36 @@ null_matrix_draw <- function(prepared, picked_samples) {
   score
 }
 
+#' Permutation null for the consensus score.
+#'
+#' RETAINED_KEYS: which frequencies form the tested family.
+#'
+#' The period floor removes frequencies from `cs` before any p-value is
+#' computed, but the null was still built over every frequency, so each
+#' permutation's global maximum was the maximum over a family larger than the
+#' one being tested. p_null_fwer was therefore the family-wise error rate of a
+#' family that included frequencies which were never candidates. The direction
+#' is conservative -- no false positives -- but it costs real power, and the
+#' claim that the filter is applied "before the null" was not true of the FWER
+#' route.
+#'
+#' The fix is deliberately narrow. The statistic is still computed on the full
+#' prepared matrices, because `prevalence_from_rank()` defines standing as the
+#' top (1 - quantile_cut) within each (sample, chromosome): preparing the null
+#' on a filtered pool would recompute that threshold over a smaller set, and
+#' the observed `cs` came from the unfiltered per-sample spectra. Observed and
+#' null would stop being comparable, which is a worse error than the one being
+#' fixed.
+#'
+#' So: compute over everything, then restrict WHICH frequencies compete. Both
+#' the pointwise null and the per-draw maximum are taken over `retained_keys`.
 null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
                                         seed = 42L, quantile_cut = 0.95,
                                         q_global = 0.95, blocks = NULL,
                                         n_cores = 1L,
                                         engine = c("matrix", "reference"),
-                                        prepared = NULL) {
+                                        prepared = NULL,
+                                        retained_keys = NULL) {
   engine <- match.arg(engine)
   samples <- unique(spectra_all$sample)
   if (length(samples) <= n_samples || n_null < 10L) return(NULL)
@@ -356,6 +380,13 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
                         paste(cs$chr, cs$N, cs$k, sep = "|"))
     }
     values <- values[is.finite(values)]
+    # Restrict to the tested family before the maximum is taken. Applying it
+    # here rather than to the input keeps the statistic identical to the
+    # observed one and makes both the pointwise and family-wise nulls describe
+    # the same family as `cs`.
+    if (!is.null(retained_keys)) {
+      values <- values[names(values) %in% retained_keys]
+    }
     if (!length(values)) return(NULL)
     list(values = values, best = max(values))
   }, mc.cores = n_cores, mc.preschedule = TRUE, mc.set.seed = FALSE)
