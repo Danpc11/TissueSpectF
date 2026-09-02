@@ -201,3 +201,46 @@ stopifnot(
 )
 
 cat("test_condition_invariants.R: OK\n")
+
+# --- the meta-analysis counts cohorts that spoke, not cohorts present --------
+#
+# stouffer() drops non-finite p silently, so a frequency present in three
+# cohorts but with only one finite p_null was combined from one value while
+# n_cohorts said three -- and then passed a `n_cohorts >= min_cohorts` gate as
+# though it carried three independent sources. Replication is the central claim
+# here, so the gate has to count contributions, not presences.
+
+local({
+  p_groups <- list(a = c(0.01, NA, 0.2), b = c(NA, NA, NA), c = c(0.3))
+  n_meta <- vapply(p_groups,
+                   function(p) sum(is.finite(suppressWarnings(as.numeric(p)))),
+                   integer(1))
+  stopifnot(identical(unname(n_meta), c(2L, 0L, 1L)))
+})
+
+local({
+  # Two cohorts required; one contributing p is not a meta-analysis, and the
+  # combined value must be withheld rather than reported with a caveat -- a
+  # number in a q column gets used, and a footnote does not travel with it.
+  out <- data.frame(p_meta_null = c(0.001, 0.002, 0.003),
+                    n_meta_cohorts = c(3L, 1L, 2L))
+  out$p_meta_null[out$n_meta_cohorts < 2L] <- NA_real_
+  stopifnot(is.na(out$p_meta_null[2]),
+            all(is.finite(out$p_meta_null[c(1, 3)])))
+})
+
+local({
+  src <- paste(readLines("scripts/build_final_condition_spectra.R",
+                         warn = FALSE), collapse = " ")
+  stopifnot(
+    grepl("eligible_k <- out$n_meta_cohorts", src, fixed = TRUE),
+    !grepl("eligible_k <- out$n_cohorts", src, fixed = TRUE))
+})
+
+local({
+  # Set on both the meta and the no-meta path, so the column always exists.
+  src <- readLines("scripts/build_final_condition_spectra.R", warn = FALSE)
+  stopifnot(sum(grepl("out\\$n_meta_cohorts <-", src)) >= 2L)
+})
+
+cat("test_condition_invariants.R: meta-cohort assertions OK\n")
