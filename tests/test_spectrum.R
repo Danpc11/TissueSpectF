@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/grid.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
+source("R/grid.R"); source("R/period_floor.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
 source("R/condition_test.R"); source("R/clean.R"); source("R/fingerprint.R"); source("R/reference.R"); source("R/consensus.R"); source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
@@ -819,6 +819,51 @@ check("a grid position measured in no sample stays NA in the summary signal", {
              expression = expr)
   sig <- suppressWarnings(condition_signals(ds, "F1"))
   is.na(sig$avg_signal[[7]]) && is.na(sig$median_signal[[7]]) })
+
+# --- period floor, applied before the null ---------------------------------
+
+check("the technical floor is the Nyquist of the sampling that happened", {
+  # coverage 0.5 means observed genes sit ~2 apart, so 2/0.5 = 4 is the
+  # shortest resolvable period; +2 margin makes 6.
+  long <- data.frame(period = c(3, 5, 7, 40), coverage = 0.5)
+  kept <- apply_period_floor(long, min_period = "auto", period_margin = 2,
+                             quiet = TRUE)
+  identical(kept$period, c(7, 40)) })
+
+check("the biological floor applies even with the technical floor off", {
+  long <- data.frame(period = c(2, 4, 12, 90), coverage = 1)
+  kept <- apply_period_floor(long, min_period = "off",
+                             min_period_biological = 10, quiet = TRUE)
+  identical(kept$period, c(12, 90)) })
+
+check("the applied floor is the larger of the two", {
+  # technical = 2/0.1 + 2 = 22, biological = 10 -> 22 wins.
+  long <- data.frame(period = c(15, 25), coverage = 0.1)
+  kept <- apply_period_floor(long, min_period = "auto", period_margin = 2,
+                             min_period_biological = 10, quiet = TRUE)
+  identical(kept$period, 25) })
+
+check("a reachable BH q is never above 1", {
+  # m/(B+1) is the uncapped adjusted p at rank 1; a q-value is capped at 1, and
+  # reporting 10 reads like a threshold narrowly missed rather than one that
+  # cannot be reached at all.
+  reachable_bh_q(10030, 999) == 1 &&
+    abs(reachable_bh_q(500, 999) - 0.5) < 1e-9 })
+
+check("draws_for_bh inverts the reachable floor exactly", {
+  # B is the count of draws, so the family of B+1 values includes the observed
+  # one: m/(B+1) <= target at B, and not at B-1. Off by one here would either
+  # promise a threshold that is not reached or demand a draw that is not needed.
+  m <- 1000L
+  B <- draws_for_bh(m, 0.05)
+  B == 19999L &&
+    reachable_bh_q(m, B) <= 0.05 &&
+    reachable_bh_q(m, B - 1L) > 0.05 })
+
+check("shrinking the family is what makes the pointwise route reachable", {
+  # The whole reason the floor goes before the null: at 999 draws a family of
+  # 10030 cannot reach 0.05, and a family of 500 can.
+  reachable_bh_q(10030, 999) > 0.05 && reachable_bh_q(500, 999) <= 0.5 })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
