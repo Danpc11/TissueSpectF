@@ -417,6 +417,50 @@ check("a universe pattern from the wrong format aborts with the right one", {
 # never seen. These assertions keep that from coming back: a default path is a
 # choice about layout, never a location.
 
+# --- R/ holds modules, not scripts -------------------------------------------
+#
+# tsf_load_all() sources every .R file in R/ on every invocation. A module only
+# defines things, so that is safe. A script DOES things, and a copy of
+# scripts/clean_results.R placed in R/ deleted the results tree on every run,
+# before argument parsing -- which is why the deletion appeared in the log
+# above an unrelated usage error. The boundary is now enforced at load time and
+# asserted here.
+
+check("no file in R/ is a script", {
+  bad <- vapply(list.files("R", pattern = "[.]R$", full.names = TRUE),
+                function(p) !is.na(tsf_script_not_module(p)), logical(1))
+  !any(bad) })
+
+# The probe file is removed inside the expression, not with on.exit(): on.exit
+# registers on check()'s frame and does not fire where it is needed, and a
+# probe left behind in R/ makes every later assertion fail for the wrong
+# reason -- which is exactly what happened the first time this was written.
+probe_refused <- function(name, lines) {
+  p <- file.path("R", name)
+  writeLines(lines, p)
+  refused <- inherits(tryCatch(tsf_module_order("R"), error = function(e) e),
+                      "error")
+  unlink(p)
+  refused && !file.exists(p) }
+
+check("a shebang in R/ is refused before it is sourced", {
+  probe_refused("zz_probe_shebang.R",
+                c("#!/usr/bin/env Rscript", "cat(\"side effect\")")) })
+
+check("a top-level commandArgs() in R/ is refused", {
+  probe_refused("zz_probe_args.R",
+                c("a <- commandArgs(trailingOnly = TRUE)", "unlink(\"x\")")) })
+
+check("the guard does not reject a real module", {
+  # utils_io.R is the most module-like file there is; if the guard trips on it
+  # the pattern is too broad and the pipeline will not load at all.
+  is.na(tsf_script_not_module("R/utils_io.R")) &&
+    is.na(tsf_script_not_module("R/grid.R")) })
+
+check("clean_results.R lives in scripts/, not R/", {
+  file.exists("scripts/clean_results.R") &&
+    !file.exists("R/clean_results.R") })
+
 check("config/project.R names no paths at all", {
   # Not "no absolute paths" but no paths: geo_dir, interim_dir and results_dir
   # have no default, so a run cannot inherit an output location from a file
