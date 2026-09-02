@@ -26,29 +26,40 @@
 # All three directories are in .gitignore. They hold downloads and derived
 # output, never inputs that need versioning.
 
-.tsf_root <- Sys.getenv("TSF_ROOT", unset = getwd())
-
-# An environment override wins over the default, but an empty variable does
-# not: `export TSF_RESULTS_DIR=` in a stale shell profile should not silently
-# resolve every output path to the working directory.
-.tsf_dir <- function(var, default) {
+# A path with no default. `.tsf_required()` returns NULL unless the value came
+# from the command line or the environment, and the stage that needs it aborts
+# naming the flag.
+#
+# The reason is provenance, not purity. A default that silently supplies a path
+# means a run's output location is decided by a file nobody read, and six weeks
+# later there is no way to tell from the command which tree a result came from.
+# Requiring the flag makes the invocation the record: what is in the shell
+# history, or in the job script, is the whole truth about where a result went.
+#
+# It also removes the failure mode that cost a consensus run: `make clean` can
+# no longer inherit a default that happens to point at live data.
+#
+#   ./tsf run --geo-dir data --interim-dir interim --results-dir run_2026_09_02
+#
+# Or, for a shell that will issue several commands against one tree:
+#
+#   export TSF_RESULTS_DIR=run_2026_09_02
+#
+# Nothing here decides anything on its own.
+.tsf_required <- function(var) {
   v <- Sys.getenv(var, unset = "")
-  if (nzchar(v)) v else file.path(.tsf_root, default)
+  if (nzchar(v)) v else NULL
 }
 
 list(
   # Raw GEO downloads: count tables, series matrices, NCBI annotation.
-  geo_dir     = .tsf_dir("TSF_GEO_DIR", "data"),
+  geo_dir     = .tsf_required("TSF_GEO_DIR"),
 
   # Common format written by the ingest stage.
-  interim_dir = .tsf_dir("TSF_INTERIM_DIR", "interim"),
+  interim_dir = .tsf_required("TSF_INTERIM_DIR"),
 
   # Downstream spectral results.
-  #
-  # Still repository-relative, so a clone runs unconfigured and no path names a
-  # machine -- the name just records which tree is the active one. Change it
-  # here when you cut a new tree, or pass --results-dir for a one-off.
-  results_dir = .tsf_dir("TSF_RESULTS_DIR", "results_gencode_v2"),
+  results_dir = .tsf_required("TSF_RESULTS_DIR"),
 
   # --- annotation ------------------------------------------------------------
   # Two formats are supported and they name the biotype field differently:
