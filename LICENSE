@@ -1,23 +1,76 @@
-## License
+TissueSpectF
+Copyright (c) 2026 Daniel Pérez
 
-This work is licensed under the **Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0)**.
+Licensed under the Creative Commons Attribution-NonCommercial 4.0
+International License (CC BY-NC 4.0).
 
-You are free to:
+  SPDX-License-Identifier: CC-BY-NC-4.0
+  Summary:     https://creativecommons.org/licenses/by-nc/4.0/
+  Legal code:  https://creativecommons.org/licenses/by-nc/4.0/legalcode
 
-* **Share** — copy and redistribute the material in any medium or format.
-* **Adapt** — remix, transform, and build upon the material.
+The legal code at that URL governs. This file states the licence and its scope;
+it does not restate or modify the terms.
 
-Under the following terms:
 
-* **Attribution (BY)** — You must give appropriate credit, provide a link to the license, and indicate if changes were made. You may do so in any reasonable manner, but not in any way that suggests the licensor endorses you or your use.
-* **NonCommercial (NC)** — You may not use the material for commercial purposes.
+SCOPE
+-----
+The whole repository: the R pipeline, the command line, the learned layer in
+ml/, the app, the configuration, the tests, the documentation, the sonification
+module, and any audio, MIDI or score published under the TissueSpectF name.
 
-No additional restrictions may be applied that legally restrict others from doing anything the license permits.
+One licence, no exceptions. No file in this repository states different terms;
+if you find one, it is a bug and this file governs.
 
-© 2026 Daniel. Licensed under CC BY-NC 4.0.
 
-Official license:
-https://creativecommons.org/licenses/by-nc/4.0/
+WHAT YOU MAY DO
+---------------
+Use, copy, modify, distribute and build upon this work, including distributing
+modified versions, for any NON-COMMERCIAL purpose, provided you give
+appropriate credit, link to the licence, and indicate whether changes were made.
 
-Full legal code:
-https://creativecommons.org/licenses/by-nc/4.0/legalcode
+Academic research, teaching, peer review and reproducing a published result are
+all non-commercial uses and need no permission.
+
+Attribution:
+
+  TissueSpectF -- Daniel Pérez (2026). CC BY-NC 4.0.
+  https://creativecommons.org/licenses/by-nc/4.0/
+
+
+WHAT REQUIRES PERMISSION
+------------------------
+Commercial use: anything primarily intended for or directed toward commercial
+advantage or monetary compensation. That includes use inside a for-profit
+service or product, sale of recordings or scores derived from the sonification,
+and sync placement in film, television, advertising or games.
+
+Requests: open an issue at github.com/Danpc11/TissueSpectF.
+
+
+NOT COVERED, AND NOT CLAIMABLE
+------------------------------
+Fourier analysis of genomic data, spectral decomposition of expression signals,
+and the practice of sonifying scientific data are mathematical methods and
+general techniques. No claim is made over them.
+
+The frequencies, peaks, periods, phases and gene assignments the pipeline
+computes are measurements. Measurements are facts, and facts are not authored.
+
+Output you generate by running this pipeline on your own data is yours.
+
+
+TWO THINGS TO KNOW
+------------------
+1. CC BY-NC is not a software licence. Creative Commons advises against CC for
+   code: it carries no source-code, patent or warranty-disclaimer provisions the
+   way MIT, Apache-2.0 and the GPL do. This is a deliberate choice here, not an
+   oversight, but it has consequences -- see (2).
+
+2. NC is not an open-source licence. Some journals, funders and institutional
+   repositories require a deposit to be under an OSI-approved open licence, and
+   this is not one. Debian, conda-forge and similar will not package it. If a
+   deposit requirement applies to you, the usual resolution is to license the
+   pipeline permissively and keep CC BY-NC on the sonification and the audio.
+
+
+THE WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
