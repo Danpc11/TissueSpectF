@@ -40,10 +40,23 @@ gitignored:
 ```bash
 git clone https://github.com/Danpc11/TissueSpectF && cd TissueSpectF
 make test         # base R only, no Bioconductor, no install step
-./tsf selfcheck   # the whole pipeline on synthetic data with a known answer
-./tsf fetch       # then the five GEO cohorts into ./data
+./tsf selfcheck   # synthetic data, known answer, needs no paths of its own
+
+# Every command that touches your data states where it reads and writes.
+# config/project.R names no paths, so there is no default to inherit.
+export TSF_GEO_DIR=data
+export TSF_INTERIM_DIR=interim
+export TSF_RESULTS_DIR=run_2026_09_02
+
+./tsf fetch       # the five GEO cohorts into $TSF_GEO_DIR
+./tsf check       # confirm every input is where the configs expect
 ./tsf run
 ```
+
+The three paths can equally be given per command as `--geo-dir`,
+`--interim-dir` and `--results-dir`, which take precedence. There is
+deliberately no default: a run's output location should be visible in the
+command that produced it, not decided by a file nobody read.
 
 Point the outputs elsewhere with `TSF_ROOT`, with `TSF_GEO_DIR` /
 `TSF_INTERIM_DIR` / `TSF_RESULTS_DIR`, or with `--geo-dir` / `--interim-dir` /
@@ -59,7 +72,7 @@ TSF_ROOT=/scratch/$USER/TissueSpectF ./tsf run
 tsf                        the command line entry point
 README.md
 THEORY.md                  the model, the estimators, what each test licenses
-LICENSE                    MIT
+LICENSE                    CC BY-NC 4.0
 requirements-ml.txt        dependencies of the learned layer (optional)
 requirements-sonify.txt    dependencies of the sonification (optional)
 TissueSpectF_colab.ipynb   the whole pipeline on a free Colab VM
@@ -868,5 +881,14 @@ negatives — for a tissue reference, other tissues.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE). All of it — the pipeline, the app, the learned
-layer and the sonification.
+**CC BY-NC 4.0.** See [LICENSE](LICENSE). All of it — the pipeline, the app,
+the learned layer and the sonification. One licence, no exceptions.
+
+Use, modify and share it for any non-commercial purpose with attribution;
+academic research, teaching, peer review and reproducing a published result
+all qualify and need no permission. Commercial use needs written permission.
+
+Two consequences worth knowing rather than discovering: CC is not a software
+licence and carries no patent or warranty provisions, and NC is not
+OSI-approved, so a repository that has to be deposited under an open licence
+cannot be deposited as-is.
