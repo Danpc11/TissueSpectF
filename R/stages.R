@@ -133,7 +133,15 @@ stage_condition <- function(project, opt) {
 
 # --- consensus spectrum ------------------------------------------------------
 
-null_cache_metadata <- function(pool_paths, n_samples, project, blocks) {
+#' Metadata a cached null must match before it is reused.
+#'
+#' `retained_digest` is the fingerprint of the frequency family the null belongs
+#' to. Without it the cache was keyed on sample count alone, so a run with
+#' --min-period auto reused the null computed for a run with no floor at all --
+#' a different family, a different global maximum, and no error to show for it.
+#' The stalest cache is the one that looks valid.
+null_cache_metadata <- function(pool_paths, n_samples, project, blocks,
+                                retained_keys = NULL) {
   info <- file.info(pool_paths)
   list(
     algorithm = "matrix-null-v1",
@@ -145,6 +153,18 @@ null_cache_metadata <- function(pool_paths, n_samples, project, blocks) {
     n_null = as.integer(project$consensus$n_null %||% 50L),
     seed = as.integer(project$maxt$seed),
     quantile_cut = as.numeric(project$consensus$quantile_cut %||% 0.95),
+    # The period floors, and the family they produced. Both, deliberately: the
+    # parameters catch a config change, the digest catches the case where the
+    # same parameters land on a different family because coverage moved.
+    min_period = as.character(project$consensus$min_period %||% "off"),
+    period_margin = as.numeric(project$consensus$period_margin %||% 2),
+    margin_mode = as.character(project$consensus$margin_mode %||% "add"),
+    min_period_biological =
+      as.numeric(project$consensus$min_period_biological %||% 0),
+    retained_n = if (is.null(retained_keys)) NA_integer_ else
+      length(retained_keys),
+    retained_digest = if (is.null(retained_keys)) NA_character_ else
+      digest_keys(retained_keys),
     blocks = if (is.null(blocks)) NULL else
       data.frame(sample = names(blocks), block = as.character(blocks),
                  stringsAsFactors = FALSE)
@@ -246,15 +266,18 @@ stage_consensus <- function(project, opt) {
         next
       }
 
-      # What the reduced family buys, stated in the units the decision is made
-      # in. Reporting the floor without the draws needed to clear it is how the
-      # pointwise route looks like a threshold that was narrowly missed.
+      # What the reduced family buys. The figure quoted is the CONSERVATIVE
+      # rank-1 BH diagnostic, not a bound on what any frequency can reach --
+      # ties at the permutation floor lower the achievable value by up to a
+      # factor of m, and consensus.R reports that separately once the p-values
+      # exist. Labelling it precisely here matters because a number this large
+      # invites the reader to conclude the route is closed when it is not.
       if (m_before != nrow(cs)) {
         n_b <- project$consensus$n_null %||% 50L
         tsf_log(sprintf(
-          "  family %d -> %d frequencies: reachable BH q %.3g -> %.3g (q<=0.05 needs %d draws, have %d)",
+          "  family %d -> %d frequencies: rank-1 BH diagnostic (conservative) %.3g -> %.3g; %d draws clears rank 1 at q<=0.05, have %d",
           m_before, nrow(cs),
-          reachable_bh_q(m_before, n_b), reachable_bh_q(nrow(cs), n_b),
+          bh_rank1_diagnostic(m_before, n_b), bh_rank1_diagnostic(nrow(cs), n_b),
           draws_for_bh(nrow(cs)), n_b))
       }
 
@@ -265,7 +288,9 @@ stage_consensus <- function(project, opt) {
         if (is.null(null_cache[[key]])) {
           cache_dir <- file.path(inp$paths$base, "consensus", "null_cache")
           cache_path <- file.path(cache_dir, sprintf("null_n%04d.rds", n_here))
-          metadata <- null_cache_metadata(pool_paths, n_here, project, blocks)
+          retained_keys <- paste(cs$chr, cs$N, cs$k, sep = "|")
+          metadata <- null_cache_metadata(pool_paths, n_here, project, blocks,
+                                          retained_keys = retained_keys)
           cached <- if (!isTRUE(opt$force)) read_null_cache(cache_path, metadata) else NULL
           if (!is.null(cached)) {
             null_cache[[key]] <- list(d = cached)
