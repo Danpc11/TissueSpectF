@@ -162,11 +162,16 @@ maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L) {
 
   per_chr <- parallel::mclapply(chrom_levels, function(chr_now) {
     ci <- chrom_idx[[chr_now]]
-    terms <- gls_prepare(ci$t, ci$N)     # window terms reused across samples
+    shared <- gls_prepare(ci$t, ci$N)    # window terms reused across samples
     chr_seed <- maxt_cfg$seed + 100000L * match(chr_now, chrom_levels)
     rows <- list()
     for (s in sig$samples) {
-      res <- permutation_gls_test(sig$matrix[ci$rows, s], terms,
+      # The permutation null must permute among the positions this sample was
+      # actually measured at. Handing it a zero-filled hole would put a
+      # constant in the observed set, and every permutation would carry it.
+      fit <- gls_observed(sig$matrix[ci$rows, s], ci$t, ci$N, terms = shared)
+      if (is.null(fit)) next
+      res <- permutation_gls_test(fit$y, fit$terms,
                                   B = maxt_cfg$B,
                                   seed = chr_seed + match(s, sig$samples),
                                   block_sizes = maxt_cfg$block_sizes,
@@ -174,7 +179,8 @@ maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L) {
       if (is.null(res) || !nrow(res)) next
       res$chr <- chr_now
       res$sample <- s
-      res$coverage <- ci$coverage
+      res$coverage <- fit$terms$n / ci$N
+      res$n_dropped_unmeasured <- fit$n_dropped
       rows[[length(rows) + 1]] <- res
     }
     if (!length(rows)) NULL else do.call(rbind, rows)
