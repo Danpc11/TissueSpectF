@@ -222,6 +222,42 @@ stage_consensus <- function(project, opt) {
                                n_cores = n_cores)
       if (is.null(cs)) { tsf_warn("  ", cond, ": no consensus"); next }
 
+      # The period floor is applied HERE, before the null and before any
+      # p-value, not in the library build downstream. That ordering is the
+      # whole point: the multiplicity correction has to run over the family
+      # that was actually tested. Testing every frequency and filtering
+      # afterwards inflates the family with frequencies that were never
+      # candidates, and no amount of later filtering gives back the power that
+      # cost.
+      #
+      # This is a pre-specification, so it has to stay one: the floors are read
+      # from the config and the command line, before any result is seen. Tuning
+      # them after looking at which components survive is a different procedure
+      # with different guarantees, whatever the flags say.
+      m_before <- nrow(cs)
+      cs <- apply_period_floor(
+        cs, label = cond,
+        min_period = project$consensus$min_period %||% "off",
+        period_margin = project$consensus$period_margin %||% 2,
+        margin_mode = project$consensus$margin_mode %||% "add",
+        min_period_biological = project$consensus$min_period_biological %||% 0)
+      if (is.null(cs) || !nrow(cs)) {
+        tsf_warn("  ", cond, ": every frequency fell below the period floor")
+        next
+      }
+
+      # What the reduced family buys, stated in the units the decision is made
+      # in. Reporting the floor without the draws needed to clear it is how the
+      # pointwise route looks like a threshold that was narrowly missed.
+      if (m_before != nrow(cs)) {
+        n_b <- project$consensus$n_null %||% 50L
+        tsf_log(sprintf(
+          "  family %d -> %d frequencies: reachable BH q %.3g -> %.3g (q<=0.05 needs %d draws, have %d)",
+          m_before, nrow(cs),
+          reachable_bh_q(m_before, n_b), reachable_bh_q(nrow(cs), n_b),
+          draws_for_bh(nrow(cs)), n_b))
+      }
+
       n_here <- length(unique(sp$sample))
       key <- as.character(n_here)
       null_dist <- NULL
