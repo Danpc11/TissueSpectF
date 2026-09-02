@@ -89,10 +89,6 @@ bind_rows_fill <- function(xs) {
   out
 }
 
-# Defaults follow the environment, not one author's run directory. The library
-# is whatever build_final_condition_spectra.R last wrote under results_dir;
-# "results_gencode_v3/library_domains" was a path that existed on exactly one
-# machine.
 default_library_dir <- function() {
   v <- Sys.getenv("TSF_LIBRARY_DIR", unset = "")
   if (nzchar(v)) return(v)
@@ -188,49 +184,63 @@ discover_genes_file <- function(opt) {
     return(opt$genes_file)
   }
 
-  candidates <- character(0)
-
-  if (!is.null(opt$interim_dir) && dir.exists(opt$interim_dir)) {
-    if (!is.null(opt$datasets)) {
-      candidates <- file.path(opt$interim_dir, opt$datasets, "genes.tsv")
-      candidates <- candidates[file.exists(candidates)]
+  # The peak -> gene reconstruction is purely geometric: for every grid position
+  # t = 1..N it needs the gene sitting there, so it can evaluate
+  #   loading = cos(2*pi*k*(t - 1)/N + phase).
+  # That gene set must be the canonical annotation grid (grid.tsv)
+  gather <- function(name) {
+    hits <- character(0)
+    if (!is.null(opt$interim_dir) && dir.exists(opt$interim_dir)) {
+      if (!is.null(opt$datasets)) {
+        by_ds <- file.path(opt$interim_dir, opt$datasets, name)
+        hits <- by_ds[file.exists(by_ds)]
+      }
+      if (!length(hits)) {
+        hits <- list.files(
+          opt$interim_dir,
+          pattern = paste0("^", name, "$"),
+          recursive = TRUE,
+          full.names = TRUE
+        )
+      }
     }
-
-    if (!length(candidates)) {
-      candidates <- list.files(
-        opt$interim_dir,
-        pattern = "^genes\\.tsv$",
-        recursive = TRUE,
-        full.names = TRUE
-      )
+    if (!length(hits)) {
+      for (root in c("interim", "interim_gencode_v2", "interim_gencode_v3")) {
+        if (!dir.exists(root)) next
+        hits <- c(hits, list.files(
+          root,
+          pattern = paste0("^", name, "$"),
+          recursive = TRUE,
+          full.names = TRUE
+        ))
+      }
     }
+    unique(hits[file.exists(hits)])
   }
 
-  if (!length(candidates)) {
-    roots <- c("interim", "interim_gencode_v2", "interim_gencode_v3")
-    for (root in roots) {
-      if (!dir.exists(root)) next
-      hit <- list.files(
-        root,
-        pattern = "^genes\\.tsv$",
-        recursive = TRUE,
-        full.names = TRUE
-      )
-      candidates <- c(candidates, hit)
-    }
+  grids <- gather("grid.tsv")
+  if (length(grids)) {
+    message("Using canonical annotation grid: ", grids[[1]])
+    return(grids[[1]])
   }
 
-  candidates <- unique(candidates[file.exists(candidates)])
-
-  if (!length(candidates)) {
-    abort(
-      "Could not find genes.tsv. Supply --genes-file PATH or ",
-      "--interim-dir PATH."
+  genes <- gather("genes.tsv")
+  if (length(genes)) {
+    warning(
+      "No grid.tsv found; falling back to ", genes[[1]], ". ",
+      "This is ONE cohort's expression-filtered gene set (~60-75% of the ",
+      "grid), so genes that cohort did not observe will be missing from every ",
+      "peak-gene table. Re-run the ingest stage to write grid.tsv, or pass ",
+      "--genes-file <path/to/grid.tsv>.",
+      call. = FALSE
     )
+    return(genes[[1]])
   }
 
-  message("Using canonical gene grid: ", candidates[[1]])
-  candidates[[1]]
+  abort(
+    "Could not find grid.tsv or genes.tsv. Supply --genes-file PATH or ",
+    "--interim-dir PATH."
+  )
 }
 
 prepare_genes <- function(path) {
@@ -362,7 +372,9 @@ project_peak_to_genes <- function(
     abort(
       "Canonical grid mismatch for chr", chr_now,
       ": peak N=", N,
-      ", genes.tsv grid_N=", paste(grid_N, collapse = ",")
+      ", gene grid grid_N=", paste(grid_N, collapse = ","),
+      ". The gene grid must come from the same annotation as the peaks ",
+      "(same GENCODE/annotation release)."
     )
   }
 
