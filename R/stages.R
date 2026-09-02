@@ -438,9 +438,57 @@ stage_stability <- function(project, opt) {
   sprintf("%d stable peak(s) across conditions", total_stable)
 }
 
+#' Confirm every dataset in scope shares one annotation grid.
+#'
+#' A frequency is identified by (chr, N, k). Two datasets ingested against
+#' different annotations, or with different gene universes, have different N per
+#' chromosome -- so the same key names different things, and any cross-cohort
+#' statement about it is meaningless. The digest is computed at ingest for
+#' exactly this comparison.
+#'
+#' Reported by name rather than as a bare failure: the fix is always to re-run
+#' ingest for the odd one out, and knowing which one that is saves re-running
+#' all five.
+assert_stage_grids <- function(project, ids, stage_label) {
+  if (length(ids) < 2) return(invisible(NULL))
+  grids <- tryCatch(
+    stats::setNames(lapply(ids, function(id) load_grid(id, project)), ids),
+    error = function(e) NULL)
+  if (is.null(grids)) {
+    tsf_warn(stage_label, ": could not load every grid, so grid compatibility ",
+             "was not checked. Re-run ingest if the cohorts were built at ",
+             "different times.")
+    return(invisible(NULL))
+  }
+  digests <- vapply(grids, function(g) {
+    d <- g$provenance$grid_digest
+    if (is.null(d)) NA_character_ else as.character(d)
+  }, character(1))
+
+  if (!anyNA(digests) && length(unique(digests)) > 1L) {
+    groups <- split(names(digests), digests)
+    majority <- groups[[which.max(lengths(groups))]]
+    odd <- setdiff(names(digests), majority)
+    tsf_abort(stage_label, ": the datasets do not share one annotation grid, ",
+              "so (chr, N, k) does not name the same frequency in each.\n",
+              "  consistent with each other: ", paste(majority, collapse = ", "),
+              "\n  different grid: ", paste(odd, collapse = ", "),
+              "\n  Re-run ingest for the latter with the same ",
+              "annotation_format and gene_universe as the rest.")
+  }
+  # Falls back to comparing the grids themselves when a digest is missing.
+  assert_compatible_grids(grids)
+  invisible(NULL)
+}
+
 # --- 05 peak genes -----------------------------------------------------------
 stage_peaks <- function(project, opt) {
   written <- 0L
+  # One axis for every dataset in scope, checked before any reconstruction.
+  # assert_compatible_grids() was called only by stage_reference, so peaks and
+  # compare -- the two stages whose whole purpose is to line cohorts up against
+  # each other -- ran without ever confirming they shared an axis.
+  assert_stage_grids(project, stage_datasets(opt), "peaks")
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id)
     tsf_log(id, ": peak-gene reconstruction")
@@ -471,6 +519,9 @@ stage_compare <- function(project, opt) {
     tsf_warn("Comparison needs at least two datasets; skipped")
     return("skipped")
   }
+  # Replication across cohorts is a claim that the same (chr, N, k) means the
+  # same thing in each. That is only true on a shared axis.
+  assert_stage_grids(project, ids, "compare")
   loaded <- lapply(ids, function(id) {
     inp <- tsf_stage_inputs(project, id, need = c("stability", "maxt"))
     inp$peaks <- stats::setNames(lapply(c("average", "median"), function(br)
