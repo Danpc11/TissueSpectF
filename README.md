@@ -134,13 +134,38 @@ at one person's scratch directory makes a fresh clone fail with paths the user
 has never seen, and makes a config fingerprint record a location instead of a
 choice. `tests/test_labels.R` asserts this rather than leaving it to review.
 
-Three ways to point them elsewhere, highest precedence first:
+Four ways to point them elsewhere, highest precedence first:
 
 ```bash
-./tsf run --results-dir /scratch/$USER/results     # per-invocation
-TSF_RESULTS_DIR=/scratch/$USER/results ./tsf run   # per-shell
-TSF_ROOT=/scratch/$USER/TissueSpectF ./tsf run     # all three at once
+./tsf run --results-dir results_other            # one flag, one invocation
+./tsf run --config config/other_tree.R           # a named set of settings
+TSF_RESULTS_DIR=/scratch/$USER/results ./tsf run # per-shell
+TSF_ROOT=/scratch/$USER/TissueSpectF ./tsf run   # all three at once
 ```
+
+Paths on the command line may be relative: `./tsf` changes into the repository
+first, so `--results-dir results_other` is enough and no absolute path is
+needed.
+
+`--config` is the one to reach for when a run tree differs in more than its
+output directory — a gene universe, a period floor, a permutation count.
+Copy `config/project.R`, or inherit from it and override only what changes:
+
+```r
+# config/other_tree.R
+base <- local({
+  .tsf_root <- Sys.getenv("TSF_ROOT", unset = getwd())
+  source(file.path(.tsf_root, "config", "project.R"), local = TRUE)$value
+})
+
+modifyList(base, list(
+  results_dir = "results_other"
+))
+```
+
+Commit it. The file is the record of how a result was produced; a flag typed
+into a terminal six weeks ago is not. Every run logs the config it read and the
+results tree it resolved, so a stage never writes somewhere unnoticed.
 
 `TSF_ROOT` is the one to reach for on a cluster where code and output belong on
 different filesystems. Every override is echoed in the log, so a run never
@@ -150,8 +175,15 @@ To empty the results tree:
 
 ```bash
 make clean-dry    # list what would go
-make clean        # delete it
+make clean        # asks you to type the directory name first
+make clean-force  # no prompt; for scripts that mean it
 ```
+
+`results_dir` points at the **active** run tree, so `make clean` deletes real
+work — a consensus stage is tens of minutes and is not reproducible from what
+survives. It reports the entry count and size, then requires the directory name
+typed back. An unanswered or closed stdin counts as a refusal, so a CI job
+cannot delete a tree by accident.
 
 The guard is structural, not a length heuristic: `scripts/clean_results.R`
 refuses the filesystem root, the home directory and the repository itself, and
