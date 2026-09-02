@@ -314,6 +314,60 @@ This puts a floor on $B$: $q \le 0.05$ requires
 $B \ge 20\,n_{\mathrm{chr}} - 1$, about 460 for 23 chromosomes. The stage warns
 when $B$ is too small to be able to conclude.
 
+### 5.5b The permutation floor, as a recurring constraint
+
+The same arithmetic has now bitten five times in different guises, so it is
+worth stating once as a rule rather than rediscovering it:
+
+> A permutation p-value cannot go below $1/(B+1)$. Any procedure that multiplies
+> it by the size of a family — Bonferroni by $n_{\mathrm{chr}}$, BH by
+> $n_{\mathrm{freq}}$ — therefore has a **smallest attainable q**. If that value
+> exceeds the threshold, nothing can pass however strong the signal, and a
+> result of "zero components" says nothing about the data.
+
+Every place this arises now computes the attainable floor and says so:
+
+| test | family | needs |
+|---|---|---|
+| condition test, family-wise | $n_{\mathrm{chr}}$ | $B \ge 20\,n_{\mathrm{chr}}$ |
+| condition test, pointwise + BH | $n_{\mathrm{freq}}$ | pooled null, §5.5c |
+| consensus, per component + BH | $n_{\mathrm{freq}}$ | $B \ge n_{\mathrm{freq}}/q$ — infeasible |
+| consensus, family-wise | none | $B \ge 1/q$ |
+| phase alignment (Rayleigh) | $n_{\mathrm{freq}}$ | $n \gtrsim \log(n_{\mathrm{freq}}/q)$ samples |
+| cross-cohort meta cut | $n_{\mathrm{freq}}$ | §8.2 |
+
+"Not reachable" and "not present" are different findings, and the logs
+distinguish them.
+
+### 5.5c Two multiplicity regimes for the condition test
+
+maxT answers *"is this frequency stronger than the strongest frequency of a
+permuted spectrum?"* On a chromosome with 500–800 frequencies that is close to
+asking whether it dominates the chromosome. For a signature the question is
+*"does this frequency carry structure?"*, which is a pointwise question with
+false-discovery control.
+
+Both are computed from the same permutations, at no extra cost, and which one
+decides is declared in `stability_criterion`:
+
+- **`condition`** — $q = p_{\text{maxT}}\cdot n_{\mathrm{chr}}$. Family-wise.
+  Selects components that dominate their chromosome; expect single digits.
+- **`condition_fdr`** — pointwise p, BH across frequencies. Selects far more,
+  and a fraction are false by construction.
+
+The pointwise p-value needs a **pooled null**, because computed against its own
+frequency's null it inherits the $1/(B+1)$ floor and BH across ~10,000
+frequencies would need $B \approx 200{,}000$. Each frequency's null is
+standardised by its own mean and standard deviation and the standardised values
+are pooled across the chromosome, giving an empirical null of size $B\cdot K$
+and a floor of $1/(B\cdot K+1)$.
+
+*The assumption:* the **standardised** null is exchangeable across the
+frequencies of a chromosome. Standardising removes the systematic differences
+between frequencies; it does not remove the effect of the sampling window,
+which is why `window_power` travels with every peak and §4.5 is not optional.
+The family-wise p-value is kept alongside and makes no such assumption.
+
 ---
 
 ### 5.6 The characteristic spectrum of a condition
@@ -476,21 +530,75 @@ error control from the spectral test and needs its own.
 
 ## 8. Replication across cohorts
 
-Datasets are compared **only within a tissue and a vocabulary**, and results are
-reported side by side, never pooled. Pooling proportions over summed counts
-would be dominated by the larger cohort and would hide heterogeneity; the
-question is replication, not a bigger $n$.
+### 8.1 Cohorts are units of replication, not extra samples
 
-For an ordered vocabulary, each transition $g \to g'$ reports the amplitude
-delta, its $\log_2$ ratio, and a Welch test on per-sample peak power. A peak is
-`replicated` when the direction of change agrees across all datasets and
-FDR $\le 0.05$ in each.
+Pooling the samples of several series into one condition would treat batch as
+noise. Each cohort is analysed on its own and the results are combined
+afterwards, so a component has to appear independently in more than one study
+before it is called anything.
 
-Two independent cohorts with different coverage — hence different spectral
-windows — agreeing on both the frequency and the direction of change is the
-strongest evidence this design can produce.
+Aggregation across cohorts uses the **median of cohort-level values**, not a
+sample-weighted mean: with 42 of 70 F4 samples from a single series, a mean
+would place the F4 spectrum where that series is.
 
----
+### 8.2 A signature cut chosen by the data
+
+Taking the top $N$ components by score is a display convention pretending to be
+a criterion: it returns $N$ whether the evidence supports $N$, none, or a
+thousand. Instead, each cohort carries a family-wise permutation p-value per
+frequency ($p_{\text{null,fwer}}$, §5.6). Cohorts are independent studies, so
+those combine by Stouffer, and the multiplicity across frequencies is handled by
+BH. The signature is every frequency with $q_{\text{meta}} \le 0.05$ — a count
+the data decides, and one that can legitimately be zero.
+
+The permutation floor of §5.5b applies here too, but combining across $k$
+cohorts lowers it sharply: $k$ values at $1/(B+1)$ give a combined p far below
+the floor of any one of them. Smallest attainable $q$ over 10,030 frequencies:
+
+| cohorts | $B=99$ | $B=199$ | $B=999$ |
+|---|---|---|---|
+| 1 | 100 | 50.2 | 10 |
+| 2 | 5.03 | 1.35 | 0.062 |
+| 3 | 0.28 | **0.041** | **0.0004** |
+| 4 | **0.016** | **0.0013** | **3e-6** |
+
+Bold entries can select at $q \le 0.05$. **A class present in one cohort cannot
+be validated across cohorts at any $B$** — the limitation is the design, not the
+power, and such classes are reported as `single_cohort` and provisional rather
+than given a calibrated signature.
+
+### 8.3 The period floor
+
+Frequencies below a stated period are removed from the analysis *and from the
+multiple-testing family*. That is legitimate for one specific reason: the period
+$N/k$ is a property of the annotation grid alone. It does not depend on
+expression, on condition labels or on the null, so the filter can be fixed
+before a spectrum is seen. Filtering by enrichment or prevalence instead would
+invalidate the error control, since those feed the same score the p-value comes
+from.
+
+Two floors, and the effective one is the larger:
+
+- **Technical**, $2/\rho + m$ per chromosome, where $\rho$ is that chromosome's
+  coverage. $2/\rho$ is the Nyquist limit corrected for the gaps actually
+  present; below it a "periodicity" is the sampling pattern. The margin $m$
+  exists because the estimator is noisiest and window effects concentrate right
+  at that boundary, so the useful floor sits above it rather than on it.
+- **Biological**, a scale the mechanisms of interest could produce.
+  Co-regulation domains, chromatin loops and replication timing act over tens to
+  hundreds of genes; nothing known produces alternation gene by gene across a
+  genome. This is a scope decision and must be declared before results are seen.
+
+Both are recorded in the library manifest. Results should be reported with and
+without the floor: a component that appears only with it is not a finding of the
+floor, it is a component the smaller testing family stopped penalising.
+
+### 8.4 Chromosomes excluded by default
+
+chrY and the mitochondrion are excluded. chrY carries few annotated genes, so
+its grid is short and its spectrum unstable, and its expression tracks the sex
+composition of a group — which differs between conditions and between cohorts.
+A component there reports who was recruited, not what the disease does.
 
 ## 9. Generalisation beyond liver fibrosis
 
@@ -643,11 +751,15 @@ of any positive result.
 
 | Output | Supports | Does **not** support |
 |---|---|---|
-| `p_condition`, `q_condition` | this frequency shows structure unlikely under positional exchangeability | that the structure is biological rather than compositional |
+| `p_condition`, `q_condition` | family-wise: this frequency is stronger than the strongest frequency of a permuted spectrum | that the structure is biological rather than compositional |
+| `q_condition_fdr` | pointwise: this frequency carries structure, with FDR control | that any individual selected component is real — a fraction are false by construction |
+| `q_meta_null` | the component replicates across independent cohorts, with FDR control | anything for a class present in one cohort |
 | `window_rank` | whether sampling alone could produce the frequency | anything about biology |
 | CLEAN components | the components the data prefer to retain | a per-component error rate |
 | consensus score | how strong, common and phase-aligned a frequency is | a significance claim; it has no null |
-| `signature_class` | `confirmed` when prevalence, bootstrap bound and adjusted Rayleigh all hold; `exploratory` otherwise | that an exploratory component is a signature — it is a lead |
+| `signature_class` | `confirmed` when prevalence, the family-wise permutation p and the adjusted Rayleigh all hold; `exploratory` otherwise | that an exploratory component is a signature — it is a lead |
+| `robust` / `candidate` | `robust` adds cross-cohort phase coherence and confirmation in at least one cohort | that either survived the period floor unless the run says so |
+| a zero count | nothing passed the stated criterion | that nothing is there — check the attainable floor first (§5.5b) |
 | PLV + Rayleigh q | whether the crest falls in the same place across samples | that the component is biological |
 | band accuracy | how well a query of that coverage can be classified | that an out-of-domain sample will be rejected |
 | `pct_samples_significant` | reproducibility across samples | evidence strength; it does not aggregate |
