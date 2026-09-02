@@ -1,10 +1,22 @@
-# spectrum.R -- FFT of chromosome-ordered expression.
+# spectrum.R -- chromosome-ordered spectra, per sample and per condition.
 #
-# The numerical core is a direct port of run_fft() / poly_equation() from the
-# original scripts: same one-sided scaling, same sequential Fisher g-test, same
-# reported columns. Verified against the legacy output by
-# scripts/99_validate_against_legacy.R -- do not "clean up" the formulas without
-# re-running that comparison.
+# WHAT COMPUTES WHAT
+# ------------------
+# The spectral estimator the pipeline actually uses is gls_spectrum() in
+# grid.R: generalised Lomb-Scargle with a floating mean, fitted over the
+# observed grid positions only. Every stage goes through it.
+#
+# run_fft() and poly_equation() below are the plain-DFT estimator for a
+# COMPLETE grid, with one-sided scaling and Siegel's sequential Fisher g-test.
+# Nothing in the pipeline calls them. They are kept because they are the
+# independent reference gls_spectrum() is checked against: on a gapless grid
+# the GLS fit must reproduce the DFT coefficients term by term, and
+# tests/test_spectrum.R asserts exactly that. Deleting them would remove the
+# only cross-check that the FFT-accelerated GLS agrees with textbook Fourier
+# analysis where the two are supposed to agree.
+#
+# So: do not wire run_fft() into a stage, and do not delete it either. If its
+# formulas change, tests/test_spectrum.R is what has to keep passing.
 
 #' Fisher's g-test tail probability (Siegel's sequential form).
 poly_equation <- function(x, alpha) {
@@ -113,17 +125,39 @@ chromosome_index <- function(genes, chrom_levels, min_genes_per_chr = 8L) {
 #'
 #' avg_signal / median_signal are the summary signals the condition-level
 #' spectra are computed from; they are NOT averages of per-sample spectra.
+#' MISSINGNESS: a non-finite expression value is NOT turned into a zero here.
+#' It stays NA and the position is dropped from the fit by gls_observed(), so
+#' the value never becomes a measurement of zero expression at a fixed grid
+#' position. The summary signals are taken over the samples that do carry a
+#' value, and a grid position with no value in any sample stays NA and is
+#' dropped from the summary spectra too.
 condition_signals <- function(dataset, cond) {
   samps <- dataset$samples$sample_id[!is.na(dataset$samples$condition) &
                                        dataset$samples$condition == cond]
   samps <- intersect(samps, colnames(dataset$expression))
   if (length(samps) < 2) return(NULL)
   mat <- dataset$expression[, samps, drop = FALSE]
-  mat[!is.finite(mat)] <- 0
+
+  n_missing <- sum(!is.finite(mat))
+  if (n_missing) {
+    tsf_warn("Condition ", cond, ": ", n_missing, " of ", length(mat),
+             " expression values are not finite. Those positions are dropped ",
+             "from each affected fit, never zero-filled. A large count means ",
+             "ingest admitted genes it should have filtered.")
+  }
+
+  n_obs <- rowSums(is.finite(mat))
+  avg <- rowMeans(mat, na.rm = TRUE)
+  med <- apply(mat, 1, stats::median, na.rm = TRUE)
+  # rowMeans(na.rm = TRUE) returns NaN for an all-missing row. Keep it NA so
+  # the position is dropped rather than fitted as a zero.
+  avg[n_obs == 0L] <- NA_real_
+  med[n_obs == 0L] <- NA_real_
+
   list(samples = samps,
        matrix = mat,
-       avg_signal = rowMeans(mat),
-       median_signal = apply(mat, 1, stats::median))
+       avg_signal = avg,
+       median_signal = med)
 }
 
 #' Spectra of every signal of one condition, over every usable chromosome.
@@ -142,13 +176,26 @@ compute_condition_spectra <- function(dataset, cond, chrom_idx) {
   rows <- list()
   for (chr_now in names(chrom_idx)) {
     ci <- chrom_idx[[chr_now]]
-    terms <- gls_prepare(ci$t, ci$N)
+    shared <- gls_prepare(ci$t, ci$N)     # reused by every complete signal
     for (nm in names(all_signals)) {
-      res <- gls_spectrum(all_signals[[nm]][ci$rows], terms)
+      # Positions without a measurement are removed from this signal's fit, and
+      # the window terms are rebuilt for what is left. A complete signal reuses
+      # `shared` and pays nothing.
+      fit <- gls_observed(all_signals[[nm]][ci$rows], ci$t, ci$N, terms = shared)
+      if (is.null(fit)) {
+        tsf_warn("chr", chr_now, " / ", nm, ": too few measured positions after ",
+                 "dropping unmeasured genes, skipped")
+        next
+      }
+      res <- gls_spectrum(fit$y, fit$terms)
       if (is.null(res) || !nrow(res)) next
       res$chr <- chr_now
       res$sample <- nm
-      res$coverage <- ci$coverage
+      # Coverage is what this signal was actually fitted on, not what the
+      # chromosome offers, so a peak is never read against a coverage figure
+      # that a different signal earned.
+      res$coverage <- fit$terms$n / ci$N
+      res$n_dropped_unmeasured <- fit$n_dropped
       rows[[length(rows) + 1]] <- res
     }
   }
