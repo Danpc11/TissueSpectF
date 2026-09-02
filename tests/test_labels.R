@@ -4,6 +4,7 @@ source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
 source("R/grid.R"); source("R/ingest.R"); source("R/annotation.R")
 source("R/fingerprint.R")
 source("R/reference.R"); source("R/bundle.R")
+source("R/maxt.R")   # maxt_cores(); local_workers() comes from utils_io.R
 
 failures <- 0L
 check <- function(label, expr) {
@@ -479,6 +480,31 @@ check("clean with --force needs no prompt", {
     c("scripts/clean_results.R", "--results-dir", tmp, "--force"),
     stdin = "/dev/null", stdout = TRUE, stderr = TRUE))
   !file.exists(file.path(tmp, "gone.tsv")) })
+
+check("--cores reaches the chromosome-parallel stages", {
+  # maxt_cores() used to read detectCores() directly and ignore both --cores
+  # and N_WORKERS, so the documented flag silently did nothing on maxT,
+  # condition and CLEAN -- three stages, including the slow one. The source
+  # attribute is what distinguishes an honoured flag from a fallback.
+  chrom <- stats::setNames(vector("list", 24), paste0("c", 1:24))
+  auto <- maxt_cores(chrom)
+  flagged <- maxt_cores(chrom, list(cores = 2))
+  identical(attr(auto, "source"), "automatic") &&
+    identical(attr(flagged, "source"), "--cores") })
+
+check("maxt_cores agrees with local_workers on the same request", {
+  # One worker-count policy, not two. If these ever disagree, some stages are
+  # obeying a different rule than the flag documents.
+  chrom <- stats::setNames(vector("list", 12), paste0("c", 1:12))
+  opt <- list(cores = 3)
+  identical(as.integer(maxt_cores(chrom, opt)),
+            as.integer(local_workers(opt, n_tasks = 12L, default_max = 12L))) })
+
+check("the chromosome count caps the workers", {
+  # These stages split on chromosomes, so the ceiling is structural: with 4
+  # chromosomes the 5th core has nothing to do, whatever the flag says.
+  chrom <- stats::setNames(vector("list", 4), paste0("c", 1:4))
+  as.integer(maxt_cores(chrom, list(cores = 64))) <= 4L })
 
 check("--config reads a different file and a flag still overrides it", {
   # A derived config keeps one run tree's settings under one name instead of a
