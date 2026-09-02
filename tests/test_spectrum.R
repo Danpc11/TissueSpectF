@@ -904,6 +904,68 @@ check("the null cache key records the period configuration", {
                "min_period_biological", "retained_digest"),
              function(k) grepl(k, src, fixed = TRUE), logical(1))) })
 
+# --- peak reconstruction needs one shared axis -------------------------------
+#
+# A frequency is identified by (chr, N, k). Reconstruction lays that sinusoid on
+# a dataset's axis of length ci$N and reads off which genes sit at the crests.
+# If the peak's N and the axis N disagree the sinusoid is placed at the wrong
+# frequency, every crest lands on the wrong gene, and the table is still written
+# -- carrying `N` and `grid_N` as two different numbers in adjacent columns.
+
+check("reconstruction refuses a peak measured on a different grid", {
+  genes <- data.frame(gene_id = paste0("g", 1:20),
+                      gene_name = paste0("G", 1:20),
+                      stringsAsFactors = FALSE)
+  chrom_idx <- list("21" = list(rows = 1:20, t = 1:20, N = 100L,
+                                coverage = 0.2))
+  # N = 120 on the peak against N = 100 on the axis.
+  peaks <- data.frame(chr = "21", N = 120L, k = 6L, freq = 6 / 120,
+                      period = 20, phase = 0.5, amplitude_mean = 1,
+                      stringsAsFactors = FALSE)
+  out <- tempfile(); dir.create(out)
+  err <- tryCatch(
+    write_peak_gene_tables(peaks, genes, chrom_idx, out, "average", "F2"),
+    error = function(e) e)
+  unlink(out, recursive = TRUE)
+  inherits(err, "error") &&
+    grepl("wrong frequency", conditionMessage(err), fixed = TRUE) })
+
+check("reconstruction proceeds when the axes agree", {
+  genes <- data.frame(gene_id = paste0("g", 1:20),
+                      gene_name = paste0("G", 1:20),
+                      stringsAsFactors = FALSE)
+  chrom_idx <- list("21" = list(rows = 1:20, t = 1:20, N = 100L,
+                                coverage = 0.2))
+  peaks <- data.frame(chr = "21", N = 100L, k = 6L, freq = 6 / 100,
+                      period = 100 / 6, phase = 0.5, amplitude_mean = 1,
+                      stringsAsFactors = FALSE)
+  out <- tempfile(); dir.create(out)
+  n <- write_peak_gene_tables(peaks, genes, chrom_idx, out, "average", "F2")
+  files <- list.files(out, recursive = TRUE)
+  unlink(out, recursive = TRUE)
+  n == 1L && length(files) == 1L })
+
+check("the reconstructed sinusoid uses the reference grid length, not the observed count", {
+  # 20 observed genes on a grid of 100. The sinusoid must complete k cycles over
+  # 100 positions and be sampled at the observed ones -- not complete k cycles
+  # over the 20 genes that happen to be present.
+  N <- 100L; k <- 4L
+  t_obs <- as.integer(seq(1, 100, by = 5))
+  full <- reconstruct_signal(
+    data.frame(freq = k / N, amplitude = 1, phase = 0), N)
+  expected <- cos(2 * pi * k * (t_obs - 1) / N)
+  max(abs(full[t_obs] - expected)) < 1e-9 })
+
+check("peaks and compare check grid compatibility", {
+  # assert_compatible_grids() was called only by stage_reference, so the two
+  # stages whose purpose is lining cohorts up against each other never
+  # confirmed they shared an axis.
+  src <- paste(readLines("R/stages.R", warn = FALSE), collapse = "\n")
+  peaks_body <- sub(".*stage_peaks <- function.*?\\{", "", src)
+  compare_body <- sub(".*stage_compare <- function.*?\\{", "", src)
+  grepl("assert_stage_grids", substr(peaks_body, 1, 400), fixed = TRUE) &&
+    grepl("assert_stage_grids", substr(compare_body, 1, 600), fixed = TRUE) })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
