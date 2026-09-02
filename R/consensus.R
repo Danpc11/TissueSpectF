@@ -418,14 +418,17 @@ null_component_pvalues <- function(cs, null_dist, null_q = 0.05) {
     vapply(cs$consensus_score_rank, function(x)
       (1 + sum(gmax >= x)) / (length(gmax) + 1), numeric(1))
 
-  reachable_q <- nrow(cs) / (n_b + 1)
+  # A BH q is capped at 1 by definition; m/(n_b+1) is the uncapped adjusted p at
+  # rank 1 and printing it raw ("q is 10") reads like a threshold missed by a
+  # factor rather than one that cannot be reached at all.
+  reachable_q <- reachable_bh_q(nrow(cs), n_b)
   if (reachable_q > null_q) {
     tsf_log("Pointwise null: with ", n_b, " draws over ", nrow(cs),
-            " frequencies the smallest reachable BH q is ", signif(reachable_q, 2),
-            " > ", null_q, ", so q_null cannot confirm anything. ",
-            "Confirmation uses the family-wise p_null_fwer instead; raise ",
-            "consensus$n_null above ", ceiling(nrow(cs) / null_q),
-            " if you want the pointwise route.")
+            " frequencies the smallest reachable BH q is ", signif(reachable_q, 3),
+            " > ", null_q, ", so q_null cannot confirm anything. Confirmation ",
+            "uses the family-wise p_null_fwer instead. The pointwise route needs ",
+            draws_for_bh(nrow(cs), null_q), " draws at this family size, or a ",
+            "smaller family: see --min-period.")
   }
 
   cs$beats_global_null <- cs$consensus_score_ci_lower > null_dist$global
