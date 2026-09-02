@@ -28,9 +28,30 @@ Three things make the result trustworthy rather than merely computable:
 - every peak is reported next to its **spectral window**: what the pattern of
   missing genes alone can produce
 
-This repository replaces two ~4,200-line per-dataset scripts with a layered
-pipeline. Everything that was dataset-specific now lives in a config file;
-everything else is shared code.
+The pipeline is layered: everything dataset-specific lives in a config file and
+everything else is shared code, so adding a cohort means writing one config
+rather than copying an analysis. Stages communicate only through files on disk,
+never through session state, so any stage can be re-run on its own.
+
+A fresh clone runs without configuration. Every default path in
+`config/project.R` is relative to the repository, and all of them are
+gitignored:
+
+```bash
+git clone https://github.com/Danpc11/TissueSpectF && cd TissueSpectF
+make test         # base R only, no Bioconductor, no install step
+./tsf selfcheck   # the whole pipeline on synthetic data with a known answer
+./tsf fetch       # then the five GEO cohorts into ./data
+./tsf run
+```
+
+Point the outputs elsewhere with `TSF_ROOT`, with `TSF_GEO_DIR` /
+`TSF_INTERIM_DIR` / `TSF_RESULTS_DIR`, or with `--geo-dir` / `--interim-dir` /
+`--results-dir`. Nothing has to be edited to run on a cluster:
+
+```bash
+TSF_ROOT=/scratch/$USER/TissueSpectF ./tsf run
+```
 
 ## Layout
 
@@ -38,18 +59,21 @@ everything else is shared code.
 tsf                        the command line entry point
 README.md
 THEORY.md                  the model, the estimators, what each test licenses
-RUNBOOK.md                 the sequence for a full run, and what to check
+LICENSING.md               the split licence, and what it can and cannot cover
+LICENSE                    MIT, for the scientific pipeline
+LICENSE-ART.txt            reserved, for the sonification and the music
 requirements-ml.txt        dependencies of the learned layer (optional)
+requirements-sonify.txt    dependencies of the sonification (optional)
 TissueSpectF_colab.ipynb   the whole pipeline on a free Colab VM
 Makefile
 .github/workflows/
-  tests.yml                unit tests + self-check on every push
+  tests.yml                every test suite + self-check on every push
   release.yml              builds and publishes the app bundle on a version tag
 config/
   project.R                paths, filters, and every tunable parameter
   datasets/<GSE>.R         one per dataset: file names, tissue, label rules
   vocabularies/<name>.R    condition vocabularies (levels, states, roles, order)
-  autoencoder.yaml         configuration of the learned layer
+  autoencoder.yaml         the learned layer's parameters -- EARLY, see below
 R/
   utils_io.R               logging, TSV I/O, phenotype cleaning, manifests
   config.R                 config and vocabulary loading, validation
@@ -85,6 +109,8 @@ scripts/
   run_baselines.py         leave-one-cohort-out baselines
   match_query.R            the match command
   selfcheck.R              end-to-end run on synthetic data with a known peak
+  clean_results.R          empty results_dir, with a guard on what it may delete
+  sonify_tissuespectf.py   condition spectra -> MIDI            [reserved, not MIT]
 app/
   app.R                    local desktop app (the only part that needs shiny)
 tests/
@@ -93,8 +119,45 @@ tests/
   ml/                      the learned layer (pytest, numpy/sklearn only)
 ```
 
-Outputs go where `config/project.R` says (`interim_dir`, `results_dir`),
-outside the repository by default.
+## Where things go
+
+`config/project.R` names three directories and defaults all three to the
+repository, so a clone runs with no configuration:
+
+| | default | holds |
+|---|---|---|
+| `geo_dir` | `<repo>/data` | raw GEO downloads and the annotation |
+| `interim_dir` | `<repo>/interim` | the common format, one folder per cohort |
+| `results_dir` | `<repo>/results` | every spectral output |
+
+All three are gitignored: they hold downloads and derived output, never inputs
+that need versioning. No default names a particular machine — a default pointing
+at one person's scratch directory makes a fresh clone fail with paths the user
+has never seen, and makes a config fingerprint record a location instead of a
+choice. `tests/test_labels.R` asserts this rather than leaving it to review.
+
+Three ways to point them elsewhere, highest precedence first:
+
+```bash
+./tsf run --results-dir /scratch/$USER/results     # per-invocation
+TSF_RESULTS_DIR=/scratch/$USER/results ./tsf run   # per-shell
+TSF_ROOT=/scratch/$USER/TissueSpectF ./tsf run     # all three at once
+```
+
+`TSF_ROOT` is the one to reach for on a cluster where code and output belong on
+different filesystems. Every override is echoed in the log, so a run never
+leaves you guessing which tree it wrote to.
+
+To empty the results tree:
+
+```bash
+make clean-dry    # list what would go
+make clean        # delete it
+```
+
+The guard is structural, not a length heuristic: `scripts/clean_results.R`
+refuses the filesystem root, the home directory and the repository itself, and
+verifies afterwards that the removal actually happened rather than assuming it.
 
 ## Common format
 
@@ -465,7 +528,9 @@ no per-sample maxT exists.
 ## Checking that it works
 
 ```bash
-make test         # 38 unit tests: labels, FFT, maxT, stability, Wilson
+make test         # every suite: labels, config, FFT, maxT, CLEAN, stability, Wilson
+make test-r       # the R suites alone (base R, no install step)
+make test-ml      # the learned layer's tests (skipped if Python is absent)
 ./tsf selfcheck   # the full pipeline on synthetic data with a known answer
 ```
 
@@ -509,14 +574,29 @@ downstream is worth reading until it is reconciled.
 
 ## TissueSpect-AE, the learned layer
 
+**Early phase.** This is the one part of the repository that is not finished, so
+what exists is stated plainly rather than described as though it were done:
+
+| | status |
+|---|---|
+| `ml/dataset.py`, `ml/splits.py` | done — export to masked tensors, leave-one-cohort-out, leak checks |
+| `ml/prototypes.py`, `ml/evaluate.py`, `ml/baselines.py` | done — cohort-balanced prototypes, metrics, the baselines |
+| `tests/ml/` | done — 46 tests, run in CI |
+| the model itself | **not written** |
+| `config/autoencoder.yaml` | **read by nothing yet** — it records the intended parameters, not a configuration in use |
+
+So the order is deliberate: the data layer and the bar the model has to clear
+come first, and the model comes last. Nothing here is on the path of any result
+the statistical pipeline produces.
+
 A complementary layer, not a replacement. The statistical results — permutation
 p-values, consensus spectra, replication across cohorts — remain the evidence.
 
 > **A peak reconstructed by TissueSpect-AE is not statistical or causal evidence
 > on its own. Components only the model finds are reported as AI candidates.**
 
-What exists today is the data layer and the evaluation harness. Neither needs
-`torch`; the R pipeline and its tests do not need Python at all.
+Neither the data layer nor the harness needs `torch`; the R pipeline and its
+tests do not need Python at all.
 
 ```bash
 pip install -r requirements-ml.txt          # optional
@@ -556,6 +636,57 @@ the spectra do not distinguish stages across cohorts and no architecture fixes
 that — a network with a domain adversary trained on a few hundred samples would
 find something, and that something would be the cohorts.
 
+## Sonification
+
+```bash
+pip install -r requirements-sonify.txt
+make sonify
+```
+
+> **Licence.** `scripts/sonify_tissuespectf.py`, the mapping it defines and the
+> audio it produces are **reserved, not MIT**. Everything else here is MIT.
+> See [LICENSING.md](LICENSING.md).
+
+One MIDI composition per class. Core invariant peaks — the components present in
+every condition — become a shared accompaniment; each condition's consensus
+peaks become a melody over it. So what you hear changing between `F0` and `F4`
+is the part of the spectrum that changes, against a bed that does not.
+
+The mapping:
+
+| spectral quantity | musical quantity |
+|---|---|
+| frequency `k/N` | pitch, logarithmically — higher spectral frequency, higher pitch |
+| phase | a sub-beat timing displacement |
+| peak strength (`invariant_score`, `meta_score`, `final_power`) | velocity |
+| period | note duration, inversely — long genomic periods, longer notes |
+| evidence class (`robust` / `candidate`) | articulation; candidates are softer |
+
+Pitches are snapped to D Dorian. That is the one frankly aesthetic decision in
+the chain: it makes the result listenable, and it does discard information.
+Frequency still sets pitch height; snapping only quantises it.
+
+Every mapping table is written next to the MIDI, so the transformation stays
+inspectable — a note can be traced back to the `(chr, N, k)` it came from. The
+run also writes a manifest and a `README_sonification.txt`.
+
+```bash
+python3 scripts/sonify_tissuespectf.py \
+  --library-dir results/library_domains \
+  --conditions Normal_histology,F0,F1,F2,F3,F4 \
+  --bpm 82 --bars 16
+```
+
+`--library-dir` defaults to `$TSF_LIBRARY_DIR`, then
+`$TSF_RESULTS_DIR/library_domains`, then `<repo>/results/library_domains`. It
+needs the condition library, so run `build_final_condition_spectra.R` first.
+
+**This is not evidence.** A sonification is a presentation of a result, not a
+test of one. Nothing audible here supports a claim that the statistical
+pipeline does not already support on its own, and a component that sounds
+striking is not thereby more real. The evidence is the permutation p-values,
+the consensus spectra and the cross-cohort replication.
+
 ## The app
 
 Locally, from the repository:
@@ -588,7 +719,8 @@ The reference needs only `ingest` — fingerprints come from the expression
 matrices — so the slow spectral stages are not on the release path. What does
 cost time there is the coverage calibration, which recomputes a fingerprint per
 (sample, coverage level, loss mode, mask); `workflow_dispatch` exposes
-`n_masks` for a cheaper trial build.
+`n_masks`, which is passed through to `./tsf reference --n-masks`, for a cheaper
+trial build.
 
 Binary references do not belong in git, which is why the bundle is a release
 asset rather than a committed file.
