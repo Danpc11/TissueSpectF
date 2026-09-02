@@ -1,0 +1,9 @@
+# Sonification module. Optional, and separate from requirements-ml.txt because
+# nothing scientific depends on it: the pipeline, its tests and its results are
+# unaffected by whether any of this is installed.
+#
+#   pip install -r requirements-sonify.txt
+
+mido>=1.3
+numpy>=1.26
+pandas>=2.1
