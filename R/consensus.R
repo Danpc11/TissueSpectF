@@ -418,17 +418,27 @@ null_component_pvalues <- function(cs, null_dist, null_q = 0.05) {
     vapply(cs$consensus_score_rank, function(x)
       (1 + sum(gmax >= x)) / (length(gmax) + 1), numeric(1))
 
-  # A BH q is capped at 1 by definition; m/(n_b+1) is the uncapped adjusted p at
-  # rank 1 and printing it raw ("q is 10") reads like a threshold missed by a
-  # factor rather than one that cannot be reached at all.
-  reachable_q <- reachable_bh_q(nrow(cs), n_b)
-  if (reachable_q > null_q) {
-    tsf_log("Pointwise null: with ", n_b, " draws over ", nrow(cs),
-            " frequencies the smallest reachable BH q is ", signif(reachable_q, 3),
-            " > ", null_q, ", so q_null cannot confirm anything. Confirmation ",
-            "uses the family-wise p_null_fwer instead. The pointwise route needs ",
-            draws_for_bh(nrow(cs), null_q), " draws at this family size, or a ",
-            "smaller family: see --min-period.")
+  # A conservative diagnostic, not a bound. m/(n_b+1) is the BH value at rank 1
+  # with no ties; with k p-values tied at the permutation floor the achievable
+  # value is m/(k*(n_b+1)), which for a large k is orders of magnitude smaller.
+  # An earlier version reported this as "the smallest reachable q" and concluded
+  # that nothing could pass, which could understate the method's power by a
+  # factor of m. So: report both, and say which is which.
+  rank1 <- bh_rank1_diagnostic(nrow(cs), n_b)
+  n_at_floor <- sum(cs$p_null <= 1 / (n_b + 1), na.rm = TRUE)
+  achievable <- bh_achievable_q(nrow(cs), n_b, max(1L, n_at_floor))
+  if (rank1 > null_q) {
+    tsf_log("Pointwise null over ", nrow(cs), " frequencies at ", n_b, " draws: ",
+            "rank-1 BH diagnostic ", signif(rank1, 3), " (conservative, assumes ",
+            "no ties). ", n_at_floor, " p-value(s) sit at the permutation floor, ",
+            "so the achievable BH q is ", signif(achievable, 3),
+            if (achievable <= null_q)
+              paste0(" -- at or below ", null_q, ", the pointwise route is usable.")
+            else
+              paste0(" -- still above ", null_q, ". Family-wise p_null_fwer is ",
+                     "reported alongside; ", draws_for_bh(nrow(cs), null_q),
+                     " draws would clear the rank-1 case, or reduce the family ",
+                     "with --min-period."))
   }
 
   cs$beats_global_null <- cs$consensus_score_ci_lower > null_dist$global
