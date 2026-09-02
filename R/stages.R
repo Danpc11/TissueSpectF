@@ -282,13 +282,20 @@ stage_consensus <- function(project, opt) {
       }
 
       n_here <- length(unique(sp$sample))
-      key <- as.character(n_here)
+      # Keyed on sample count AND the retained family: two conditions with the
+      # same n can now have different families, because coverage -- and so the
+      # auto period floor -- is per condition. Sharing a null between them
+      # would reintroduce exactly the mismatch this fixes.
+      retained_keys <- paste(cs$chr, cs$N, cs$k, sep = "|")
+      key <- paste0(n_here, "@", digest_keys(retained_keys))
       null_dist <- NULL
       if (!is.null(pool)) {
         if (is.null(null_cache[[key]])) {
           cache_dir <- file.path(inp$paths$base, "consensus", "null_cache")
-          cache_path <- file.path(cache_dir, sprintf("null_n%04d.rds", n_here))
-          retained_keys <- paste(cs$chr, cs$N, cs$k, sep = "|")
+          # The family goes in the filename too, so two period configurations
+          # cannot overwrite each other's persistent null.
+          cache_path <- file.path(cache_dir, sprintf(
+            "null_n%04d_%s.rds", n_here, digest_keys(retained_keys)))
           metadata <- null_cache_metadata(pool_paths, n_here, project, blocks,
                                           retained_keys = retained_keys)
           cached <- if (!isTRUE(opt$force)) read_null_cache(cache_path, metadata) else NULL
@@ -313,7 +320,11 @@ stage_consensus <- function(project, opt) {
               seed = project$maxt$seed,
               quantile_cut = project$consensus$quantile_cut %||% 0.95,
               blocks = blocks, n_cores = n_cores, engine = "matrix",
-              prepared = prepared_null)
+              prepared = prepared_null,
+              # The family this condition actually tests, after the period
+              # floor. Without it each permutation's maximum came from a larger
+              # family than the one being tested.
+              retained_keys = retained_keys)
             null_cache[[key]] <- list(d = computed_null)
             if (!is.null(computed_null))
               write_null_cache(cache_path, metadata, computed_null)
