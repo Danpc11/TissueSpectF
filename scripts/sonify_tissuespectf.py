@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: CC BY-NC 4.0
+# SPDX-License-Identifier: CC-BY-NC-4.0
 # Copyright (c) 2026 Daniel Pérez
+# Attribution required, no commercial use. See LICENSE.
 """
 sonify_tissuespectf.py
 
