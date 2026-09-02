@@ -173,17 +173,22 @@ clean_condition <- function(dataset, cond, chrom_idx, branch = "average",
 
   per_chr <- parallel::mclapply(names(chrom_idx), function(chr_now) {
     ci <- chrom_idx[[chr_now]]
-    terms <- gls_prepare(ci$t, ci$N)
+    shared <- gls_prepare(ci$t, ci$N)
     rows <- list()
     for (nm in names(signals)) {
-      cp <- clean_decompose(signals[[nm]][ci$rows], terms,
+      # Deflation subtracts a fitted sinusoid from the residual, so a
+      # zero-filled hole would be fitted and then removed as though it were
+      # signal. Drop the position instead.
+      fit <- gls_observed(signals[[nm]][ci$rows], ci$t, ci$N, terms = shared)
+      if (is.null(fit)) next
+      cp <- clean_decompose(fit$y, fit$terms,
                             max_components = clean_cfg$max_components %||% 20L,
                             penalty_factor = clean_cfg$penalty_factor %||% 1,
                             ebic_gamma = clean_cfg$ebic_gamma %||% 1)
       if (is.null(cp)) next
       cp$chr <- chr_now
       cp$signal <- nm
-      cp$coverage <- ci$coverage
+      cp$coverage <- fit$terms$n / ci$N
       rows[[length(rows) + 1]] <- cp
     }
     if (!length(rows)) NULL else do.call(rbind, rows)
