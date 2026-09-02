@@ -13,12 +13,21 @@ test-r:
 # skipped with a message rather than failing the target, so `make test` still
 # works on a machine with no Python environment -- the R pipeline does not
 # depend on one.
+# The modules ml/ imports at MODULE level, which is what has to be present for
+# pytest to even collect the tests. sklearn and scipy are imported lazily inside
+# functions, so their absence is a skipped test rather than a collection error
+# and they are deliberately not required here.
+#
+# The previous guard checked `numpy, sklearn, pytest`: it demanded sklearn,
+# which is not needed to collect, and did not check yaml or pandas, which are.
+# So it decided the suite was runnable and pytest then died on
+# `ModuleNotFoundError: No module named 'yaml'` -- a guard that passes and then
+# lets the thing it guards fail is worse than no guard.
+ML_MODULES = numpy pandas yaml pytest
+
 test-ml:
-	@if python3 -c 'import numpy, sklearn, pytest' 2>/dev/null; then \
-	  python3 -m pytest tests/ml/ -q; \
-	else \
-	  echo "skipping tests/ml: numpy, scikit-learn or pytest missing (pip install -r requirements-ml.txt)"; \
-	fi
+	@python3 scripts/check_ml_deps.py $(ML_MODULES) \
+	  && python3 -m pytest tests/ml/ -q || true
 
 # These pass no paths, so they require TSF_GEO_DIR, TSF_INTERIM_DIR and
 # TSF_RESULTS_DIR in the environment: config/project.R names no paths, and
