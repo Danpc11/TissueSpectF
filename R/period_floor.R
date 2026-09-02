@@ -102,20 +102,48 @@ apply_period_floor <- function(long,
   long[keep, , drop = FALSE]
 }
 
-#' Smallest BH q-value any frequency could reach, given the family size.
+#' Conservative rank-1 BH diagnostic: m/(B+1), capped at 1.
 #'
-#' At rank 1 the BH-adjusted p is p_min * m, and a permutation p cannot fall
-#' below 1/(B+1). So the floor is m/(B+1) -- and a q-value is capped at 1, which
-#' the reported number must respect: printing "q is 10" is arithmetic, not a
-#' q-value, and invites the reader to think a threshold was missed by a factor
-#' rather than being unreachable outright.
-reachable_bh_q <- function(m, n_draws) {
+#' NOT A LOWER BOUND. This was documented as "the smallest q any frequency
+#' could reach", and that is wrong. BH takes q_i = min over j >= i of
+#' m * p_j / j, so the achievable minimum depends on how many hypotheses tie at
+#' the permutation floor. If all m of them sit at p = 1/(B+1), then at rank m
+#' the adjusted value is m * p / m = 1/(B+1) -- a factor of m below what this
+#' function returns. With k hypotheses tied at the floor it is m/(k(B+1)).
+#'
+#' So this is the value at rank 1 with no ties: the worst case, useful as a
+#' warning that the pointwise route is hostile at this family size, and useless
+#' as grounds for saying nothing can pass. Reporting it as a bound understates
+#' the method's power by up to a factor of m, which for m = 10,030 is not a
+#' rounding difference -- it could be the difference between reporting nothing
+#' and reporting a real set of components.
+#'
+#' Use it to decide whether to look at the pointwise route. Do not use it to
+#' decide that the pointwise route is closed.
+bh_rank1_diagnostic <- function(m, n_draws) {
   if (!is.finite(m) || !is.finite(n_draws) || n_draws < 1) return(1)
   min(1, m / (n_draws + 1))
 }
 
-#' Draws needed for the pointwise BH route to be able to reach `target`.
+#' The actual achievable minimum BH q, given how many p-values tie at the floor.
+#'
+#' `n_tied` is how many of the m hypotheses reach the permutation floor
+#' 1/(n_draws+1). At rank n_tied the BH value is m/(n_tied * (n_draws+1)), and
+#' that is the honest answer to "could anything pass".
+bh_achievable_q <- function(m, n_draws, n_tied = 1L) {
+  if (!is.finite(m) || !is.finite(n_draws) || n_draws < 1) return(1)
+  n_tied <- max(1L, min(as.integer(n_tied), as.integer(m)))
+  min(1, m / (n_tied * (n_draws + 1)))
+}
+
+#' Draws needed for the rank-1 (no-ties) case to reach `target`.
+#'
+#' The worst case, so an upper bound on what is needed -- with ties at the
+#' floor, fewer draws suffice.
 draws_for_bh <- function(m, target = 0.05) {
   if (!is.finite(m) || !is.finite(target) || target <= 0) return(NA_integer_)
   as.integer(ceiling(m / target)) - 1L
 }
+
+#' Deprecated name for bh_rank1_diagnostic(), kept so nothing breaks silently.
+reachable_bh_q <- function(m, n_draws) bh_rank1_diagnostic(m, n_draws)
