@@ -59,9 +59,7 @@ TSF_ROOT=/scratch/$USER/TissueSpectF ./tsf run
 tsf                        the command line entry point
 README.md
 THEORY.md                  the model, the estimators, what each test licenses
-LICENSING.md               the split licence, and what it can and cannot cover
-LICENSE                    MIT, for the scientific pipeline
-LICENSE-ART.txt            reserved, for the sonification and the music
+LICENSE                    MIT
 requirements-ml.txt        dependencies of the learned layer (optional)
 requirements-sonify.txt    dependencies of the sonification (optional)
 TissueSpectF_colab.ipynb   the whole pipeline on a free Colab VM
@@ -110,7 +108,7 @@ scripts/
   match_query.R            the match command
   selfcheck.R              end-to-end run on synthetic data with a known peak
   clean_results.R          empty results_dir, with a guard on what it may delete
-  sonify_tissuespectf.py   condition spectra -> MIDI            [reserved, not MIT]
+  sonify_tissuespectf.py   condition spectra -> MIDI
 app/
   app.R                    local desktop app (the only part that needs shiny)
 tests/
@@ -158,6 +156,24 @@ make clean        # delete it
 The guard is structural, not a length heuristic: `scripts/clean_results.R`
 refuses the filesystem root, the home directory and the repository itself, and
 verifies afterwards that the removal actually happened rather than assuming it.
+
+### Every environment variable
+
+| variable | effect | default |
+|---|---|---|
+| `TSF_ROOT` | base for all three directories below | the working directory |
+| `TSF_GEO_DIR` | raw GEO downloads | `$TSF_ROOT/data` |
+| `TSF_INTERIM_DIR` | the common format | `$TSF_ROOT/interim` |
+| `TSF_RESULTS_DIR` | spectral outputs | `$TSF_ROOT/results` |
+| `TSF_LIBRARY_DIR` | condition library, for the peak-gene and sonification scripts | `$TSF_RESULTS_DIR/library_domains` |
+| `TSF_MAXT_B` | permutations for the per-sample maxT test | as `config/project.R` says |
+| `TSF_CONDITION_B` | permutations for the condition-level test | as `config/project.R` says |
+| `TSF_APP_MAX_UPLOAD_MB` | upload cap in the app | 512 |
+
+`TSF_MAXT_B` and `TSF_CONDITION_B` exist so a smoke run finishes: they lower the
+permutation count, which raises the floor on the smallest reportable p-value to
+`1/(B+1)`. Use them for a self-check or a Colab demo, never for a result — the
+Colab notebook and CI both set them for exactly that reason and say so.
 
 ## Common format
 
@@ -365,9 +381,9 @@ Any stage can be run on its own, over a subset:
 Paths and parameters are flags, so nothing has to be exported:
 
 ```bash
-./tsf run --to spectra --results-dir results_pc
+./tsf run --to spectra --results-dir results_proteincoding
 ./tsf run --gene-universe '^(protein-coding|ncRNA)$' \
-          --results-dir results_pc_nc --interim-dir interim_pc_nc
+          --results-dir results_pc_lnc --interim-dir interim_pc_lnc
 ./tsf stability --stable-frac 0.7 --criterion consistency
 ./tsf reference --target tissue --k-max 96
 ```
@@ -414,10 +430,10 @@ place the F4 spectrum where that series is.
 
 ```bash
 Rscript scripts/build_final_condition_spectra.R \
-  --results-dir results_gencode_v2 --out-dir results_gencode_v2/library_all
+  --results-dir results --out-dir results/library_all
 
 Rscript scripts/build_final_condition_spectra.R \
-  --results-dir results_gencode_v2 --out-dir results_gencode_v2/library_domains \
+  --results-dir results --out-dir results/library_domains \
   --min-period auto --period-margin 2 --min-period-biological 10
 ```
 
@@ -600,9 +616,9 @@ tests do not need Python at all.
 
 ```bash
 pip install -r requirements-ml.txt          # optional
-./tsf ae-prepare --interim-dir interim --results-dir results_pc
-python3 scripts/run_baselines.py --data results_pc/autoencoder/data \
-                                 --out  results_pc/autoencoder/baselines
+./tsf ae-prepare --interim-dir interim --results-dir results
+python3 scripts/run_baselines.py --data results/autoencoder/data \
+                                 --out  results/autoencoder/baselines
 python3 -m pytest tests/ml/ -q
 ```
 
@@ -642,10 +658,6 @@ find something, and that something would be the cohorts.
 pip install -r requirements-sonify.txt
 make sonify
 ```
-
-> **Licence.** `scripts/sonify_tissuespectf.py`, the mapping it defines and the
-> audio it produces are **reserved, not MIT**. Everything else here is MIT.
-> See [LICENSING.md](LICENSING.md).
 
 One MIDI composition per class. Core invariant peaks — the components present in
 every condition — become a shared accompaniment; each condition's consensus
@@ -821,3 +833,8 @@ matches reach, per class and per coverage band. It bounds how often a true membe
 It does **not** bound how often an out-of-domain sample is wrongly accepted:
 no out-of-domain sample was in the validation. Open-set specificity needs
 negatives — for a tissue reference, other tissues.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE). All of it — the pipeline, the app, the learned
+layer and the sonification.
