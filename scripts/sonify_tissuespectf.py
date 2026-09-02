@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: LicenseRef-TissueSpectF-Art
+# Copyright (c) 2026 Daniel Perez. All rights reserved.
+#
+# RESERVED. This file is not under the MIT licence covering the rest of the
+# repository. See LICENSE-ART.txt and LICENSING.md.
 """
 sonify_tissuespectf.py
 
@@ -38,16 +43,27 @@ pip install pandas numpy mido
 
 Example
 -------
-python scripts/sonify_tissuespectf.py \
-  --library-dir results_gencode_v3/library_domains \
-  --out-dir results_gencode_v3/library_domains/sonification \
+python3 scripts/sonify_tissuespectf.py \
+  --library-dir results/library_domains \
   --conditions Normal_histology,F0,F1,F2,F3,F4
+
+--library-dir defaults to $TSF_LIBRARY_DIR, then to
+$TSF_RESULTS_DIR/library_domains, then to <repo>/results/library_domains, the
+same resolution the rest of the pipeline uses. --out-dir defaults to a
+"sonification" folder inside it.
+
+Licence
+-------
+This module is NOT under the licence covering the rest of the repository.
+The pipeline is MIT; this file, the mapping it defines and the audio and MIDI
+it produces are reserved. See LICENSING.md.
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -76,11 +92,30 @@ DEFAULT_BPM = 82
 D_DORIAN = {0, 2, 4, 5, 7, 9, 10}  # relative to C pitch classes
 
 
+def default_library_dir() -> str:
+    """Resolve the library the same way the R pipeline resolves its paths.
+
+    The default used to be "results_gencode_v3/library_domains", a directory
+    that existed on one machine. A default path is a statement about layout,
+    never about a location.
+    """
+    explicit = os.environ.get("TSF_LIBRARY_DIR", "")
+    if explicit:
+        return explicit
+    results = os.environ.get("TSF_RESULTS_DIR", "")
+    if not results:
+        results = os.path.join(os.environ.get("TSF_ROOT", os.getcwd()), "results")
+    return os.path.join(results, "library_domains")
+
+
 def parse_args():
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(
+        description="Sonify TissueSpectF condition spectra into MIDI.")
     p.add_argument(
         "--library-dir",
-        default="results_gencode_v3/library_domains",
+        default=default_library_dir(),
+        help="Condition library written by build_final_condition_spectra.R "
+             "(default: $TSF_LIBRARY_DIR, else $TSF_RESULTS_DIR/library_domains).",
     )
     p.add_argument(
         "--out-dir",
