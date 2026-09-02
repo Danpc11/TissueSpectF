@@ -452,6 +452,30 @@ check("the clean guard refuses the repository itself", {
     stdout = TRUE, stderr = TRUE))
   !is.null(attr(out, "status")) && attr(out, "status") != 0L })
 
+check("the help text lists every stage that exists", {
+  # The stage list in the usage string used to be typed out by hand, and had
+  # drifted: it omitted `consensus`, so the help told the user about a pipeline
+  # one stage shorter than the real one. It is now built from stage_names, and
+  # this asserts they cannot come apart again.
+  # stage_names lives in R/stages.R, which this suite does not source; read it
+  # from there so the assertion compares the help against the real definition
+  # rather than against a second hand-written list.
+  src <- paste(readLines("R/stages.R", warn = FALSE), collapse = " ")
+  decl <- regmatches(src, regexpr('stage_names <- c\\([^)]*\\)', src))
+  stages <- regmatches(decl, gregexpr('"[a-z]+"', decl))[[1]]
+  stages <- gsub('"', "", stages)
+  usage <- paste(system2("./tsf", "--help", stdout = TRUE, stderr = TRUE),
+                 collapse = " ")
+  length(stages) >= 9L &&
+    all(vapply(stages, function(x) grepl(x, usage, fixed = TRUE), logical(1))) })
+
+check("the help says datasets are positional", {
+  # `--datasets GSE135251` is the natural guess and is wrong; the error for it
+  # should say so rather than only listing valid options.
+  out <- suppressWarnings(system2("./tsf", c("window", "--datasets", "GSE1"),
+                                  stdout = TRUE, stderr = TRUE))
+  any(grepl("positional", paste(out, collapse = " "), fixed = TRUE)) })
+
 # --- licensing ---------------------------------------------------------------
 #
 # One licence, MIT, covering everything. The assertions are here because a
