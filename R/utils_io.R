@@ -100,6 +100,51 @@ tsf_module_order <- function(dir = "R") {
   file.path(dir, paste0(ordered, ".R"))
 }
 
+# Worker-count policy, in one place. It lived in stages.R, but it is a utility
+# rather than a stage: three chromosome-parallel stages, consensus and compare
+# all need it, and having it inside stages.R meant nothing could ask about the
+# policy without loading every stage function in the pipeline.
+#
+# Resolution: --cores, then N_WORKERS, then automatic. `n_tasks` is the real
+# ceiling -- a worker with no task is not a faster run -- and `default_max`
+# caps only the automatic path.
+#' Worker budget for the local process manager.
+#'
+#' There is deliberately no scheduler detection here: this project runs on a
+#' host whose resource manager exposes a local process budget.  An explicit
+#' --cores value wins, followed by N_WORKERS, then a conservative automatic
+#' default.  BLAS is kept at one thread so that each fork remains one CPU task.
+local_workers <- function(opt, n_tasks = Inf, default_max = 8L) {
+  valid_int <- function(x) {
+    x <- suppressWarnings(as.integer(x))
+    if (length(x) != 1L || is.na(x) || x < 1L) NA_integer_ else x
+  }
+
+  requested <- valid_int(opt$cores %||% NA_integer_)
+  source <- "--cores"
+  if (is.na(requested)) {
+    requested <- valid_int(Sys.getenv("N_WORKERS", unset = NA_character_))
+    source <- "N_WORKERS"
+  }
+
+  detected <- suppressWarnings(parallel::detectCores(logical = TRUE))
+  if (length(detected) != 1L || is.na(detected) || detected < 1L) detected <- 1L
+  if (is.na(requested)) {
+    requested <- min(as.integer(default_max), max(1L, detected - 1L))
+    source <- "automatic"
+  }
+
+  n_tasks <- suppressWarnings(as.integer(n_tasks))
+  if (length(n_tasks) != 1L || is.na(n_tasks) || n_tasks < 1L) n_tasks <- detected
+  workers <- max(1L, min(requested, detected, n_tasks))
+
+  Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1",
+             MKL_NUM_THREADS = "1", BLIS_NUM_THREADS = "1",
+             VECLIB_MAXIMUM_THREADS = "1")
+  attr(workers, "source") <- source
+  workers
+}
+
 tsf_load_all <- function(dir = "R") {
   invisible(lapply(tsf_module_order(dir), source))
 }
