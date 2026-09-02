@@ -159,7 +159,15 @@ gls_window_terms <- function(t, N) {
 #'   power_normalised (the classic 0-1 GLS statistic) and window_power
 gls_spectrum <- function(y, terms) {
   y <- as.numeric(y)
-  y[!is.finite(y)] <- 0
+  # Callers are expected to have removed unmeasured positions with
+  # gls_observed(); a non-finite value reaching here would be counted as
+  # observed by w and fitted as a zero. Refuse rather than quietly imputing.
+  if (anyNA(y) || any(!is.finite(y))) {
+    tsf_abort("gls_spectrum() received ", sum(!is.finite(y)), " non-finite ",
+              "value(s) at observed positions. Route the signal through ",
+              "gls_observed() so unmeasured genes are dropped from the fit ",
+              "instead of being zero-filled.")
+  }
   n <- terms$n; N <- terms$N; k <- terms$k
 
   z <- numeric(N); z[terms$t_index] <- y
@@ -205,6 +213,47 @@ gls_prepare <- function(t, N) {
   terms <- gls_window_terms(t, N)
   terms$t_index <- as.integer(t)
   terms
+}
+
+#' Restrict a signal to the positions that actually carry a measurement.
+#'
+#' WHY THIS EXISTS
+#' ---------------
+#' gls_spectrum() replaces a non-finite value with zero before the FFT. For the
+#' positions that are absent from `t` that is the documented computational
+#' device: they never enter the fit, because the normalisation goes through the
+#' presence indicator w. For a position that IS in `t` but whose value is NA it
+#' is something else entirely -- w counts it as observed, so a zero lands at a
+#' fixed grid position and is treated as a measurement of zero expression. That
+#' is exactly the failure the reference grid was built to avoid, and it would
+#' arrive silently.
+#'
+#' Ingest drops genes with no usable value, so in a normal run every observed
+#' position is finite and this function returns the shared terms untouched at no
+#' cost. It matters in the case ingest cannot catch: a gene finite in most
+#' samples but NA in one (a duplicate-identifier group that collapses to all-NA
+#' for that sample alone) survives the expression filter and reaches here with a
+#' hole in one column.
+#'
+#' When that happens the position is removed from the observed set and the
+#' window terms are rebuilt for the reduced set, so the missingness of this
+#' signal is described by its own w. The cost is one extra pair of FFTs for the
+#' affected signal only.
+#'
+#' @param y values at the positions in `t`, in that order
+#' @param t observed grid positions
+#' @param N grid length for the chromosome
+#' @param terms optional precomputed gls_prepare(t, N), reused when complete
+#' @param min_observed refuse to fit fewer than this many points
+#' @return list(y, terms, n_dropped), or NULL when too little survives
+gls_observed <- function(y, t, N, terms = NULL, min_observed = 8L) {
+  y <- as.numeric(y)
+  ok <- is.finite(y)
+  if (all(ok)) {
+    return(list(y = y, terms = terms %||% gls_prepare(t, N), n_dropped = 0L))
+  }
+  if (sum(ok) < min_observed) return(NULL)
+  list(y = y[ok], terms = gls_prepare(t[ok], N), n_dropped = sum(!ok))
 }
 
 #' Spectral window: what the sampling pattern alone produces.
