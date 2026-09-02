@@ -1,4 +1,4 @@
-.PHONY: test test-r test-ml check run selfcheck status clean clean-dry clean-force sonify
+.PHONY: test test-r test-ml check run selfcheck status clean clean-dry clean-force sonify require-paths
 
 # Every suite. `make test` used to run two of the three R files, so a failure in
 # tests/test_condition_invariants.R was invisible until someone ran it by hand.
@@ -20,16 +20,38 @@ test-ml:
 	  echo "skipping tests/ml: numpy, scikit-learn or pytest missing (pip install -r requirements-ml.txt)"; \
 	fi
 
-check:
+# These pass no paths, so they require TSF_GEO_DIR, TSF_INTERIM_DIR and
+# TSF_RESULTS_DIR in the environment: config/project.R names no paths, and
+# there is deliberately no default to inherit. The targets check for them
+# first, because `./tsf run` failing three lines into a Makefile is less clear
+# than being told what to export.
+REQUIRED_ENV = TSF_GEO_DIR TSF_INTERIM_DIR TSF_RESULTS_DIR
+
+require-paths:
+	@missing=""; \
+	for v in $(REQUIRED_ENV); do \
+	  eval "val=\$$$$v"; \
+	  [ -n "$$val" ] || missing="$$missing $$v"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+	  echo "Set these first (no defaults, by design):$$missing"; \
+	  echo "  export TSF_GEO_DIR=data"; \
+	  echo "  export TSF_INTERIM_DIR=interim"; \
+	  echo "  export TSF_RESULTS_DIR=run_$$(date +%Y_%m_%d)"; \
+	  echo "Or pass --geo-dir / --interim-dir / --results-dir to ./tsf."; \
+	  exit 1; \
+	fi
+
+check: require-paths
 	./tsf check
 
-run:
+run: require-paths
 	./tsf run
 
 selfcheck:
 	./tsf selfcheck
 
-status:
+status: require-paths
 	./tsf status
 
 # Deletes the contents of the results tree named in config/project.R. That is
