@@ -41,8 +41,8 @@ clean:
 clean-dry:
 	@Rscript scripts/clean_results.R --dry-run
 
-# Sonification. Reserved, not MIT -- see LICENSING.md. Needs the condition
-# library, so build_final_condition_spectra.R has to have run first.
+# Sonification. Needs the condition library, so
+# build_final_condition_spectra.R has to have run first.
 sonify:
 	@python3 -c 'import mido' 2>/dev/null || { \
 	  echo "missing mido: pip install -r requirements-sonify.txt"; exit 1; }
