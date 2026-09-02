@@ -89,9 +89,23 @@ bind_rows_fill <- function(xs) {
   out
 }
 
+# Defaults follow the environment, not one author's run directory. The library
+# is whatever build_final_condition_spectra.R last wrote under results_dir;
+# "results_gencode_v3/library_domains" was a path that existed on exactly one
+# machine.
+default_library_dir <- function() {
+  v <- Sys.getenv("TSF_LIBRARY_DIR", unset = "")
+  if (nzchar(v)) return(v)
+  results <- Sys.getenv("TSF_RESULTS_DIR", unset = "")
+  if (!nzchar(results)) {
+    results <- file.path(Sys.getenv("TSF_ROOT", unset = getwd()), "results")
+  }
+  file.path(results, "library_domains")
+}
+
 parse_args <- function(x) {
   out <- list(
-    library_dir = "results_gencode_v3/library_domains",
+    library_dir = default_library_dir(),
     out_dir = NULL,
     genes_file = NULL,
     interim_dir = NULL,
