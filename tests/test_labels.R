@@ -603,27 +603,51 @@ check("the help says datasets are positional", {
 
 # --- licensing ---------------------------------------------------------------
 #
-# One licence, MIT, covering everything. The assertions are here because a
-# distributable with no statement of rights leaves the recipient guessing, and
-# because a stray SPDX header claiming something other than MIT would quietly
-# contradict LICENSE -- the kind of drift nobody notices until it matters.
+# One licence, CC BY-NC 4.0, everywhere. This repository briefly declared MIT in
+# README.md and R/bundle.R while LICENSE said CC BY-NC, which is worse than
+# either: the bundle told recipients they could use commercially what LICENSE
+# forbade. The assertions below exist because that drift was invisible to
+# review and visible only to whoever read the wrong file.
 
-check("the licence file exists and is MIT", {
-  file.exists("LICENSE") &&
-    any(grepl("MIT License", readLines("LICENSE", warn = FALSE), fixed = TRUE)) })
+LICENCE_ID <- "CC-BY-NC-4.0"
+LICENCE_PROSE <- "CC BY-NC 4.0"
 
-check("no file claims a licence other than MIT", {
+check("LICENSE declares CC BY-NC 4.0 by SPDX id and by name", {
+  txt <- paste(readLines("LICENSE", warn = FALSE), collapse = " ")
+  grepl(LICENCE_ID, txt, fixed = TRUE) &&
+    grepl(LICENCE_PROSE, txt, fixed = TRUE) })
+
+check("no file still claims MIT", {
+  files <- c("LICENSE", "README.md", "R/bundle.R",
+             "scripts/sonify_tissuespectf.py", "Makefile")
+  files <- files[file.exists(files)]
+  claims <- unlist(lapply(files, function(f) {
+    hits <- grep("MIT", readLines(f, warn = FALSE), value = TRUE)
+    # A line explaining what the licence is NOT may name MIT; a line asserting
+    # the licence may not.
+    hits[!grepl("not|rather than|instead of|Apache|GPL", hits)]
+  }))
+  length(claims) == 0 })
+
+check("every SPDX header agrees with LICENSE", {
   files <- c(list.files("R", pattern = "[.]R$", full.names = TRUE),
              list.files("scripts", pattern = "[.](R|py)$", full.names = TRUE),
              list.files("ml", pattern = "[.]py$", full.names = TRUE),
              "app/app.R", "tsf")
   files <- files[file.exists(files)]
-  claims <- unlist(lapply(files, function(f) {
-    spdx <- grep("SPDX-License-Identifier",
-                 readLines(f, n = 15, warn = FALSE), value = TRUE)
-    spdx[!grepl("MIT", spdx, fixed = TRUE)]
+  bad <- unlist(lapply(files, function(f) {
+    spdx <- grep("SPDX-License-Identifier", readLines(f, n = 15, warn = FALSE),
+                 value = TRUE)
+    spdx[!grepl(LICENCE_ID, spdx, fixed = TRUE)]
   }))
-  length(claims) == 0 })
+  length(bad) == 0 })
+
+check("the bundle does not promise commercial use", {
+  # The bundle is a release asset a collaborator downloads and reads. Under NC
+  # it must not tell them the opposite of what LICENSE says.
+  src <- paste(readLines("R/bundle.R", warn = FALSE), collapse = " ")
+  grepl(LICENCE_PROSE, src, fixed = TRUE) &&
+    !grepl("commercially or not", src, fixed = TRUE) })
 
 check("the bundle ships the licence", {
   src <- readLines("R/bundle.R", warn = FALSE)
