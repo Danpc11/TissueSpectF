@@ -37,6 +37,27 @@ write_peak_gene_tables <- function(peaks, genes, chrom_idx, out_dir, branch, con
     ord <- ci$rows
     N_genes <- ci$N
 
+    # The peak's frequency is k/N measured on the grid the spectrum was
+    # computed on. Reconstruction places that sinusoid on THIS dataset's axis,
+    # of length ci$N. If the two N disagree, the sinusoid is laid down at the
+    # wrong frequency and every crest lands on the wrong gene -- and the table
+    # would still be written, carrying `N` and `grid_N` as two different
+    # numbers in adjacent columns with nothing to say they should have matched.
+    #
+    # They can only disagree if the grids differ, which means the datasets were
+    # ingested against different annotations (project$annotation_format and
+    # gene_universe both change the grid). That is a configuration error, not a
+    # data property, so it aborts rather than skipping: a partial peak-gene
+    # library that looks complete is worse than no library.
+    if (!identical(as.integer(peaks$N[i]), as.integer(ci$N))) {
+      tsf_abort("chr", chr_now, ": the peak was measured on a grid of N = ",
+                peaks$N[i], " but this dataset's grid has N = ", ci$N,
+                ". Reconstruction would place the sinusoid at the wrong ",
+                "frequency. The datasets were ingested against different ",
+                "annotations or gene universes; re-run ingest for all of them ",
+                "with the same project$annotation_format and gene_universe.")
+    }
+
     amp <- peaks[[amp_col]][i]
     phi <- peaks$phase[i]
     if (!is.finite(amp) || !is.finite(phi)) next
