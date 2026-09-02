@@ -953,6 +953,44 @@ aggregate_condition <- function(
         ]
       )
 
+    # n_meta_cohorts: how many cohorts actually contributed a usable p-value.
+    #
+    # stouffer() drops non-finite p silently, so a frequency present in three
+    # cohorts but with only one finite p_null was combined from one value while
+    # n_cohorts said three. It then passed a `n_cohorts >= min_cohorts` gate as
+    # though it carried three independent sources of evidence. Replication is
+    # the central claim of this pipeline, and that gate was counting cohorts
+    # that were present rather than cohorts that spoke.
+    n_meta <- vapply(
+      p_groups,
+      function(p) sum(is.finite(suppressWarnings(as.numeric(p)))),
+      integer(1)
+    )
+
+    out$n_meta_cohorts <-
+      unname(
+        n_meta[
+          feature_key(out)
+        ]
+      )
+    out$n_meta_cohorts[
+      is.na(out$n_meta_cohorts)
+    ] <- 0L
+
+    # A combined p from fewer than min_cohorts contributing cohorts is not a
+    # meta-analysis. Withheld rather than reported with a caveat: a number in a
+    # q column gets used, and a footnote does not travel with it.
+    insufficient <- out$n_meta_cohorts < min_cohorts
+    if (any(insufficient)) {
+      messagef(
+        "  meta-analysis: %d of %d frequencies have fewer than %d cohorts with a usable p_null (p_meta_null withheld)",
+        sum(insufficient),
+        nrow(out),
+        min_cohorts
+      )
+      out$p_meta_null[insufficient] <- NA_real_
+    }
+
     out$q_meta_null <-
       stats::p.adjust(
         out$p_meta_null,
@@ -962,8 +1000,10 @@ aggregate_condition <- function(
     out$n_null_draws <-
       n_draws
 
-    eligible_k <- out$n_cohorts[
-      out$n_cohorts >= min_cohorts
+    # Eligibility on contributing cohorts, not on cohorts present. See
+    # n_meta_cohorts above.
+    eligible_k <- out$n_meta_cohorts[
+      out$n_meta_cohorts >= min_cohorts
     ]
 
     if (length(eligible_k)) {
@@ -1005,6 +1045,7 @@ aggregate_condition <- function(
     }
   } else {
     out$p_meta_null <- NA_real_
+    out$n_meta_cohorts <- 0L
     out$q_meta_null <- NA_real_
     out$n_null_draws <- NA_real_
   }
