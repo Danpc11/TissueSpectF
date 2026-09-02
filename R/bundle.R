@@ -34,6 +34,17 @@ bundle_app <- function(project, out_dir, reference_path = NULL) {
   file.copy(ref_path, file.path(out_dir, "reference.rds"), overwrite = TRUE)
   file.copy("app/app.R", file.path(out_dir, "app.R"), overwrite = TRUE)
 
+  # A distributable with no statement of rights leaves the recipient guessing.
+  # Everything in the bundle is MIT -- the four modules, the app and the
+  # reference -- so the MIT text travels with it. The sonification is not in
+  # the bundle, which is why LICENSE-ART.md is not needed here.
+  if (file.exists("LICENSE")) {
+    file.copy("LICENSE", file.path(out_dir, "LICENSE"), overwrite = TRUE)
+  } else {
+    tsf_warn("No LICENSE file to include in the bundle; recipients will have ",
+             "no statement of their rights.")
+  }
+
   writeLines(bundle_launcher_sh(), file.path(out_dir, "run.sh"))
   Sys.chmod(file.path(out_dir, "run.sh"), "755")
   writeLines(bundle_launcher_bat(), file.path(out_dir, "run.bat"))
@@ -99,6 +110,9 @@ bundle_readme <- function(ref) {
     "It opens in your browser. Nothing is uploaded; the whole thing runs on",
     "this computer. R is required (https://cran.r-project.org); shiny is",
     "installed automatically the first time.",
+    "",
+    "Licence: MIT. See LICENSE. Everything in this folder is free to use,",
+    "modify and redistribute, commercially or not.",
     "",
     "What to feed it",
     "---------------",
