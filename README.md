@@ -319,40 +319,69 @@ and `_` are interchangeable — `--results-dir`, `--results_dir` and
 
 ## The characteristic spectrum of a condition
 
+The spectrum of the mean profile is not a summary of the per-sample spectra. The
+transform is linear, so the spectrum of the mean is the *vector* mean of the
+complex coefficients: a component present in every sample at scattered phases
+cancels and disappears. `./tsf consensus` therefore works from the per-sample
+spectra and reports three things the mean cannot separate — how strong (median
+normalised power), how common (prevalence), how aligned (phase-locking value) —
+plus a permutation null built by drawing samples at random from the whole
+dataset, ignoring condition.
+
 ```bash
-./tsf consensus
+./tsf consensus --n-null 999 --n-boot 200
 ```
 
-The spectrum of the mean profile is not a summary of the samples' spectra. The
-transform is linear, so averaging the profiles averages the complex
-coefficients: a component present in every sample at the same frequency but with
-scattered phases cancels and disappears, however reproducible it is.
+A component is **confirmed** when prevalence holds, phase alignment is unlikely
+under uniform phases, and it beats the label-permuted null family-wise.
+Everything else is **exploratory**. Clearing zero is not evidence: the score is a
+product of non-negative quantities, so any signal at all clears it.
 
-`consensus` therefore works from the per-sample spectra and reports each
-frequency on three axes — median normalised power (**how strong**), prevalence
-(**how common**, judged within each sample and chromosome so that chromosomes do
-not compete), and the phase-locking value (**how aligned**) — plus heterogeneity
-of power and phase, bootstrap intervals over samples, and the number of valid
-samples. The consensus score is their product, so a component has to satisfy all
-three.
+Two warnings from this stage are the pipeline saying a claim is *not reachable*,
+which is different from absent — a permutation p cannot go below 1/(B+1), so a
+family with more members than draws can allow has a smallest attainable q above
+any threshold. The logs print that number.
 
-It is a ranking statistic, not a test: it has no null and no error rate. Every
-PLV comes with a Rayleigh p-value, because under random phases the expected PLV
-is about `sqrt(pi)/(2*sqrt(n))`, not zero — with 8 samples a PLV of 0.3 means
-nothing. That p-value cannot fall below `exp(-n)`, so a condition with fewer
-than roughly `log(n_frequencies/q)` samples cannot establish alignment at all;
-the stage says so and ranks by prevalence and score instead of returning an
-empty signature.
+## The condition library
 
-`signature_<condition>.tsv` is the exported characteristic signature. Each
-component carries `signature_class`: **confirmed** when prevalence holds, the
-adjusted Rayleigh p holds, and the component beats its own label-permuted null
-(BH-adjusted across components); **exploratory** otherwise. The permuted
-comparison uses the rank-based score on both sides — the maxT-based score exists
-only where the per-sample test was run, so it is reported as confirmatory
-evidence rather than used as the test statistic — including every component from a condition with too few samples to
-test phase alignment at all. An exploratory component is a lead, not a
-signature, and the stage counts only confirmed ones in its summary.
+`scripts/build_final_condition_spectra.R` turns the per-cohort consensus spectra
+into one table per class, aggregating by the **median across cohorts** rather
+than by pooling samples: with 42 of 70 F4 samples from one series, a mean would
+place the F4 spectrum where that series is.
+
+```bash
+Rscript scripts/build_final_condition_spectra.R \
+  --results-dir results_gencode_v2 --out-dir results_gencode_v2/library_all
+
+Rscript scripts/build_final_condition_spectra.R \
+  --results-dir results_gencode_v2 --out-dir results_gencode_v2/library_domains \
+  --min-period auto --period-margin 2 --min-period-biological 10
+```
+
+The signature is not a top-N list. Each cohort's family-wise permutation
+p-values combine by Stouffer and are BH-adjusted across frequencies; membership
+is `q_meta_null <= 0.05`. Combining across cohorts is what makes that cut
+reachable — with four cohorts it works at 99 draws, with three at 199, with two
+it needs many more, and **with one it is impossible at any number of draws**.
+Those classes are reported `single_cohort` and provisional.
+
+`--min-period` removes short periods from the analysis *and from the testing
+family*. That is legitimate because the period is a property of the grid alone,
+so the filter can be fixed before a spectrum is seen; filtering by enrichment or
+prevalence would not be. The effective floor is the larger of a technical one
+(`2/coverage + margin`, the Nyquist limit corrected for the gaps actually
+present) and a biological one (the scale the mechanisms of interest could
+produce). Report results with and without it: a component that appears only with
+the floor is not a finding of the floor.
+
+chrY and the mitochondrion are excluded by default. chrY's expression tracks the
+sex composition of a group, which differs between conditions and cohorts, so a
+component there reports who was recruited.
+
+Three figures per class: `power_spectrum_` (every frequency, selected ones
+marked), `signature_peaks_` (selected only, one panel per chromosome, on a period
+axis so chromosomes are comparable), and `genome_spectrum_` (all chromosomes on
+one axis; that axis is a running frequency index, not a genomic coordinate).
 
 ## What decides that a peak exists
 
@@ -362,9 +391,23 @@ either way.
 
 **condition** (default) -- a permutation test on the condition's summary signal.
 Values are permuted among the observed grid positions, the spectrum recomputed,
-and the maximum power over frequencies gives the null. This is the primary test:
-it evaluates the signal that is actually analysed downstream, and its power
-grows with the number of samples.
+and the *maximum* power over frequencies gives the null. Family-wise: it asks
+whether a frequency beats the strongest frequency of a permuted spectrum, which
+on 500-800 frequencies is close to asking whether it dominates its chromosome.
+Expect single digits, and believe what passes.
+
+**condition_fdr** -- the same permutations, read pointwise: does this frequency
+beat its own null? BH across frequencies then controls the false discovery rate
+instead of the probability of any error. This is the question a signature is
+about, and it selects far more, a fraction of them false by construction.
+
+The pointwise p needs a *pooled* null, because against its own frequency it
+inherits the `1/(B+1)` floor and BH over ~10,000 frequencies would need
+B = 200,000. Each frequency's null is standardised by its own mean and standard
+deviation and the standardised values are pooled across the chromosome. The
+assumption is that the standardised null is exchangeable across frequencies;
+what standardising does *not* remove is the sampling window, which is why
+`./tsf window` is not optional.
 
 **consistency** -- at least `stable_frac` of the samples individually
 significant. This is a reproducibility requirement, not a test with aggregated
@@ -378,12 +421,29 @@ added as a second opinion. It is conservative (its inputs are already family-wis
 adjusted) and assumes independence between samples, which replicates only
 approximately satisfy.
 
-Multiplicity is corrected over **chromosomes, not frequencies**: maxT already
-controls the family-wise error rate across frequencies within a chromosome.
-Correcting over frequencies again would be fatal rather than merely conservative,
-because a permutation p-value cannot fall below `1/(B+1)` and the smallest
-attainable q would exceed 1. This puts a floor on B: `condition_B >= 20 * n_chr`,
-about 460 for 23 chromosomes. The stage warns when B is too small to conclude.
+For the family-wise criterion, multiplicity is corrected over **chromosomes, not
+frequencies**: maxT already controls the family-wise error rate across
+frequencies within a chromosome.
+
+### The permutation floor
+
+A permutation p-value cannot go below `1/(B+1)`. Any procedure that multiplies it
+by the size of a family therefore has a **smallest attainable q**, and if that
+exceeds the threshold, nothing can pass however strong the signal — a result of
+"zero components" would then say nothing about the data. This has bitten in five
+different places in this pipeline, so every one of them now computes the
+attainable floor and prints it:
+
+```
+Pointwise null: with 20 draws over 297 frequencies the smallest reachable
+BH q is 14 > 0.05, so q_null cannot confirm anything.
+
+calibrated cut: 999 draws, 3 cohort(s), 5013 frequencies ->
+smallest reachable BH q = 0.0004 (usable)
+```
+
+**"Not reachable" and "not present" are different findings.** Read the floor
+before reading a zero.
 
 ## Running on Colab
 
