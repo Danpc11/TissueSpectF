@@ -1,21 +1,30 @@
+# Outputs and downloads. config/project.R defaults every one of these to a
+# directory inside the repository, so a fresh clone runs without configuration
+# and nothing derived is ever committed.
 data/
 data*/
+interim/
+interim*/
 results/
 results*/
 resultados*/
-*.Rproj.user
+
+# R
 .Rhistory
 .RData
+.Rproj.user/
+*.Rproj.user
 *.log
-interim/
-interim*/
 
 # Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 
-# Python
-__pycache__/
-*.py[cod]
-.pytest_cache/
+# Bundles built by `./tsf bundle`; the release workflow publishes these as
+# assets rather than committing them, because a binary reference does not
+# belong in git.
+TissueSpectF-app/
+TissueSpectF-app.zip
+TissueSpectF-app.zip.sha256
