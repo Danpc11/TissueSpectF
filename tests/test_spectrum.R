@@ -739,6 +739,87 @@ check("a TPM reference accepts a TPM query only", {
   !inherits(tryCatch(assert_unit_compatible(ref, "tpm"), error = function(e) e), "error") &&
     inherits(tryCatch(assert_unit_compatible(ref, "cpm"), error = function(e) e), "error") })
 
+# --- unmeasured positions are dropped, never zero-filled ---------------------
+#
+# The rule the whole grid design rests on: an unmeasured gene keeps its slot on
+# the axis and leaves the observed set. It never becomes a zero at a fixed
+# position. A zero-fill here is not a rounding difference -- it injects a
+# deterministic pattern whose own spectrum can manufacture a peak -- so the
+# invariant is asserted directly rather than trusted to code comments.
+
+check("gls_observed drops an unmeasured position and rebuilds the window", {
+  N <- 128L; t <- as.integer(seq(1, N, by = 2))
+  y <- cos(2 * pi * 7 * (t - 1) / N)
+  y[5] <- NA_real_
+  fit <- gls_observed(y, t, N)
+  fit$n_dropped == 1L &&
+    length(fit$y) == length(t) - 1L &&
+    fit$terms$n == length(t) - 1L &&
+    all(is.finite(fit$y)) })
+
+check("a complete signal reuses the shared window terms untouched", {
+  N <- 128L; t <- as.integer(seq(1, N, by = 2))
+  shared <- gls_prepare(t, N)
+  fit <- gls_observed(rnorm(length(t)), t, N, terms = shared)
+  fit$n_dropped == 0L && identical(fit$terms, shared) })
+
+check("gls_observed refuses to fit when too little survives", {
+  N <- 128L; t <- as.integer(seq(1, N, by = 2))
+  y <- rep(NA_real_, length(t)); y[1:4] <- 1:4
+  is.null(gls_observed(y, t, N, min_observed = 8L)) })
+
+check("gls_spectrum refuses a non-finite value at an observed position", {
+  N <- 64L; t <- seq_len(N)
+  y <- rnorm(N); y[3] <- NA_real_
+  inherits(tryCatch(gls_spectrum(y, gls_prepare(t, N)), error = function(e) e),
+           "error") })
+
+check("dropping a hole is not the same as zero-filling it", {
+  # A hole filled with zero pulls the fit towards a spike at a fixed position;
+  # dropping it leaves the underlying sinusoid's amplitude essentially intact.
+  # If these two ever agree, the distinction this pipeline is built on has
+  # stopped being enforced somewhere.
+  set.seed(4)
+  N <- 256L; t <- seq_len(N); k <- 9L
+  y <- 3 * cos(2 * pi * k * (t - 1) / N)
+  holes <- seq(10, 120, by = 10)
+
+  y_na <- y; y_na[holes] <- NA_real_
+  dropped <- gls_observed(y_na, t, N)
+  amp_dropped <- gls_spectrum(dropped$y, dropped$terms)
+  amp_dropped <- amp_dropped$amplitude[amp_dropped$k == k]
+
+  y_zero <- y; y_zero[holes] <- 0
+  amp_zero <- gls_spectrum(y_zero, gls_prepare(t, N))
+  amp_zero <- amp_zero$amplitude[amp_zero$k == k]
+
+  abs(amp_dropped - 3) < 0.05 && abs(amp_zero - 3) > 0.1 })
+
+check("condition_signals keeps a hole as NA instead of turning it into zero", {
+  expr <- matrix(rnorm(30), nrow = 10,
+                 dimnames = list(paste0("g", 1:10), paste0("S", 1:3)))
+  expr[4, 2] <- NA_real_
+  ds <- list(samples = data.frame(sample_id = paste0("S", 1:3),
+                                  condition = rep("F1", 3),
+                                  stringsAsFactors = FALSE),
+             expression = expr)
+  sig <- suppressWarnings(condition_signals(ds, "F1"))
+  # The hole survives in the matrix, and the summary signal averages the two
+  # samples that do carry a value rather than averaging in a zero.
+  is.na(sig$matrix[4, 2]) &&
+    isTRUE(all.equal(sig$avg_signal[[4]], mean(expr[4, c(1, 3)]))) })
+
+check("a grid position measured in no sample stays NA in the summary signal", {
+  expr <- matrix(rnorm(30), nrow = 10,
+                 dimnames = list(paste0("g", 1:10), paste0("S", 1:3)))
+  expr[7, ] <- NA_real_
+  ds <- list(samples = data.frame(sample_id = paste0("S", 1:3),
+                                  condition = rep("F1", 3),
+                                  stringsAsFactors = FALSE),
+             expression = expr)
+  sig <- suppressWarnings(condition_signals(ds, "F1"))
+  is.na(sig$avg_signal[[7]]) && is.na(sig$median_signal[[7]]) })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
