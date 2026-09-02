@@ -417,39 +417,32 @@ check("a universe pattern from the wrong format aborts with the right one", {
 # never seen. These assertions keep that from coming back: a default path is a
 # choice about layout, never a location.
 
-check("no default path names a particular machine", {
-  src <- readLines("config/project.R", warn = FALSE)
-  # An absolute path in a string literal, ignoring comments.
-  code <- src[!grepl("^\\s*#", src)]
-  !any(grepl('"(/home/|/Users/|/scratch/|/mnt/|[A-Za-z]:\\\\\\\\)', code)) })
-
-check("default paths resolve inside the repository", {
+check("config/project.R names no paths at all", {
+  # Not "no absolute paths" but no paths: geo_dir, interim_dir and results_dir
+  # have no default, so a run cannot inherit an output location from a file
+  # nobody read. The invocation is the record.
   p <- load_project_config("config/project.R")
-  root <- normalizePath(".", mustWork = TRUE)
-  dirs <- vapply(c(p$geo_dir, p$interim_dir, p$results_dir),
-                 function(d) normalizePath(d, mustWork = FALSE), character(1))
-  all(startsWith(dirs, root)) && length(unique(dirs)) == 3L })
+  is.null(p$geo_dir) && is.null(p$interim_dir) && is.null(p$results_dir) })
 
-check("an environment variable overrides a default path", {
-  old <- Sys.getenv("TSF_RESULTS_DIR", unset = NA)
-  Sys.setenv(TSF_RESULTS_DIR = "/tmp/tsf_results_override")
-  on.exit(if (is.na(old)) Sys.unsetenv("TSF_RESULTS_DIR") else
-    Sys.setenv(TSF_RESULTS_DIR = old), add = TRUE)
-  identical(load_project_config("config/project.R")$results_dir,
-            "/tmp/tsf_results_override") })
+check("an unset path fails naming its flag", {
+  out <- suppressWarnings(system2("./tsf", "status",
+                                  stdout = TRUE, stderr = TRUE))
+  txt <- paste(out, collapse = " ")
+  grepl("--geo-dir", txt, fixed = TRUE) && grepl("not set", txt, fixed = TRUE) })
 
-check("an empty environment variable does not override anything", {
-  # `export TSF_RESULTS_DIR=` in a stale profile should not resolve every
-  # output path to the working directory. Compared against the unset case
-  # rather than a hardcoded directory name, so renaming the active tree in
-  # config/project.R does not break this.
+check("the environment supplies a path when no flag does", {
   old <- Sys.getenv("TSF_RESULTS_DIR", unset = NA)
   on.exit(if (is.na(old)) Sys.unsetenv("TSF_RESULTS_DIR") else
     Sys.setenv(TSF_RESULTS_DIR = old), add = TRUE)
-  Sys.unsetenv("TSF_RESULTS_DIR")
-  unset <- load_project_config("config/project.R")$results_dir
+  Sys.setenv(TSF_RESULTS_DIR = "run_probe")
+  identical(load_project_config("config/project.R")$results_dir, "run_probe") })
+
+check("an empty environment variable supplies nothing", {
+  old <- Sys.getenv("TSF_RESULTS_DIR", unset = NA)
+  on.exit(if (is.na(old)) Sys.unsetenv("TSF_RESULTS_DIR") else
+    Sys.setenv(TSF_RESULTS_DIR = old), add = TRUE)
   Sys.setenv(TSF_RESULTS_DIR = "")
-  identical(load_project_config("config/project.R")$results_dir, unset) })
+  is.null(load_project_config("config/project.R")$results_dir) })
 
 check("the clean guard refuses the repository itself", {
   out <- suppressWarnings(system2("Rscript",
