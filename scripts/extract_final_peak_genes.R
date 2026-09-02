@@ -89,6 +89,10 @@ bind_rows_fill <- function(xs) {
   out
 }
 
+# Defaults follow the environment, not one author's run directory. The library
+# is whatever build_final_condition_spectra.R last wrote under results_dir;
+# "results_gencode_v3/library_domains" was a path that existed on exactly one
+# machine.
 default_library_dir <- function() {
   v <- Sys.getenv("TSF_LIBRARY_DIR", unset = "")
   if (nzchar(v)) return(v)
@@ -184,63 +188,88 @@ discover_genes_file <- function(opt) {
     return(opt$genes_file)
   }
 
-  # The peak -> gene reconstruction is purely geometric: for every grid position
-  # t = 1..N it needs the gene sitting there, so it can evaluate
-  #   loading = cos(2*pi*k*(t - 1)/N + phase).
-  # That gene set must be the canonical annotation grid (grid.tsv)
-  gather <- function(name) {
-    hits <- character(0)
-    if (!is.null(opt$interim_dir) && dir.exists(opt$interim_dir)) {
-      if (!is.null(opt$datasets)) {
-        by_ds <- file.path(opt$interim_dir, opt$datasets, name)
-        hits <- by_ds[file.exists(by_ds)]
+  # THE CANONICAL GRID, FROM EVERY DATASET
+  #
+  # This used to collect each dataset's genes.tsv, take candidates[[1]] and call
+  # it "the canonical gene grid". Two things were wrong with that.
+  #
+  # genes.tsv holds the genes a dataset OBSERVED. The canonical annotation grid
+  # is grid.tsv, and the difference is the whole point: a peak reconstructed
+  # against one cohort's observed genes silently drops every gene seen only in
+  # the others, so a cross-cohort peak is reported with a gene list that belongs
+  # to one cohort. stage_reference already says this in a comment; the standalone
+  # script did the thing the comment warns about.
+  #
+  # And candidates[[1]] is whichever dataset came first, so reordering
+  # --datasets changed the gene list for the same peak. A result that depends on
+  # argument order is not a result.
+  #
+  # So: read grid.tsv from every dataset in scope, require they agree, and use
+  # that. If they disagree the datasets were ingested against different
+  # annotations, (chr, N, k) does not name the same frequency in each, and no
+  # cross-cohort reconstruction is meaningful.
+
+  grid_paths <- character(0)
+  if (!is.null(opt$interim_dir) && dir.exists(opt$interim_dir)) {
+    if (!is.null(opt$datasets)) {
+      grid_paths <- file.path(opt$interim_dir, opt$datasets, "grid.tsv")
+      missing <- grid_paths[!file.exists(grid_paths)]
+      if (length(missing)) {
+        abort("No grid.tsv for: ",
+              paste(basename(dirname(missing)), collapse = ", "),
+              ". Re-run ingest for those datasets -- the canonical annotation ",
+              "grid is needed, not just the genes each cohort observed.")
       }
-      if (!length(hits)) {
-        hits <- list.files(
-          opt$interim_dir,
-          pattern = paste0("^", name, "$"),
-          recursive = TRUE,
-          full.names = TRUE
-        )
-      }
+    } else {
+      grid_paths <- list.files(opt$interim_dir, pattern = "^grid\\.tsv$",
+                               recursive = TRUE, full.names = TRUE)
     }
-    if (!length(hits)) {
-      for (root in c("interim", "interim_gencode_v2", "interim_gencode_v3")) {
-        if (!dir.exists(root)) next
-        hits <- c(hits, list.files(
-          root,
-          pattern = paste0("^", name, "$"),
-          recursive = TRUE,
-          full.names = TRUE
-        ))
-      }
+  }
+
+  grid_paths <- unique(grid_paths[file.exists(grid_paths)])
+  if (!length(grid_paths)) {
+    abort("Could not find grid.tsv. Supply --interim-dir PATH, and --datasets ",
+          "to say which cohorts to combine.")
+  }
+
+  # Compare on the axis columns only. gene_name and start are annotation
+  # decoration; grid_index and grid_N are the axis, and they are what has to be
+  # identical for a shared (chr, N, k) to mean anything.
+  axis_key <- function(path) {
+    g <- read_tsv(path)
+    need <- c("gene_id", "chr", "grid_index", "grid_N")
+    miss <- setdiff(need, names(g))
+    if (length(miss)) {
+      abort(path, " lacks required columns: ", paste(miss, collapse = ", "))
     }
-    unique(hits[file.exists(hits)])
+    o <- g[order(as.character(g$chr),
+                 suppressWarnings(as.integer(g$grid_index)),
+                 as.character(g$gene_id)), , drop = FALSE]
+    paste(o$gene_id, o$chr, o$grid_index, o$grid_N, sep = "|")
   }
 
-  grids <- gather("grid.tsv")
-  if (length(grids)) {
-    message("Using canonical annotation grid: ", grids[[1]])
-    return(grids[[1]])
+  keys <- lapply(grid_paths, axis_key)
+  names(keys) <- basename(dirname(grid_paths))
+
+  if (length(keys) > 1L) {
+    same <- vapply(keys[-1], function(k) identical(k, keys[[1]]), logical(1))
+    if (!all(same)) {
+      odd <- names(same)[!same]
+      abort("The datasets do not share one annotation grid, so (chr, N, k) ",
+            "does not name the same frequency in each and no cross-cohort ",
+            "peak reconstruction is meaningful.\n",
+            "  matches ", names(keys)[1], ": ",
+            paste(c(names(keys)[1], names(same)[same]), collapse = ", "), "\n",
+            "  differs: ", paste(odd, collapse = ", "), "\n",
+            "  Re-run ingest for those with the same annotation_format and ",
+            "gene_universe as the rest.")
+    }
   }
 
-  genes <- gather("genes.tsv")
-  if (length(genes)) {
-    warning(
-      "No grid.tsv found; falling back to ", genes[[1]], ". ",
-      "This is ONE cohort's expression-filtered gene set (~60-75% of the ",
-      "grid), so genes that cohort did not observe will be missing from every ",
-      "peak-gene table. Re-run the ingest stage to write grid.tsv, or pass ",
-      "--genes-file <path/to/grid.tsv>.",
-      call. = FALSE
-    )
-    return(genes[[1]])
-  }
-
-  abort(
-    "Could not find grid.tsv or genes.tsv. Supply --genes-file PATH or ",
-    "--interim-dir PATH."
-  )
+  messagef("Canonical gene grid: %d gene(s), identical across %d dataset(s) (%s)",
+           length(keys[[1]]), length(keys),
+           paste(names(keys), collapse = ", "))
+  grid_paths[[1]]
 }
 
 prepare_genes <- function(path) {
@@ -372,9 +401,7 @@ project_peak_to_genes <- function(
     abort(
       "Canonical grid mismatch for chr", chr_now,
       ": peak N=", N,
-      ", gene grid grid_N=", paste(grid_N, collapse = ","),
-      ". The gene grid must come from the same annotation as the peaks ",
-      "(same GENCODE/annotation release)."
+      ", genes.tsv grid_N=", paste(grid_N, collapse = ",")
     )
   }
 
