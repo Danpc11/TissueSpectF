@@ -28,8 +28,13 @@ fingerprint_vector <- function(y, chrom_idx, terms_cache, k_max = 64L,
   pieces <- list()
   for (chr_now in names(chrom_idx)) {
     ci <- chrom_idx[[chr_now]]
-    terms <- terms_cache[[chr_now]]
-    sp <- gls_spectrum(y[ci$rows], terms)
+    # A query, or a masked validation sample, is missing genes the reference
+    # cohorts had. Those positions leave the observed set; they are never
+    # zero-filled. N is unchanged, so the feature names chr<chr>_k<k> still
+    # index the same frequencies and stay comparable to the reference.
+    fit <- gls_observed(y[ci$rows], ci$t, ci$N, terms = terms_cache[[chr_now]])
+    if (is.null(fit)) next
+    sp <- gls_spectrum(fit$y, fit$terms)
     keep <- sp$k <= k_max
     sp <- sp[keep, , drop = FALSE]
     if (!nrow(sp)) next
