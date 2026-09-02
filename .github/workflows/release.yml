@@ -15,12 +15,16 @@ on:
         description: 'Masks per coverage level and loss mode'
         default: '10'
 
+# Read by default; the publishing job asks for write on its own. A
+# workflow-level write token would be handed to every future job added here.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   bundle:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     # The coverage calibration recomputes one GLS fingerprint per
     # (sample, level, mode, mask); on two cores that is the long pole.
     timeout-minutes: 180
@@ -36,6 +40,7 @@ jobs:
         run: |
           Rscript tests/test_labels.R
           Rscript tests/test_spectrum.R
+          Rscript tests/test_condition_invariants.R
 
       # GEO downloads are stable for a given accession, so cache them rather
       # than hitting NCBI on every run.
@@ -59,11 +64,23 @@ jobs:
             --geo-dir data --interim-dir interim --results-dir results \
             --gene-universe '${{ github.event.inputs.gene_universe || ''^protein-coding$'' }}'
 
+      # n_masks is the cheap-trial-build knob: the coverage calibration
+      # recomputes one GLS fingerprint per (sample, level, mode, mask), so it is
+      # the long pole. A tag build takes the configured default; a manual
+      # dispatch can lower it. This input was declared and documented but never
+      # reached the CLI, so the knob silently did nothing.
+      #
+      # pipefail matters: without it the exit status is tee's, so a failing
+      # reference stage would still be published.
       - name: Build reference and validate out of cohort
+        shell: bash
         run: |
-          ./tsf reference \
-            --geo-dir data --interim-dir interim --results-dir results \
-            2>&1 | tee reference.log
+          set -o pipefail
+          args=(--geo-dir data --interim-dir interim --results-dir results)
+          if [ -n "${{ github.event.inputs.n_masks }}" ]; then
+            args+=(--n-masks "${{ github.event.inputs.n_masks }}")
+          fi
+          ./tsf reference "${args[@]}" 2>&1 | tee reference.log
 
       # The validation numbers are what tell a recipient how much a match is
       # worth, so they go on the run's summary page rather than only into a log
