@@ -39,6 +39,10 @@ default_results_dir <- function() {
 parse_args <- function(x) {
   out <- list(
     results_dir = default_results_dir(),
+    # Workers for the per-condition aggregation. Defaults to N_WORKERS if set,
+    # the same variable the R pipeline honours, then to serial. Capped at the
+    # number of conditions, because that is the only axis being split.
+    cores = as.integer(Sys.getenv("N_WORKERS", unset = "1")),
     out_dir = NULL,
     datasets = NULL,
     conditions = NULL,
@@ -171,6 +175,11 @@ parse_args <- function(x) {
       out$invariant_min_prevalence < 0 ||
       out$invariant_min_prevalence > 1) {
     abort("--invariant-min-prevalence must be in [0, 1]")
+  }
+
+  out$cores <- suppressWarnings(as.integer(out$cores))
+  if (!is.finite(out$cores) || out$cores < 1L) {
+    abort("--cores must be an integer >= 1")
   }
 
   if (!is.finite(out$invariant_min_phase_coherence) ||
@@ -618,116 +627,13 @@ add_within_cohort_effect <- function(inputs) {
   inputs
 }
 
-apply_period_floor <- function(
-  long,
-  label,
-  min_period = "off",
-  period_margin = 2,
-  margin_mode = "add",
-  min_period_biological = 0
-) {
-  if (identical(
-    tolower(min_period),
-    "off"
-  )) {
-    return(long)
-  }
+# apply_period_floor(), reachable_bh_q() and draws_for_bh() come from
+# R/period_floor.R. They used to be defined here and nowhere else, which meant
+# the consensus stage tested frequencies this script would later discard -- the
+# multiplicity correction ran over an inflated family. One definition now, and
+# consensus applies it before its null.
+source(file.path(Sys.getenv("TSF_ROOT", unset = getwd()), "R", "period_floor.R"))
 
-  cov <- if ("coverage" %in% names(long)) {
-    suppressWarnings(
-      as.numeric(long$coverage)
-    )
-  } else {
-    rep(
-      NA_real_,
-      nrow(long)
-    )
-  }
-
-  if (identical(
-    tolower(min_period),
-    "auto"
-  ) && all(is.na(cov))) {
-    abort(
-      "--min-period auto needs ",
-      "per-chromosome coverage. ",
-      "Run ./tsf window first, or ",
-      "give --min-period a number."
-    )
-  }
-
-  cov[
-    !is.finite(cov) |
-      cov <= 0
-  ] <- NA_real_
-
-  technical <- if (identical(
-    tolower(min_period),
-    "auto"
-  )) {
-    base <- 2 / cov
-
-    if (identical(
-      margin_mode,
-      "mult"
-    )) {
-      base *
-        (
-          1 +
-            period_margin
-        )
-    } else {
-      base +
-        period_margin
-    }
-  } else {
-    rep(
-      as.numeric(min_period),
-      nrow(long)
-    )
-  }
-
-  floor_period <- pmax(
-    technical,
-    min_period_biological,
-    na.rm = TRUE
-  )
-
-  keep <-
-    !is.finite(long$period) |
-    long$period >=
-      floor_period
-
-  n_drop <- sum(!keep)
-
-  if (n_drop) {
-    messagef(
-      "  period floor for %s: removed %d of %d frequencies (%.1f%%)",
-      label,
-      n_drop,
-      nrow(long),
-      100 *
-        n_drop /
-        nrow(long)
-    )
-  }
-
-  long <- long[
-    keep,
-    ,
-    drop = FALSE
-  ]
-
-  if (!nrow(long)) {
-    message(
-      "  every frequency fell ",
-      "below the period floor for ",
-      label
-    )
-  }
-
-  long
-}
 
 aggregate_condition <- function(
   inputs,
@@ -2878,8 +2784,26 @@ main <- function() {
   manifest <- list()
   condition_tables <- list()
 
-  for (cond in conditions) {
-    tab <- aggregate_condition(
+  # Aggregation is the expensive half: it reads every cohort's consensus table
+  # for a condition and takes medians across them. It is also pure -- it reads
+  # inputs and returns a data frame -- so it parallelises across conditions
+  # cleanly. Every WRITE stays in the serial loop below: forked workers writing
+  # to the same output directory is how a library ends up half-formed with no
+  # error to show for it.
+  #
+  # Splitting on conditions caps the useful worker count at length(conditions),
+  # typically 6. Asking for 32 cores will not make this faster than asking for
+  # 6, and the message says so rather than letting the number look effective.
+  n_cores <- max(1L, min(opt$cores, length(conditions)))
+  if (opt$cores > n_cores) {
+    messagef(
+      "--cores %d requested; using %d, one per condition (aggregation splits on conditions only)",
+      opt$cores, n_cores
+    )
+  }
+
+  agg_one <- function(cond) {
+    aggregate_condition(
       inputs = inputs,
       condition = cond,
       min_cohorts = opt$min_cohorts,
@@ -2895,6 +2819,30 @@ main <- function() {
       min_period_biological =
         opt$min_period_biological
     )
+  }
+
+  if (n_cores > 1L) {
+    messagef("aggregating %d condition(s) on %d worker(s)",
+             length(conditions), n_cores)
+    tabs <- parallel::mclapply(conditions, agg_one, mc.cores = n_cores,
+                               mc.set.seed = FALSE)
+    # mclapply reports a worker failure as a try-error in the result rather
+    # than by raising, so an unchecked run would silently drop a condition and
+    # still write a manifest claiming success.
+    failed <- vapply(tabs, function(x) inherits(x, "try-error"), logical(1))
+    if (any(failed)) {
+      abort("aggregation failed for condition(s): ",
+            paste(conditions[failed], collapse = ", "), "\n  ",
+            paste(unique(vapply(tabs[failed], conditionMessage, character(1))),
+                  collapse = "\n  "))
+    }
+  } else {
+    tabs <- lapply(conditions, agg_one)
+  }
+  names(tabs) <- conditions
+
+  for (cond in conditions) {
+    tab <- tabs[[cond]]
 
     if (is.null(tab)) {
       next
