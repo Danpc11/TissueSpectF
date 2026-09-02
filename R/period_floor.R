@@ -69,8 +69,15 @@ apply_period_floor <- function(long,
   cov[!is.finite(cov) | cov <= 0] <- NA_real_
 
   if (identical(min_period, "auto") && all(is.na(cov))) {
-    tsf_abort("--min-period auto needs per-chromosome coverage, and this table ",
-              "has none. Give --min-period a number of genes instead.")
+    tsf_abort("--min-period auto needs a coverage column, and the table for ",
+              label, " has none or has no finite value in it.\n",
+              "  The technical floor is 2/coverage, so coverage per frequency ",
+              "is what makes it computable.\n",
+              "  Either pass --min-period <genes> as a flat floor, or check ",
+              "that the per-sample spectra carry `coverage` -- the consensus ",
+              "stage joins it from there, and an older results tree written ",
+              "before that column existed will not have it. Re-running the ",
+              "`spectra` stage regenerates it.")
   }
 
   technical <- if (identical(min_period, "auto")) {
