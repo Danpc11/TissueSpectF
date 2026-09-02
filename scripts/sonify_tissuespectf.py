@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: CC-BY-NC-ND-4.0
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Daniel Pérez
-#
-# This file is NOT under the MIT licence covering the rest of the repository.
-# Creative Commons Attribution-NonCommercial-NoDerivatives 4.0 International:
-# attribution required, no commercial use, no distribution of modified versions.
-# https://creativecommons.org/licenses/by-nc-nd/4.0/
-# Scope and rationale: LICENSE-ART.md and LICENSING.md.
 """
 sonify_tissuespectf.py
 
@@ -54,12 +48,6 @@ python3 scripts/sonify_tissuespectf.py \
 $TSF_RESULTS_DIR/library_domains, then to <repo>/results/library_domains, the
 same resolution the rest of the pipeline uses. --out-dir defaults to a
 "sonification" folder inside it.
-
-Licence
--------
-This module is NOT under the licence covering the rest of the repository. The
-pipeline is MIT; this file, the mapping it defines and the audio and MIDI it
-produces are CC BY-NC-ND 4.0. See LICENSE-ART.md and LICENSING.md.
 """
 
 from __future__ import annotations
