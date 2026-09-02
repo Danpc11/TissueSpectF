@@ -31,12 +31,33 @@ jobs:
       # Every stage is invoked through the real CLI, not through the test
       # harness: a module missing from the load path fails here and nowhere
       # else, because the unit tests source what they need explicitly.
+      # Paths are supplied because config/project.R has no defaults and a dry
+      # run's whole output is where it would read and write. This step used to
+      # omit them and started failing the moment the defaults were removed --
+      # the workflow lagged the policy change, which is what CI is for.
       - name: CLI reaches every stage
+        env:
+          TSF_GEO_DIR: data
+          TSF_INTERIM_DIR: interim
+          TSF_RESULTS_DIR: results
         run: |
           ./tsf --help > /dev/null
           for s in ingest spectra maxt condition consensus clean stability peaks compare; do
             ./tsf run --to "$s" --dry-run > /dev/null || exit 1
           done
+
+      # Each command must ask only for the paths it uses. `fetch` downloads and
+      # has no results tree; demanding one is a false requirement.
+      - name: Path requirements are per command
+        run: |
+          # fetch needs geo_dir and nothing else.
+          ./tsf fetch --geo-dir data --dry-run > /dev/null
+          # run needs all three, and must say so rather than failing later.
+          if ./tsf run --to ingest --dry-run > /dev/null 2>&1; then
+            echo "run should require paths and did not"; exit 1
+          fi
+          ./tsf run --to ingest --dry-run 2>&1 | grep -q -- "--interim-dir" \
+            || { echo "the error should name the missing flag"; exit 1; }
 
       - name: Self-check
         env:
