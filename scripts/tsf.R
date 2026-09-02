@@ -300,25 +300,49 @@ if (!identical(config_path, "config/project.R")) {
 }
 project <- apply_cli_overrides(load_project_config(config_path), opt)
 
-# Paths have no defaults, so check them here -- once, by name -- rather than
-# letting a NULL surface as an unrelated file.path() error inside a stage.
-# selfcheck runs on synthetic data in a directory it creates itself, so
-# requiring paths there would mean inventing three directories to run a
-# self-test. Every command that touches the user's data still requires them.
-if (!opt$command %in% c("selfcheck")) {
-for (spec in list(
-  list(key = "geo_dir",     flag = "--geo-dir",     env = "TSF_GEO_DIR"),
-  list(key = "interim_dir", flag = "--interim-dir", env = "TSF_INTERIM_DIR"),
-  list(key = "results_dir", flag = "--results-dir", env = "TSF_RESULTS_DIR"))) {
-  v <- project[[spec$key]]
-  if (is.null(v) || !nzchar(as.character(v))) {
-    tsf_abort(spec$key, " is not set. Pass ", spec$flag, " <dir>, or export ",
-              spec$env, ". There is no default: config/project.R names no ",
-              "paths, so every run records where it read and wrote.")
-  }
-}
-}
+# Paths have no defaults, so they are checked here -- once, by name -- rather
+# than letting a NULL surface as an unrelated file.path() error inside a stage.
+#
+# PER COMMAND, not in bulk. An earlier version demanded all three from every
+# command, which broke `./tsf fetch --geo-dir data` (fetch downloads; it has
+# nothing to do with interim or results) and the CI step that dry-runs each
+# stage. Demanding a path a command never touches is not strictness, it is a
+# false requirement, and it trains people to set variables to satisfy a check
+# instead of to say something true.
+PATH_SPECS <- list(
+  geo_dir     = list(flag = "--geo-dir",     env = "TSF_GEO_DIR"),
+  interim_dir = list(flag = "--interim-dir", env = "TSF_INTERIM_DIR"),
+  results_dir = list(flag = "--results-dir", env = "TSF_RESULTS_DIR"))
 
+# What each command actually reads or writes. Anything absent from this list
+# needs all three, which is the safe default for a stage.
+COMMAND_PATHS <- list(
+  selfcheck = character(0),                 # builds its own synthetic tree
+  fetch     = "geo_dir",                    # downloads, nothing downstream
+  ingest    = c("geo_dir", "interim_dir"),  # GEO in, common format out
+  match     = "results_dir",                # reads a reference, writes nothing
+  app       = "results_dir",
+  bundle    = "results_dir",
+  status    = c("interim_dir", "results_dir"))
+
+needed <- COMMAND_PATHS[[opt$command]]
+if (is.null(needed)) needed <- names(PATH_SPECS)
+
+missing <- Filter(function(k) {
+  v <- project[[k]]
+  is.null(v) || !nzchar(as.character(v))
+}, needed)
+
+if (length(missing)) {
+  lines <- vapply(missing, function(k) {
+    paste0("    ", PATH_SPECS[[k]]$flag, " <dir>   (or export ",
+           PATH_SPECS[[k]]$env, ")")
+  }, character(1))
+  tsf_abort("`", opt$command, "` needs ", length(missing),
+            " path(s) that are not set:\n", paste(lines, collapse = "\n"),
+            "\n  config/project.R names no paths on purpose, so a run's",
+            " locations are visible in the command that produced it.")
+}
 
 # --- commands that are not stages -------------------------------------------
 if (opt$command == "check") {
@@ -328,7 +352,7 @@ if (opt$command == "check") {
 
 if (opt$command == "status") {
   st <- pipeline_status(project, opt)
-  tsf_log("results_dir: ", project$results_dir)
+  tsf_log("results_dir: ", project$results_dir %||% "(not set)")
   print(st, row.names = FALSE)
   quit(status = 0L)
 }
@@ -396,7 +420,13 @@ datasets <- stage_datasets(opt)
 # the wrong tree is silent by nature: the stage succeeds, the files land
 # somewhere else, and the next stage reports missing inputs for reasons that
 # look unrelated. One line here makes that visible before the work starts.
-tsf_log("results_dir: ", normalizePath(project$results_dir, mustWork = FALSE))
+# Announced on every run, because writing to the wrong tree is silent by
+# nature. Guarded, because commands like `fetch` legitimately have no results
+# tree and must not fail on a log line.
+if (!is.null(project$results_dir) && nzchar(project$results_dir)) {
+  tsf_log("results_dir: ",
+          normalizePath(project$results_dir, mustWork = FALSE))
+}
 tsf_log("datasets: ", paste(datasets, collapse = ", "))
 tsf_log("stages:   ", paste(plan, collapse = " -> "))
 if (!is.null(opt$cond))   tsf_log("conditions: ", opt$cond)
@@ -437,4 +467,5 @@ for (stage in plan) {
 tsf_log(strrep("=", 62))
 print(do.call(rbind, summary_rows), row.names = FALSE)
 tsf_log("total: ", round(as.numeric(difftime(Sys.time(), started, units = "mins")), 2),
-        " min | results in ", project$results_dir)
+        " min | results in ",
+        project$results_dir %||% "(no results tree for this command)")
