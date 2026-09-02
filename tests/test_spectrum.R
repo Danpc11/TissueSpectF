@@ -847,23 +847,62 @@ check("a reachable BH q is never above 1", {
   # m/(B+1) is the uncapped adjusted p at rank 1; a q-value is capped at 1, and
   # reporting 10 reads like a threshold narrowly missed rather than one that
   # cannot be reached at all.
-  reachable_bh_q(10030, 999) == 1 &&
-    abs(reachable_bh_q(500, 999) - 0.5) < 1e-9 })
+  bh_rank1_diagnostic(10030, 999) == 1 &&
+    abs(bh_rank1_diagnostic(500, 999) - 0.5) < 1e-9 })
 
-check("draws_for_bh inverts the reachable floor exactly", {
+check("draws_for_bh inverts the rank-1 figure exactly", {
   # B is the count of draws, so the family of B+1 values includes the observed
   # one: m/(B+1) <= target at B, and not at B-1. Off by one here would either
   # promise a threshold that is not reached or demand a draw that is not needed.
   m <- 1000L
   B <- draws_for_bh(m, 0.05)
   B == 19999L &&
-    reachable_bh_q(m, B) <= 0.05 &&
-    reachable_bh_q(m, B - 1L) > 0.05 })
+    bh_rank1_diagnostic(m, B) <= 0.05 &&
+    bh_rank1_diagnostic(m, B - 1L) > 0.05 })
 
 check("shrinking the family is what makes the pointwise route reachable", {
   # The whole reason the floor goes before the null: at 999 draws a family of
   # 10030 cannot reach 0.05, and a family of 500 can.
-  reachable_bh_q(10030, 999) > 0.05 && reachable_bh_q(500, 999) <= 0.5 })
+  bh_rank1_diagnostic(10030, 999) > 0.05 &&
+    bh_rank1_diagnostic(500, 999) <= 0.5 })
+
+check("the rank-1 BH figure is a conservative diagnostic, not a bound", {
+  # This was documented and reported as "the smallest reachable q", which is
+  # wrong: BH takes min over j>=i of m*p_j/j, so ties at the permutation floor
+  # lower the achievable value by up to a factor of m. Reporting the rank-1
+  # value as a bound concluded "nothing can pass" when 0.001 was reachable.
+  m <- 10030L; B <- 999L
+  rank1 <- bh_rank1_diagnostic(m, B)
+  all_tied <- bh_achievable_q(m, B, m)
+  some_tied <- bh_achievable_q(m, B, 100L)
+  rank1 == 1 &&
+    abs(all_tied - 1 / (B + 1)) < 1e-12 &&
+    some_tied < rank1 && all_tied < some_tied })
+
+check("the achievable q equals the rank-1 figure when nothing ties", {
+  identical(bh_achievable_q(500L, 999L, 1L), bh_rank1_diagnostic(500L, 999L)) })
+
+check("a q-value is never reported above 1", {
+  all(vapply(list(c(10030, 999), c(1e6, 10), c(5, 1)),
+             function(x) bh_rank1_diagnostic(x[1], x[2]) <= 1, logical(1))) })
+
+check("the frequency-family digest is order-independent", {
+  identical(digest_keys(c("1|100|3", "2|50|7")),
+            digest_keys(c("2|50|7", "1|100|3"))) })
+
+check("the digest changes when the retained family changes", {
+  # The null cache was keyed on sample count alone, so a run with a period
+  # floor reused the null computed without one -- a different family, a
+  # different global maximum, and no error to show for it.
+  base <- digest_keys(c("21|500|6", "21|500|7", "1|900|3"))
+  base != digest_keys(c("21|500|6", "1|900|3")) &&
+    base != digest_keys(c("21|500|6", "21|500|8", "1|900|3")) })
+
+check("the null cache key records the period configuration", {
+  src <- paste(readLines("R/stages.R", warn = FALSE), collapse = " ")
+  all(vapply(c("min_period", "period_margin", "margin_mode",
+               "min_period_biological", "retained_digest"),
+             function(k) grepl(k, src, fixed = TRUE), logical(1))) })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
