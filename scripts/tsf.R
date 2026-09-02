@@ -133,7 +133,7 @@ OPTION_ALIASES <- c(
   kmax = "k_max", k_max = "k_max", target = "target",
   cores = "cores",
   inputunit = "input_unit", input_unit = "input_unit", unit = "input_unit",
-  out = "out", outputdir = "output_dir", output_dir = "output_dir",
+  out = "out", outputdir = "out", output_dir = "out",
   kmax = "k_max", k_max = "k_max", seed = "seed",
   chromosomes = "chromosomes", chrom = "chromosomes",
   annotation = "annotation", annotationformat = "annotation_format",
@@ -145,8 +145,7 @@ OPTION_ALIASES <- c(
   min_period_biological = "min_period_biological",
   nnull = "n_null", n_null = "n_null",
   nboot = "n_boot", n_boot = "n_boot",
-  nmasks = "n_masks", n_masks = "n_masks",
-  minutes = "minutes"
+  nmasks = "n_masks", n_masks = "n_masks"
 )
 
 FLAG_ALIASES <- c(force = "force", dryrun = "dry_run", dry_run = "dry_run",
@@ -252,6 +251,12 @@ apply_cli_overrides <- function(project, opt) {
   set(c("consensus", "min_period_biological"),
       opt$min_period_biological, as.numeric)
   set(c("consensus", "n_boot"), opt$n_boot, as.integer)
+  # --seed was in OPTION_ALIASES and wired to nothing: accepted without
+  # complaint, then silently discarded. Every permutation and every bootstrap in
+  # the pipeline derives from maxt$seed, so a run that passed --seed believing
+  # it had changed the draws got the default 42 and identical results -- the
+  # worst kind of failure, because it looks like the seed does not matter.
+  set(c("maxt", "seed"), opt$seed, as.integer)
   set(c("fingerprint", "n_masks"), opt$n_masks, as.integer)
   set(c("clean", "per_sample"), opt$per_sample, isTRUE)
   set(c("fingerprint", "k_max"), opt$k_max, as.integer)
