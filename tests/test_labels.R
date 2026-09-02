@@ -452,6 +452,34 @@ check("the clean guard refuses the repository itself", {
     stdout = TRUE, stderr = TRUE))
   !is.null(attr(out, "status")) && attr(out, "status") != 0L })
 
+# --- licensing ---------------------------------------------------------------
+#
+# One licence, MIT, covering everything. The assertions are here because a
+# distributable with no statement of rights leaves the recipient guessing, and
+# because a stray SPDX header claiming something other than MIT would quietly
+# contradict LICENSE -- the kind of drift nobody notices until it matters.
+
+check("the licence file exists and is MIT", {
+  file.exists("LICENSE") &&
+    any(grepl("MIT License", readLines("LICENSE", warn = FALSE), fixed = TRUE)) })
+
+check("no file claims a licence other than MIT", {
+  files <- c(list.files("R", pattern = "[.]R$", full.names = TRUE),
+             list.files("scripts", pattern = "[.](R|py)$", full.names = TRUE),
+             list.files("ml", pattern = "[.]py$", full.names = TRUE),
+             "app/app.R", "tsf")
+  files <- files[file.exists(files)]
+  claims <- unlist(lapply(files, function(f) {
+    spdx <- grep("SPDX-License-Identifier",
+                 readLines(f, n = 15, warn = FALSE), value = TRUE)
+    spdx[!grepl("MIT", spdx, fixed = TRUE)]
+  }))
+  length(claims) == 0 })
+
+check("the bundle ships the licence", {
+  src <- readLines("R/bundle.R", warn = FALSE)
+  any(grepl('file.copy("LICENSE"', src, fixed = TRUE)) })
+
 # --- the distributable bundle ------------------------------------------------
 check("the bundle carries every module the app sources", {
   # Whatever app.R sources must be in BUNDLE_MODULES, or the bundle breaks on
