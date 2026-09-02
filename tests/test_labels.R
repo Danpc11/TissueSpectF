@@ -461,6 +461,37 @@ check("clean_results.R lives in scripts/, not R/", {
   file.exists("scripts/clean_results.R") &&
     !file.exists("R/clean_results.R") })
 
+check("path requirements are per command, not in bulk", {
+  # An earlier version demanded all three paths from every command. That broke
+  # `./tsf fetch --geo-dir data` -- fetch downloads and has no results tree --
+  # and the CI step that dry-runs each stage. Demanding a path a command never
+  # touches is a false requirement, and it teaches people to set variables to
+  # satisfy a check rather than to say something true.
+  fetch_ok <- suppressWarnings(system2("./tsf",
+    c("fetch", "--geo-dir", "data", "--dry-run"),
+    stdout = TRUE, stderr = TRUE))
+  run_out <- suppressWarnings(system2("./tsf",
+    c("run", "--to", "ingest", "--dry-run"),
+    stdout = TRUE, stderr = TRUE))
+  is.null(attr(fetch_ok, "status")) &&
+    !is.null(attr(run_out, "status")) })
+
+check("a missing-path error names every flag that is missing", {
+  out <- paste(suppressWarnings(system2("./tsf",
+    c("run", "--to", "ingest", "--dry-run"),
+    stdout = TRUE, stderr = TRUE)), collapse = " ")
+  all(vapply(c("--geo-dir", "--interim-dir", "--results-dir"),
+             function(f) grepl(f, out, fixed = TRUE), logical(1))) })
+
+check("CI supplies the paths its stage loop needs", {
+  # The workflow lagged the policy change and started failing at the first
+  # stage. That is what CI is for, but the fix belongs in the workflow.
+  wf <- paste(readLines(".github/workflows/tests.yml", warn = FALSE),
+              collapse = " ")
+  grepl("TSF_GEO_DIR", wf, fixed = TRUE) &&
+    grepl("TSF_INTERIM_DIR", wf, fixed = TRUE) &&
+    grepl("TSF_RESULTS_DIR", wf, fixed = TRUE) })
+
 check("config/project.R names no paths at all", {
   # Not "no absolute paths" but no paths: geo_dir, interim_dir and results_dir
   # have no default, so a run cannot inherit an output location from a file
@@ -468,11 +499,18 @@ check("config/project.R names no paths at all", {
   p <- load_project_config("config/project.R")
   is.null(p$geo_dir) && is.null(p$interim_dir) && is.null(p$results_dir) })
 
-check("an unset path fails naming its flag", {
-  out <- suppressWarnings(system2("./tsf", "status",
-                                  stdout = TRUE, stderr = TRUE))
-  txt <- paste(out, collapse = " ")
-  grepl("--geo-dir", txt, fixed = TRUE) && grepl("not set", txt, fixed = TRUE) })
+check("status asks for the trees it reads and not for the ones it does not", {
+  # status reports what is on disk under interim and results. It does not read
+  # the GEO downloads, so demanding --geo-dir from it would be the bulk check
+  # this design replaced. This assertion is the per-command policy stated in
+  # the one place it is easy to regress.
+  out <- paste(suppressWarnings(system2("./tsf", "status",
+                                        stdout = TRUE, stderr = TRUE)),
+               collapse = " ")
+  grepl("not set", out, fixed = TRUE) &&
+    grepl("--interim-dir", out, fixed = TRUE) &&
+    grepl("--results-dir", out, fixed = TRUE) &&
+    !grepl("--geo-dir", out, fixed = TRUE) })
 
 check("the environment supplies a path when no flag does", {
   old <- Sys.getenv("TSF_RESULTS_DIR", unset = NA)
