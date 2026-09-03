@@ -15,9 +15,25 @@ stage_names <- c("ingest", "spectra", "maxt", "condition", "consensus", "clean",
 optional_stages <- c("maxt")
 
 #' Resolve which datasets a stage should run over.
+#' Datasets in scope, validated against the configs that define them.
+#'
+#' A name with no config used to pass straight through. That is how a mangled
+#' paste put `499` -- a stray option value -- into the dataset list and the run
+#' carried on. A dataset name is not free text: it names a file, and the file
+#' either exists or the command was not what the user meant.
 stage_datasets <- function(opt) {
-  if (length(opt$datasets)) opt$datasets
-  else sub("\\.R$", "", list.files("config/datasets", pattern = "\\.R$"))
+  available <- sub("\\.R$", "", list.files("config/datasets", pattern = "\\.R$"))
+  if (!length(opt$datasets)) return(available)
+
+  unknown <- setdiff(opt$datasets, available)
+  if (length(unknown)) {
+    tsf_abort("No config for dataset(s): ", paste(unknown, collapse = ", "),
+              "\n  Available: ", paste(available, collapse = ", "),
+              "\n  A value that looks like a number here usually means an ",
+              "option lost its flag -- check the command as the shell received ",
+              "it, not as you typed it.")
+  }
+  opt$datasets
 }
 
 
