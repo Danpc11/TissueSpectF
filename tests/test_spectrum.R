@@ -996,6 +996,44 @@ check("auto floor fails with an actionable message, not a bare abort", {
     grepl("--min-period <genes>", msg, fixed = TRUE) &&
     grepl("spectra", msg, fixed = TRUE) })
 
+# --- the pooled pointwise null cannot be conjured from too few draws ---------
+
+check("too few draws yields NA, not a confident p-value", {
+  # With B = 1 the per-frequency sd is NA, the old guard replaced it with 1, the
+  # pooled reference collapsed to zeros, and every frequency above its single
+  # draw got p ~ 1/(B*m+1). On a real run that was 4950 "discoveries" at BH
+  # q <= 0.05 out of 10030, manufactured entirely by a degenerate scale.
+  set.seed(7)
+  N <- 128L; t <- seq_len(N)
+  y <- rnorm(N)
+  res <- permutation_gls_test(y, gls_prepare(t, N), B = 1L, seed = 1L)
+  all(is.na(res$p_pointwise)) })
+
+check("a substantive B still produces pointwise p-values", {
+  set.seed(7)
+  N <- 128L; t <- seq_len(N)
+  res <- permutation_gls_test(rnorm(N), gls_prepare(t, N), B = 50L, seed = 1L)
+  any(is.finite(res$p_pointwise)) &&
+    all(res$p_pointwise >= 0 & res$p_pointwise <= 1, na.rm = TRUE) })
+
+check("the family-wise route survives a B too small for the pointwise one", {
+  # The two routes fail independently: maxT needs only the per-draw maximum,
+  # which is defined however few draws there are.
+  set.seed(7)
+  N <- 128L; t <- seq_len(N)
+  res <- permutation_gls_test(rnorm(N), gls_prepare(t, N), B = 1L, seed = 1L)
+  all(is.finite(res$p_empirical_maxT)) })
+
+check("an unknown dataset name is refused", {
+  out <- suppressWarnings(system2("./tsf",
+    c("condition", "GSE130970", "499", "--config", "config/project.R",
+      "--geo-dir", "d", "--interim-dir", "i", "--results-dir", "r",
+      "--dry-run"), stdout = TRUE, stderr = TRUE))
+  txt <- paste(out, collapse = " ")
+  !is.null(attr(out, "status")) &&
+    grepl("No config for dataset", txt, fixed = TRUE) &&
+    grepl("499", txt, fixed = TRUE) })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
