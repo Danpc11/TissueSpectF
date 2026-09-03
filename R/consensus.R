@@ -298,8 +298,19 @@ null_matrix_draw <- function(prepared, picked_samples) {
   plv <- Mod(rowMeans(ph, na.rm = TRUE))
   score <- med * prev * plv
   score[n_valid < 2L | !is.finite(score)] <- NA_real_
+  plv[n_valid < 2L | !is.finite(plv)] <- NA_real_
   names(score) <- prepared$keys
-  score
+  names(plv) <- prepared$keys
+  # PLV under the null is returned, not discarded. The Rayleigh test that used
+  # to stand alone assumes phases are iid uniform across samples; these samples
+  # share one grid and one tissue, so their phases agree for structural reasons
+  # and 98.9% of frequencies cleared plv_rayleigh_q <= 0.05 -- a gate that
+  # passes everything is not a gate. Each null draw takes a random subset of the
+  # same pool, so it carries that shared structure too, and calibrating the
+  # observed PLV against it asks the question the Rayleigh test could not: is
+  # this frequency more phase-coherent than the same tissue on the same grid
+  # produces by itself?
+  list(score = score, plv = plv)
 }
 
 #' Permutation null for the consensus score.
@@ -366,8 +377,10 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
 
   draws <- parallel::mclapply(seq_len(n_null), function(b) {
     pick <- picks[[b]]
+    plv_draw <- NULL
     values <- if (engine == "matrix") {
-      tryCatch(null_matrix_draw(prepared, pick), error = function(e) NULL)
+      d <- tryCatch(null_matrix_draw(prepared, pick), error = function(e) NULL)
+      if (is.null(d)) NULL else { plv_draw <- d$plv; d$score }
     } else {
       idx <- unlist(rows_by_sample[pick], use.names = FALSE)
       sub <- spectra_all[idx, , drop = FALSE]
@@ -386,9 +399,16 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
     # the same family as `cs`.
     if (!is.null(retained_keys)) {
       values <- values[names(values) %in% retained_keys]
+      if (!is.null(plv_draw)) {
+        plv_draw <- plv_draw[names(plv_draw) %in% retained_keys]
+      }
     }
     if (!length(values)) return(NULL)
-    list(values = values, best = max(values))
+    # plv_null: the phase coherence this tissue, on this grid, produces from a
+    # random subset of the same pool. It is the reference the Rayleigh test
+    # should have been.
+    list(values = values, best = max(values),
+         plv = if (is.null(plv_draw)) NULL else plv_draw[is.finite(plv_draw)])
   }, mc.cores = n_cores, mc.preschedule = TRUE, mc.set.seed = FALSE)
 
   draws <- draws[!vapply(draws, is.null, logical(1))]
@@ -402,8 +422,21 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
   if (is.null(dim(mat))) mat <- matrix(mat, nrow = length(keys))
   rownames(mat) <- keys
 
+  # Per-key PLV null, assembled the same way as the score null.
+  plv_draws <- lapply(draws, `[[`, "plv")
+  plv_draws <- plv_draws[!vapply(plv_draws, is.null, logical(1))]
+  plv_mat <- NULL
+  if (length(plv_draws)) {
+    plv_keys <- Reduce(union, lapply(plv_draws, names))
+    plv_mat <- vapply(plv_draws, function(v) v[plv_keys],
+                      numeric(length(plv_keys)))
+    if (is.null(dim(plv_mat))) plv_mat <- matrix(plv_mat, nrow = length(plv_keys))
+    rownames(plv_mat) <- plv_keys
+  }
+
   list(per_key = mat, global = unname(stats::quantile(best, q_global)),
-       global_max_draws = best, n_null = ncol(mat), n_samples = n_samples)
+       global_max_draws = best, per_key_plv = plv_mat,
+       n_null = ncol(mat), n_samples = n_samples)
 }
 
 #' Empirical p-value per component against its own null, then BH.
@@ -414,7 +447,48 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
 #' Keeping the per-(chr, k) null as well gives a p-value per component; BH over
 #' those is the intermediate that lets a signature be localised. Both are
 #' reported, and which one a claim rests on is a stated choice.
+#' PLV calibrated against the permutation null rather than against Rayleigh.
+#'
+#' plv_rayleigh_p assumes phases iid uniform across samples. These samples share
+#' one reference grid and one tissue, so their phases agree for structural
+#' reasons: on a real run the PLV distribution over 1995 frequencies had median
+#' 0.971 and q25 0.914, and 98.9% of frequencies cleared plv_rayleigh_q <= 0.05.
+#' A gate that passes 98.9% of candidates is not a gate, and a Rayleigh p of
+#' 1e-12 attached to a median frequency is not evidence of anything.
+#'
+#' Each null draw is a random subset of the same pool, so it reproduces the
+#' shared grid and the shared tissue. Calibrating against it asks the question
+#' the Rayleigh test cannot: is this frequency more phase-coherent than this
+#' tissue on this grid produces on its own?
+#'
+#' plv_rayleigh_p is kept, unchanged, because removing a column silently changes
+#' what old results mean. It should not be used as a selection gate.
+plv_null_pvalues <- function(cs, null_dist) {
+  cs$p_plv_null <- NA_real_
+  cs$q_plv_null <- NA_real_
+  cs$plv_null_median <- NA_real_
+  if (is.null(null_dist) || is.null(null_dist$per_key_plv)) return(cs)
+
+  key <- paste(cs$chr, cs$N, cs$k, sep = "|")
+  m <- null_dist$per_key_plv
+  idx <- match(key, rownames(m))
+
+  for (i in which(!is.na(idx))) {
+    draws <- m[idx[i], ]
+    draws <- draws[is.finite(draws)]
+    if (length(draws) < 10L) next
+    obs <- cs$plv[i]
+    if (!is.finite(obs)) next
+    cs$p_plv_null[i] <- (1 + sum(draws >= obs)) / (length(draws) + 1)
+    cs$plv_null_median[i] <- stats::median(draws)
+  }
+  ok <- is.finite(cs$p_plv_null)
+  if (any(ok)) cs$q_plv_null[ok] <- stats::p.adjust(cs$p_plv_null[ok], "BH")
+  cs
+}
+
 null_component_pvalues <- function(cs, null_dist, null_q = 0.05) {
+  cs <- plv_null_pvalues(cs, null_dist)
   if (is.null(null_dist)) {
     cs$p_null_fwer <- NA_real_
     cs$p_null <- NA_real_; cs$q_null <- NA_real_
