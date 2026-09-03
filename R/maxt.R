@@ -131,15 +131,53 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
                       all  = p_all,
                       tsf_abort("maxt$primary_scheme must be 'full' or 'all'"))
 
+  # The pooled pointwise route standardises each frequency by its own null mean
+  # and sd, then pools all B x m standardised values into one reference
+  # distribution. Its resolution is therefore 1/(B*m + 1), far finer than
+  # 1/(B + 1) -- which is legitimate only if the standardised nulls really are
+  # exchangeable across frequencies, and only if the sd is estimable at all.
+  #
+  # It is not estimable from one draw. With B = 1 every sd is NA, the guard
+  # below replaced it with 1, the pooled reference collapsed to a vector of
+  # zeros, and every frequency above its single null draw received
+  # p = 1/(B*m + 1) ~ 1e-4. On a real run that produced 4950 "discoveries" at
+  # BH q <= 0.05 out of 10030 -- a spectacular-looking result manufactured
+  # entirely by a degenerate standardisation. Substituting 1 for a quantity that
+  # could not be computed turns "unknown" into "confident", which is the one
+  # substitution a test must never make.
   centre <- colMeans(null_power_mat)
   scale <- apply(null_power_mat, 2, stats::sd)
-  scale[!is.finite(scale) | scale <= 0] <- 1
-  z_obs <- (power_observed - centre) / scale
-  pooled <- sort(as.vector(sweep(sweep(null_power_mat, 2, centre), 2, scale, "/")))
-  # (1 + number of pooled null values at least as extreme) / (1 + pool size)
-  p_pooled <- (1 + (length(pooled) -
-                      findInterval(z_obs, pooled, left.open = TRUE))) /
-    (length(pooled) + 1)
+
+  MIN_DRAWS_FOR_POOLED <- 10L
+  if (B < MIN_DRAWS_FOR_POOLED) {
+    tsf_warn("B = ", B, " is too few draws to standardise the pooled pointwise ",
+             "null (needs at least ", MIN_DRAWS_FOR_POOLED, "). p_pointwise is ",
+             "reported as NA rather than as a number the draws do not support; ",
+             "the family-wise maxT route is unaffected.")
+    p_pooled <- rep(NA_real_, length(power_observed))
+    z_obs <- rep(NA_real_, length(power_observed))
+  } else {
+    # A frequency whose null has no spread has no scale to divide by. It is
+    # dropped from the pointwise route rather than assigned an arbitrary one.
+    degenerate <- !is.finite(scale) | scale <= 0
+    if (any(degenerate)) {
+      tsf_warn(sum(degenerate), " of ", length(scale), " frequencies have a ",
+               "null with no spread; p_pointwise is NA for those.")
+    }
+    scale[degenerate] <- NA_real_
+    z_obs <- (power_observed - centre) / scale
+    pooled <- as.vector(sweep(sweep(null_power_mat, 2, centre), 2, scale, "/"))
+    pooled <- sort(pooled[is.finite(pooled)])
+    if (!length(pooled)) {
+      p_pooled <- rep(NA_real_, length(z_obs))
+    } else {
+      # (1 + number of pooled null values at least as extreme) / (1 + pool size)
+      p_pooled <- (1 + (length(pooled) -
+                          findInterval(z_obs, pooled, left.open = TRUE))) /
+        (length(pooled) + 1)
+      p_pooled[!is.finite(z_obs)] <- NA_real_
+    }
+  }
 
   out <- obs
   out$p_pointwise <- pmin(1, p_pooled)
