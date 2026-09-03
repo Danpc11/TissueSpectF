@@ -1034,6 +1034,50 @@ check("an unknown dataset name is refused", {
     grepl("No config for dataset", txt, fixed = TRUE) &&
     grepl("499", txt, fixed = TRUE) })
 
+# --- PLV must be calibrated, not Rayleigh-tested ------------------------------
+#
+# plv_rayleigh_p assumes phases iid uniform across samples. Samples here share
+# one grid and one tissue, so phases agree structurally: on a real run the PLV
+# distribution had median 0.971, and 98.9% of 1995 frequencies cleared
+# plv_rayleigh_q <= 0.05. The permutation null carries the same shared structure,
+# so it is the right reference.
+
+check("the null draw returns its PLV instead of discarding it", {
+  set.seed(3)
+  m <- 40L; ns <- 8L
+  keys <- paste0("1|100|", seq_len(m))
+  prepared <- list(
+    keys = keys, samples = paste0("S", seq_len(ns)),
+    pnorm = matrix(runif(m * ns), m, dimnames = list(keys, paste0("S", 1:ns))),
+    stands = matrix(rbinom(m * ns, 1, 0.5), m,
+                    dimnames = list(keys, paste0("S", 1:ns))),
+    phase = matrix(exp(1i * runif(m * ns, 0, 2 * pi)), m,
+                   dimnames = list(keys, paste0("S", 1:ns))))
+  d <- null_matrix_draw(prepared, paste0("S", 1:ns))
+  is.list(d) && all(c("score", "plv") %in% names(d)) &&
+    length(d$plv) == m && all(d$plv >= 0 & d$plv <= 1, na.rm = TRUE) })
+
+check("a PLV typical of the null gets a large p, an extreme one a small p", {
+  # The point of the calibration: being at 0.97 means nothing when the null
+  # sits at 0.97 too.
+  cs <- data.frame(chr = "1", N = 100L, k = c(1L, 2L),
+                   plv = c(0.97, 0.9999), stringsAsFactors = FALSE)
+  draws <- matrix(rep(rnorm(200, 0.97, 0.01), 2), nrow = 2, byrow = TRUE)
+  rownames(draws) <- c("1|100|1", "1|100|2")
+  out <- plv_null_pvalues(cs, list(per_key_plv = draws))
+  out$p_plv_null[1] > 0.2 && out$p_plv_null[2] < 0.05 })
+
+check("plv_rayleigh_p is left in place, not removed", {
+  # Deleting a column silently changes what an existing results tree means.
+  src <- paste(readLines("R/consensus.R", warn = FALSE), collapse = " ")
+  grepl("rayleigh_p", src, fixed = TRUE) })
+
+check("too few null draws leaves the calibrated p as NA", {
+  cs <- data.frame(chr = "1", N = 100L, k = 1L, plv = 0.99,
+                   stringsAsFactors = FALSE)
+  draws <- matrix(runif(5), nrow = 1, dimnames = list("1|100|1", NULL))
+  is.na(plv_null_pvalues(cs, list(per_key_plv = draws))$p_plv_null[1]) })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
