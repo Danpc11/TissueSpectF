@@ -290,24 +290,49 @@ have to share one label or invent unrelated ones; with three, both sit under
 `liver::healthy` and stay distinguishable, and TCGA's adjacent-normal will fit
 later without renaming anything.
 
-### Three healthy classes, not one
+### Three healthy groups, one class
 
-| class | what it is | cohorts |
+| raw label | what it is | cohorts |
 |---|---|---|
 | `Normal_histology` | a biopsy with normal histology and no NAFLD activity (NAS = 0), taken **within** a biopsy series | GSE162694 (31), GSE130970 (6) |
-| `Control_disease_cohort` | a subject **outside** the disease cohort of a NAFLD study | GSE135251 (10) |
+| `Control_disease_cohort` | a subject **outside** the disease cohort of a NAFLD study | GSE135251 (8, see below) |
 | `Control_external_study` | the control group of a **different** disease study | GSE142530 (11) |
 
-None absorbs the others. Merging them into one `Control` would assume exactly
-what is worth testing — that a healthy liver looks the same whichever study
-recruited it — and would do it by choosing a label. If their spectra agree, a
-`Healthy_consensus` class can be created and defended afterwards. Equivalence is
-demonstrated, not asserted.
+All three map to one condition, **`Controles`**, 56 samples over four cohorts.
+The raw labels stay distinct, so ingest, the audit trail and `cohort_roles`
+still record which cohort a control came from; only the class is shared.
 
-`Control_disease_cohort` is **not a strictly healthy extreme**: two of its ten
-carry incidental fibrosis of stage 1 and 2, which is what makes it a cohort
-statement rather than a histological one. Audit those two out before using the
-class as a healthy reference.
+An earlier version kept them apart, on the argument that a healthy liver might
+not look the same whichever study recruited it. Two things decided against it,
+neither of which depends on any accuracy figure. The source publications place
+all three in the same group, and `states` already marked all three `healthy` —
+the split lived in the label. And the split was not validable: two of the three
+existed in a single cohort each, so leave-one-cohort-out had no second cohort to
+learn them from. On a real run GSE142530 was skipped as a hold-out entirely,
+ten samples were dropped from validation, and both classes sat among the
+centroids competing for every prediction while winning zero.
+
+**What it costs, stated:** the class is heterogeneous in clinical context.
+`Normal_histology` is a NAFLD-cohort patient with no fibrosis yet, not a donor
+liver; `Control_external_study` is the control arm of an alcohol study under a
+different protocol.
+
+**F0 is not folded in.** F0 is a histological stage in a NAFLD patient — a
+measurement — while these three are the absence of the disease context. Merging
+them would assume what the `Controles` vs `F0` contrast exists to test.
+
+Two of GSE135251's ten controls carried incidental fibrosis of stage 1 and 2
+(`GSM3998224`, `GSM3998341`). They are excluded by `exclude_samples` in that
+dataset's config, which is why the count above is 8 and the class is 56 rather
+than 58. `exclude_samples` aborts if a named accession is not in the series — a
+typo would otherwise exclude nothing and leave the run looking corrected — and
+warns instead of aborting when none of them match, which is the legitimate case
+for synthetic or subset data.
+Excluding by accession rather than by a rule on `fibrosis stage` matters:
+`sample_filter` evaluates one column across all samples, so a filter on stages 1
+and 2 would also delete the 47 F1 and 53 F2 of the NAFLD cohort. This departs
+from the publication, which groups all ten as controls — the control class here
+is histologically clean, not the paper's recruitment group.
 
 ### The disease classes
 
@@ -804,6 +829,47 @@ ranked classes.
 
 `shiny` is needed only for `app.R`. The CLI, including `./tsf match`, works on
 base R alone.
+
+### Which spectrum the fingerprint uses
+
+`--features` selects the representation. All of them go through the same
+leave-one-cohort-out validation, the same training-only feature selection and
+the same thresholds, so comparing them isolates the representation rather than
+confounding it with the harness.
+
+| `--features` | features | in one line |
+|---|---|---|
+| `amplitude` | ~1,500 | log-amplitude per `(chromosome, k)`, the default |
+| `amplitude_phase` | ~3,000 | the above, plus amplitude-weighted phase |
+| `period_bins` | ~960 | per `(chromosome, period)` on a common log grid |
+| `period_bins_genomic` | 40 | one curve over period, averaged across chromosomes |
+| `band_ratios` | 780 | ratios between period bands; invariant to global scale |
+| `expression_baseline` | ~14,000 | the **control**: raw expression, no transform |
+
+`(chromosome, k)` mixes incomparable scales. `k` is cycles per chromosome, so
+with N = 2066 on chr1 the index `k = 64` is a period of 32 genes and with
+N = 759 on chr21 it is 12: `chr1_k64` and `chr21_k64` are columns the model
+treats as parallel while they describe different things. Indexing by period
+fixes that, and only then can chromosomes be averaged into one curve.
+
+`k_max` does not apply to the period representations — it caps cycles per
+chromosome, which would empty every short-period bin on the long chromosomes.
+
+Run the sweep before trusting any single number:
+
+```bash
+for f in amplitude period_bins period_bins_genomic band_ratios expression_baseline; do
+  ./tsf reference GSE130970 GSE135251 GSE142530 GSE162694 GSE276114 \
+    --config config/project.R --geo-dir data --interim-dir interim \
+    --results-dir results_feat_$f --cores 24 --seed 42 --features $f
+done
+```
+
+`expression_baseline` is the one that makes the others interpretable. If raw
+expression classifies these cohorts better than the spectrum, the transform is
+discarding information and the write-up has to say so; if it classifies worse,
+the spectrum is a real compression. Keep `--n-features` identical across the
+sweep — changing it for one invalidates the comparison.
 
 ### What the app will not do
 
