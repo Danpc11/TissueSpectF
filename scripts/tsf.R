@@ -83,6 +83,7 @@ Parameters (override config/project.R):
   --n-masks <n>         masks per coverage band in the reference calibration
   --cores <n>           local worker processes (or set N_WORKERS; default <= 8)
   --k-max <n>           frequencies per chromosome in a fingerprint
+  --n-features <n>      features the centroid model selects (train only)
   --features <s>        fingerprint representation:
                           amplitude            (chr,k) log1p amplitude [default]
                           amplitude_phase      the above, plus phase
@@ -144,6 +145,7 @@ OPTION_ALIASES <- c(
   inputunit = "input_unit", input_unit = "input_unit", unit = "input_unit",
   out = "out", outputdir = "out", output_dir = "out",
   seed = "seed", features = "features",
+  nfeatures = "n_features", n_features = "n_features",
   chromosomes = "chromosomes", chrom = "chromosomes",
   annotation = "annotation", annotationformat = "annotation_format",
   annotation_format = "annotation_format",
@@ -270,6 +272,10 @@ apply_cli_overrides <- function(project, opt) {
   set(c("clean", "per_sample"), opt$per_sample, isTRUE)
   set(c("fingerprint", "k_max"), opt$k_max, as.integer)
   set(c("fingerprint", "features"), opt$features, as.character)
+  # Needed as a flag, not just a config value: a representation sweep has to
+  # hold the selected-feature count identical across runs, and changing it for
+  # one representation invalidates the comparison.
+  set(c("fingerprint", "n_features"), opt$n_features, as.integer)
   set(c("fingerprint", "target"), opt$target)
   project
 }
