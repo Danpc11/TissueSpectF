@@ -12,6 +12,25 @@ list(
 
   has_control_cohort = TRUE,
 
+  # Two of the ten non-NAFLD controls carry incidental fibrosis. The `disease`
+  # column calls them Control and so does `group in paper`; only
+  # `fibrosis stage` disagrees:
+  #
+  #   GSM3998224   disease: Control   fibrosis stage: 1
+  #   GSM3998341   disease: Control   fibrosis stage: 2
+  #
+  # `non_disease_cohort` matches on `disease` and is first, so it wins before
+  # the stage is read, and both would enter Controles as healthy liver.
+  #
+  # Excluded by accession, not by a rule on `fibrosis stage`: sample_filter
+  # evaluates ONE column per entry across ALL samples, so excluding stages 1
+  # and 2 would also delete the 47 F1 and 53 F2 of the NAFLD cohort.
+  #
+  # This departs from the publication, which groups all ten as controls. The
+  # control class here is histologically clean, not the paper's recruitment
+  # group, and that is a claim to state rather than to assume.
+  exclude_samples = c("GSM3998224", "GSM3998341"),
+
   sample_id_column = "geo_accession",
   fibrosis_column  = "fibrosis stage",
   normal_histology_terms = c("normal liver histology", "normal"),
