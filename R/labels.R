@@ -229,11 +229,30 @@ harmonize_conditions <- function(pheno, dataset_config) {
     rule_used[bad] <- NA_character_
   }
 
-  baseline <- (dataset_config$vocabulary_spec %||% list())$baseline %||% "Control"
+  # `condition` here is the RAW label a rule assigned; `baseline` is a CLASS
+  # name. Comparing them directly worked only while every healthy group was its
+  # own class. Once the three merged into "Controles", no raw label equalled
+  # the baseline and this guardrail silently stopped firing -- a dataset
+  # declaring has_control_cohort = FALSE could assign controls unnoticed.
+  #
+  # Map the raw labels to their classes first, so the comparison happens in one
+  # space. Every raw label whose class is the baseline counts.
+  vocab <- dataset_config$vocabulary_spec %||% list()
+  baseline <- vocab$baseline %||% "Control"
+  control_labels <- if (length(vocab$conditions)) {
+    names(vocab$conditions)[unname(vocab$conditions) %in% baseline]
+  } else {
+    baseline
+  }
+  if (!length(control_labels)) control_labels <- baseline
+
   if (isFALSE(dataset_config$has_control_cohort) &&
-      !is.null(baseline) && any(condition %in% baseline, na.rm = TRUE)) {
+      any(condition %in% control_labels, na.rm = TRUE)) {
+    offending <- unique(condition[condition %in% control_labels])
     tsf_abort("Dataset ", dataset_config$id, " declares has_control_cohort = FALSE ",
-               "but a rule assigned ", baseline, ". Fix the config, not the data.")
+              "but a rule assigned ", paste(offending, collapse = ", "),
+              ", which maps to the baseline class ", baseline,
+              ". Fix the config, not the data.")
   }
 
   stage_col <- find_pheno_column(pheno, dataset_config$fibrosis_column)
@@ -300,6 +319,53 @@ apply_sample_filter <- function(labels, pheno, dataset_config) {
     labels$condition_selected <- TRUE
   }
   if (!"filtered_out" %in% colnames(labels)) labels$filtered_out <- FALSE
+
+  # Named exclusions, applied before the column filters.
+  #
+  # sample_filter evaluates ONE column per entry, across ALL samples. That is
+  # right for "this series mixes MASLD with HBV, keep the MASLD" and wrong for
+  # "these two specific samples are mislabelled": a filter excluding fibrosis
+  # stages 1 and 2 to drop two miscoded controls would also delete every real
+  # F1 and F2 in the cohort. Naming the accessions is narrower and auditable --
+  # the config says which samples left and the log says whether they were found.
+  #
+  # Refuses to proceed if a named sample is absent. A typo in an accession would
+  # otherwise exclude nothing and leave the run looking clean.
+  excl <- dataset_config$exclude_samples
+  if (!is.null(excl) && length(excl)) {
+    excl <- as.character(excl)
+    hit <- labels$sample_id %in% excl
+    missing <- setdiff(excl, labels$sample_id)
+
+    # PARTIAL match means a typo: some accessions resolved, so this is the right
+    # series and the rest should have resolved too. Abort -- excluding one of
+    # two mislabelled samples is worse than excluding neither, because the run
+    # looks corrected.
+    #
+    # NO match means a different sample universe: a synthetic self-check, a
+    # subset, or a config applied to another series. Warn and carry on; there is
+    # nothing here to exclude and nothing to be wrong about.
+    if (length(missing) && any(hit)) {
+      tsf_abort("exclude_samples for ", dataset_config$id, " names ",
+                length(missing), " sample(s) not in this series: ",
+                paste(missing, collapse = ", "),
+                ", while ", sum(hit), " other(s) matched. A partial match is a ",
+                "typo, not a different series: check the accessions.")
+    }
+    if (length(missing) && !any(hit)) {
+      tsf_warn("exclude_samples for ", dataset_config$id, ": none of the ",
+               length(excl), " named sample(s) are in this series (",
+               paste(excl, collapse = ", "), "). Nothing was excluded. This is ",
+               "expected for synthetic or subset data, and a mistake anywhere ",
+               "else.")
+    }
+    if (any(hit)) {
+      tsf_log("  exclude_samples: dropped ", sum(hit), " named sample(s) (",
+              paste(excl, collapse = ", "), ")")
+      labels$in_scope[hit] <- FALSE
+      labels$filtered_out[hit] <- TRUE
+    }
+  }
 
   filt <- dataset_config$sample_filter
   if (!is.null(filt)) {
