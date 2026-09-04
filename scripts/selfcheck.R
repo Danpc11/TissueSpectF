@@ -149,11 +149,17 @@ run_selfcheck <- function() {
   check("GSE162694 has no Control", !any(grepl("^Control", s2$condition)))
   check("GSE162694 normal histology is its own class, not F0", {
     sum(s2$condition == "Normal_histology") == 6 && sum(s2$condition == "F0") == 12 })
-  check("the two healthy states share a state but not a class", {
-    ids <- unique(s1$class_id[s1$condition == "Control_disease_cohort"])
-    ids2 <- unique(s2$class_id[s2$condition == "Normal_histology"])
-    startsWith(ids, "liver::healthy::") && startsWith(ids2, "liver::healthy::") &&
-      !identical(ids, ids2) })
+  check("the healthy groups share one class, and F0 is not in it", {
+    # This asserted the opposite until the source publications settled it: the
+    # non-NAFLD controls and the normal-histology biopsies are the same state,
+    # and the split left two classes living in one cohort each, unlearnable by
+    # leave-one-cohort-out. The raw labels are still distinct -- only the class
+    # merged -- so both halves are checked.
+    ctl <- unique(s1$class_id[s1$condition == "Control_disease_cohort"])
+    nh  <- unique(s2$class_id[s2$condition == "Normal_histology"])
+    f0  <- unique(s1$class_id[s1$condition == "F0"])
+    identical(ctl, nh) && startsWith(ctl, "liver::healthy::") &&
+      !identical(f0, ctl) && startsWith(f0, "liver::disease::") })
 
   sig <- read_tsv_tsf(file.path(project$results_dir, "GSE135251", "comparison",
                                 "constant_signature_average.tsv"), required = FALSE)
@@ -293,4 +299,3 @@ run_selfcheck <- function() {
   tsf_warn("selfcheck: ", failures, " check(s) failed.")
   1L
 }
-
