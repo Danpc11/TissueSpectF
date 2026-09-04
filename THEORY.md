@@ -73,6 +73,30 @@ It is never zero-filled and never imputed. Absence of a measurement is not
 evidence of zero expression, and a zero placed at a fixed position injects a
 deterministic pattern whose own spectral structure can manufacture a peak.
 
+**A position IN $T_c$ whose value is not finite leaves $T_c$.** The paragraph
+above covers the gene that was never measured. The harder case is the gene that
+survives the expression filter — finite in most samples — but has no usable
+value in one, which happens when a group of duplicate identifiers collapses to
+all-NA for that sample alone. Such a position is *in* $T_c$, so the presence
+indicator counts it as observed, and filling it with a zero makes it a
+measurement of zero expression at a fixed grid slot: exactly the artefact this
+section exists to prevent, arriving silently rather than as an error.
+
+The observed set is therefore per signal, not per chromosome. For signal $y$,
+
+$$T_c(y) = \{t \in T_c : y_t \text{ finite}\}, \qquad
+  \rho_c(y) = |T_c(y)|/N_c \le \rho_c,$$
+
+and the window terms of §4 are rebuilt over $T_c(y)$ whenever
+$T_c(y) \subsetneq T_c$. The reported coverage is $\rho_c(y)$ — what the signal
+was actually fitted on — so a peak is never read against a coverage figure a
+different signal earned. When the signal is complete, which is the normal case
+after ingest, the shared terms are reused at no cost.
+
+Implemented in `gls_observed()`; every fitting stage routes through it, and
+`gls_spectrum()` aborts on a non-finite value at an observed position rather
+than imputing one. A loud failure is worth more than a fabricated peak.
+
 Write $T_c \subseteq \{1,\dots,N_c\}$ for the observed positions,
 $n_c = |T_c|$, and $\rho_c = n_c/N_c$ for coverage. In our liver cohorts
 $\rho$ ranges from 0.16 to 0.78 with medians of 0.66 and 0.73.
@@ -339,7 +363,70 @@ Every place this arises now computes the attainable floor and says so:
 "Not reachable" and "not present" are different findings, and the logs
 distinguish them.
 
-### 5.5c Two multiplicity regimes for the condition test
+### 5.5c The pointwise BH floor is a diagnostic, not a bound
+
+BH takes $q_i = \min_{j \ge i} m\,p_j / j$. At rank 1 with no ties that is
+$m\,p_{\min} = m/(B+1)$, and that figure is worth reporting as a warning: with
+$m = 10{,}030$ and $B = 999$ it exceeds 1, so the route looks closed.
+
+It is not a bound. If $\kappa$ p-values tie at the permutation floor, the
+achievable value at rank $\kappa$ is
+
+$$q_{\min} = \frac{m}{\kappa\,(B+1)},$$
+
+which for $\kappa = m$ is $1/(B+1)$ — smaller by a factor of $m$. Treating the
+rank-1 figure as a bound and concluding that nothing can pass understates the
+method's power by up to that factor, which at $m = 10{,}030$ is not a rounding
+difference. Both are reported: `bh_rank1_diagnostic()` for the conservative
+warning, `bh_achievable_q()` with the observed tie count for the honest answer,
+and the log states which is which.
+
+### 5.5d The period floor is applied before the null
+
+The technical floor $2/\rho_c(y)$ and the biological floor combine into a
+minimum period (§2.3), and frequencies below it are removed from $cs$
+**before** any p-value exists. The correction then runs over the family that
+was actually tested.
+
+Testing every frequency and filtering afterwards inflates the family with
+frequencies that were never candidates, and no later filtering returns the
+power that cost. The restriction must therefore be a pre-specification: read
+from the config and the command line before any result is seen. Adjusting it
+after inspecting which components survive is a different procedure with
+different guarantees, whatever the flags say.
+
+Both nulls respect the restriction. The statistic is still computed on the full
+prepared matrices — `prevalence_from_rank()` defines standing as the top
+$1-\text{quantile\_cut}$ within each (sample, chromosome), and preparing the
+null on a filtered pool would recompute that threshold over a smaller set while
+the observed $cs$ came from the unfiltered spectra — but the per-draw maximum
+and the pooled pointwise values are taken over the retained keys only. Compute
+over everything, then restrict which frequencies compete.
+
+The cached null is keyed on the retained family as well as the sample count:
+two period configurations produce different families, different global maxima,
+and must not share a null.
+
+### 5.5e The pooled pointwise null needs enough draws to standardise
+
+`p_pointwise` standardises each frequency by its own null mean and standard
+deviation, then pools all $B \times m$ standardised values into one reference.
+Its resolution is $1/(Bm+1)$, far finer than $1/(B+1)$, which is legitimate
+only if the standardised nulls are exchangeable across frequencies — and only
+if the standard deviation is estimable.
+
+It is not estimable from one draw. At $B = 1$ every $\hat\sigma$ is undefined;
+substituting 1 collapses the pooled reference to a vector of zeros and every
+frequency above its single draw receives $p \approx 1/(Bm+1)$. On a real run
+that produced 4,950 "discoveries" at BH $q \le 0.05$ out of 10,030, manufactured
+entirely by a degenerate standardisation. Below ten draws `p_pointwise` is
+therefore `NA`, and a frequency whose null has no spread is `NA` rather than
+assigned an arbitrary scale. Substituting a number for a quantity that could
+not be computed turns "unknown" into "confident", which is the one substitution
+a test must not make. The family-wise maxT route is unaffected: it needs only
+the per-draw maximum, which is defined however few draws there are.
+
+### 5.5f Two multiplicity regimes for the condition test
 
 maxT answers *"is this frequency stronger than the strongest frequency of a
 permuted spectrum?"* On a chromosome with 500–800 frequencies that is close to
@@ -408,11 +495,42 @@ $$
 $$
 
 which is not zero — with 8 samples a $\mathrm{PLV}$ of $0.3$ is unremarkable —
-so a Rayleigh p-value accompanies every value. And that p-value cannot fall
-below $e^{-n}$, so after BH over $n_f$ frequencies the smallest reachable $q$ is
+so a Rayleigh p-value accompanies every value. That p-value cannot fall below
+$e^{-n}$, so after BH over $n_f$ frequencies the smallest reachable $q$ is
 $e^{-n} n_f$: below roughly $\log(n_f/q)$ samples, about 9 for 5,000
 frequencies, perfect alignment could not pass. The stage says so and falls back
 to prevalence and score rather than returning an empty signature.
+
+### The Rayleigh test is not a gate here
+
+Its null is phases independent and uniform across samples. That is false in this
+design, and not marginally. Every sample of a condition is the same tissue laid
+on the **same reference grid**: the observed positions are identical and the
+expression profiles along a chromosome are strongly correlated, so the phases
+agree for structural reasons before any component is present.
+
+The consequence is measurable. On one liver cohort ($n = 30$, 1,995
+frequencies after the period floor) the PLV distribution was
+
+$$q_{25} = 0.914, \qquad \mathrm{median} = 0.971, \qquad q_{95} = 0.996,$$
+
+and **98.9% of frequencies cleared $q_{\mathrm{Rayleigh}} \le 0.05$**. At
+$n = 30$ the median PLV alone gives $z = n\,\mathrm{PLV}^2 \approx 28$ and
+$p \approx 7\times 10^{-13}$. A gate that admits 1,973 of 1,995 candidates is
+not a gate, and a p-value of $10^{-12}$ attached to a median frequency is not
+evidence about that frequency.
+
+So the PLV is calibrated against the **permutation null** instead. Each null
+draw is a random subset of the same pool, so it carries the same grid and the
+same tissue, and
+
+$$p_{\mathrm{PLV}} = \frac{1 + \#\{b : \mathrm{PLV}_b \ge \mathrm{PLV}_{\mathrm{obs}}\}}{B + 1}$$
+
+answers the question Rayleigh cannot: is this frequency more phase-coherent than
+this tissue on this grid produces on its own? Reported as `p_plv_null` and
+`q_plv_null`, with `plv_null_median` beside them as the reference value.
+`plv_rayleigh_p` is retained unchanged — removing a column silently changes what
+an existing results tree means — and should not be used to select components.
 
 Prevalence has two definitions and both are reported, never interchanged. The
 **rank** definition — above this sample's own 95th percentile for this
@@ -541,6 +659,22 @@ Aggregation across cohorts uses the **median of cohort-level values**, not a
 sample-weighted mean: with 42 of 70 F4 samples from a single series, a mean
 would place the F4 spectrum where that series is.
 
+### 8.1b Cohorts that speak, not cohorts that are present
+
+The combined p-value drops non-finite inputs, so a frequency present in three
+cohorts with only one usable $p$ is combined from one value. Gating eligibility
+on the number of cohorts *present* let such a frequency pass as though it
+carried three independent sources — and replication is the central claim of this
+pipeline, so that gate was counting the wrong thing.
+
+`n_meta_cohorts` counts the cohorts that contributed a usable p-value, and
+
+$$n_{\mathrm{meta}} \ge n_{\min}$$
+
+is required before $p_{\mathrm{meta}}$ is reported at all. Below it the value is
+withheld rather than published with a caveat: a number in a $q$ column gets
+used, and a footnote does not travel with it.
+
 ### 8.2 A signature cut chosen by the data
 
 Taking the top $N$ components by score is a display convention pretending to be
@@ -606,7 +740,16 @@ Nothing in `R/` knows what a fibrosis stage is. The condition vocabulary is
 data: `config/vocabularies/` declares levels, whether they are ordered, and
 which is the baseline.
 
-- `liver_fibrosis` — `Control, F0..F4`, ordered, baseline `Control`
+- `liver_fibrosis` — `Controles, F0..F4`, ordered, baseline `Controles`.
+  The three healthy groups — non-NAFLD controls, external-study controls and
+  normal-histology biopsies — map to one class. They are one state in the source
+  publications, and two of them existed in a single cohort each, which
+  leave-one-cohort-out cannot learn: on a real run one cohort was skipped as a
+  hold-out entirely and both classes won zero predictions while occupying
+  centroids. The merged class is heterogeneous in clinical context and that is a
+  stated limitation, not an assumption. F0 stays separate: it is a histological
+  stage in a diseased patient, and folding it in would assume what the
+  `Controles` vs `F0` contrast exists to test.
 - `case_control` — two groups, any tissue, unordered
 - `tissue_atlas` — one level per tissue, unordered, no baseline
 
@@ -698,12 +841,56 @@ thousands of features and hundreds of samples, a classifier will achieve a high
 internal AUC by learning batch, library protocol and sequencing depth. Batch
 does not transfer between studies; a real spectral signature does.
 
-The fingerprint is built by `R/fingerprint.R` (log-amplitude, optionally
-amplitude-weighted phase, per `(chromosome, k)` up to `k_max`), normalised per
-sample so that library depth cannot drive a match, and classified by nearest
-centroid on features selected from training data only. The model is deliberately
-inflexible: with thousands of features, anything richer would fit cohort
-idiosyncrasy and the out-of-cohort number would stop meaning anything.
+The fingerprint is built by `R/fingerprint.R`, normalised per sample so that
+library depth cannot drive a match, and classified by nearest centroid on
+features selected from training data only. The model is deliberately inflexible:
+with thousands of features, anything richer would fit cohort idiosyncrasy and
+the out-of-cohort number would stop meaning anything.
+
+### What a feature is, and why it matters more than the model
+
+`--features` selects the representation. All of them pass through the same
+leave-one-cohort-out validation, the same selection and the same thresholds, so
+a comparison between them isolates the representation instead of confounding it
+with the harness.
+
+| representation | features | what it assumes |
+|---|---|---|
+| `amplitude` | ~1,500 | that `(chromosome, k)` columns are comparable |
+| `amplitude_phase` | ~3,000 | the above, and that phase transfers between studies |
+| `period_bins` | ~960 | that a period means the same thing on every chromosome |
+| `period_bins_genomic` | 40 | the above, and that chromosomes can be averaged |
+| `band_ratios` | 780 | that only ratios between bands carry the signal |
+| `expression_baseline` | ~14,000 | nothing — it is the control |
+
+**`(chromosome, k)` mixes incomparable scales.** $k$ is cycles per chromosome,
+so with $N = 2066$ on chr1 the index $k = 64$ is a period of 32 genes and with
+$N = 759$ on chr21 it is 12. `chr1_k64` and `chr21_k64` are columns the model
+treats as parallel while they describe different phenomena, and twenty-four
+chromosomes of that is most of the feature space. Indexing by period on a common
+log grid removes the mismatch, and only then can chromosomes be averaged into
+one curve — the characteristic spectrum in the sense §1 asks for, rather than a
+concatenation of twenty-four curves over incompatible axes.
+
+`k_max` does not apply to the period representations. It caps cycles per
+chromosome, so on chr1 it would empty every bin below 32 genes and leave the
+short-period half of the grid existing only on the short chromosomes. The
+period range is the selection there.
+
+**Ratios instead of magnitudes.** A ratio of two period bands within one sample
+is dimensionless: library size, sequencing depth and platform scale cancel. It
+is the one representation whose invariance can be checked rather than argued,
+and it is asserted in the tests — which is how a first attempt using
+`log1p` was caught, since $\log(1+5a) - \log(1+5b) \ne \log(1+a) - \log(1+b)$
+and the invariance the feature exists for did not hold.
+
+**The control.** `expression_baseline` is the gene expression itself, positioned
+on the same grid, with no transform. Without it the accuracy of a spectral
+fingerprint is uninterpretable: if raw expression classifies these cohorts
+better, the transform is discarding information and this document has to say so;
+if it classifies worse, the spectrum is a genuine compression. It is a
+representation rather than a separate script precisely so that everything
+downstream is identical.
 
 `reference_status()` turns the validation into one sentence, and both the CLI
 and the app print it above every result. A reference that does not beat the
