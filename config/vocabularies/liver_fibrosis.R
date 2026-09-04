@@ -1,4 +1,4 @@
-# Liver fibrosis staging, with the healthy states kept apart.
+# Liver fibrosis staging, with the three healthy groups as ONE control class.
 #
 # THREE LEVELS OF IDENTITY: class_id = tissue::state::condition
 #
@@ -6,7 +6,37 @@
 # specific class within that state. This is what lets two different kinds of
 # healthy liver coexist without one absorbing the other:
 #
-# THREE HEALTHY CLASSES, NOT ONE
+# THREE HEALTHY GROUPS, ONE CLASS
+#
+# The raw labels stay separate -- ingest, the audit trail and `cohort_roles`
+# still record which cohort a control came from -- but they map to a single
+# condition, `Controles`. The source publications place all three in the same
+# group: liver tissue without disease.
+#
+# An earlier version kept them as three classes, on the argument that a healthy
+# liver might not look the same whichever study recruited it. Two things
+# decided against it, neither of which depends on any accuracy figure:
+#
+#   Control_disease_cohort exists only in GSE135251 and Control_external_study
+#   only in GSE142530, so leave-one-cohort-out has no second cohort to learn
+#   either from. In a real run GSE142530 was skipped as a hold-out entirely
+#   ("fewer than two shared classes"), 10 samples were dropped from validation,
+#   and both classes sat among the centroids competing for every prediction
+#   while winning zero.
+#
+#   `states` already marked all three healthy. The split lived in the label.
+#
+# Merged, Controles has 56 samples across FOUR cohorts and GSE142530 becomes a
+# usable hold-out.
+#
+# WHAT IT COSTS: the class is heterogeneous in clinical context.
+# Normal_histology is a NAFLD-cohort patient with no fibrosis yet, not a donor
+# liver; Control_external_study is the control arm of an alcohol study under a
+# different protocol. And two of GSE135251's ten controls carried incidental
+# fibrosis of stage 1 and 2 -- those are excluded by accession in that dataset's
+# config, which is why the count is 56 and not 58.
+#
+# The three groups, and where they come from:
 #
 #   Normal_histology         a biopsy with normal histology and no NAFLD
 #                            activity (NAS = 0) taken WITHIN a biopsy series.
@@ -22,14 +52,9 @@
 #                            cohort, recruited, sampled and processed under that
 #                            study's protocol.
 #
-# All three sit under state = healthy and none absorbs the others. Merging them
-# into one Control would assume exactly what is worth testing: that a healthy
-# liver looks the same whichever study recruited it. If their spectra turn out
-# to agree, a Healthy_consensus class can be created and defended. Equivalence
-# is demonstrated first; it is not asserted by sharing a label.
-#
-# Folding Normal_histology into F0 would likewise merge histologically normal
-# livers with NAFLD patients who simply have no fibrosis yet.
+# F0 is NOT folded in. F0 is a histological stage in a NAFLD patient -- a
+# measurement -- while these three are the absence of the disease context.
+# Merging them would assume what the Controles vs F0 contrast exists to test.
 #
 # `progression` is the ordered subset. Transitions and ordinal trends run over
 # it alone: F0 -> F1 is a step, Control -> Normal_histology is not.
@@ -43,9 +68,10 @@ list(
                Normal_histology = "healthy",
                F0 = "disease", F1 = "disease", F2 = "disease",
                F3 = "disease", F4 = "disease"),
-  conditions = c(Control_disease_cohort = "Control_disease_cohort",
-                 Control_external_study = "Control_external_study",
-                 Normal_histology = "Normal_histology",
+  # The merge lives here and nowhere else: three raw labels, one condition.
+  conditions = c(Control_disease_cohort = "Controles",
+                 Control_external_study = "Controles",
+                 Normal_histology       = "Controles",
                  F0 = "NAFLD_fibrosis_F0", F1 = "NAFLD_fibrosis_F1",
                  F2 = "NAFLD_fibrosis_F2", F3 = "NAFLD_fibrosis_F3",
                  F4 = "NAFLD_fibrosis_F4"),
@@ -61,6 +87,7 @@ list(
 
   progression = paste0("F", 0:4),
   ordered  = TRUE,
-  baseline = "Control_disease_cohort",
-  description = "METAVIR-style fibrosis stage, plus two distinct healthy states"
+  # Must name a class that exists after the merge.
+  baseline = "Controles",
+  description = "METAVIR-style fibrosis stage, with the three healthy groups merged into one Controles class"
 )
