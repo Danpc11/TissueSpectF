@@ -15,7 +15,12 @@ list(
   series_matrix = "GSE162694_series_matrix.txt.gz",
   count_id_type = "ENTREZID",
 
-  has_control_cohort = FALSE,   # no non-NAFLD cohort; the N group is Normal_histology
+  # TRUE under this vocabulary: the Normal_histology samples map to Controles,
+  # so this dataset does contribute to the baseline class. It has no separate
+  # non-NAFLD recruitment arm -- these are within-cohort biopsies with normal
+  # histology -- and `cohort_roles` still records that distinction as
+  # "within_disease_normal" for any audit that needs it.
+  has_control_cohort = TRUE,
 
   sample_id_column = "geo_accession",
   fibrosis_column  = "fibrosis stage",
