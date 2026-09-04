@@ -16,7 +16,35 @@
 # discriminative half. Whether it helps is an empirical question the validation
 # answers; `features` selects which representation to build.
 
-FINGERPRINT_FEATURES <- c("amplitude", "amplitude_phase")
+FINGERPRINT_FEATURES <- c("amplitude", "amplitude_phase",
+                          "period_bins", "period_bins_genomic",
+                          "band_ratios", "expression_baseline")
+
+# Common period grid, in genes, shared by every chromosome.
+#
+# WHY THIS EXISTS
+# ---------------
+# "amplitude" indexes features by (chromosome, k). k is cycles per chromosome,
+# so the same k means different physical scales on different chromosomes: with
+# N = 2066 on chr1, k = 64 is a period of 32 genes; with N = 759 on chr21 it is
+# 12. chr1_k64 and chr21_k64 are columns the model treats as parallel while
+# they describe different phenomena, and 24 chromosomes' worth of that is most
+# of the feature space.
+#
+# Indexing by period instead makes bin_p21 mean the same thing everywhere, so
+# the features are comparable across chromosomes and -- with
+# "period_bins_genomic" -- can be averaged into a single genome-wide spectrum.
+# That is the characteristic spectrum in the sense the project is after: one
+# curve over period, not a concatenation of 24 curves over incompatible axes.
+#
+# Log spacing because period resolution is multiplicative: the gap between 20
+# and 21 genes is not the gap between 400 and 401.
+#
+# The range stops at 10 genes because below that the technical floor of most
+# chromosomes (2/coverage + margin) puts the frequency past the resolution the
+# sampling supports, and at 500 because a period that long fits only a few
+# times into the shorter chromosomes.
+FINGERPRINT_PERIOD_BREAKS <- exp(seq(log(10), log(500), length.out = 41L))
 
 #' Feature vector for one signal on one chromosome set.
 #'
@@ -25,6 +53,31 @@ FINGERPRINT_FEATURES <- c("amplitude", "amplitude_phase")
 #'   are the noisiest and the most exposed to the sampling window.
 fingerprint_vector <- function(y, chrom_idx, terms_cache, k_max = 64L,
                                features = "amplitude") {
+  # THE CONTROL, not a fingerprint: the gene expression itself, positioned on
+  # the same grid and carried through the same leave-one-cohort-out validation,
+  # the same feature selection and the same thresholds.
+  #
+  # Without it the accuracy of a spectral fingerprint is uninterpretable. If raw
+  # expression classifies these cohorts better than the spectrum does, the
+  # Fourier transform is discarding information and the work has to say so; if
+  # it classifies worse, the spectrum is a genuine compression. A number with no
+  # control is a number nobody can act on, and this pipeline had no control.
+  #
+  # It is a representation rather than a separate script so that every stage
+  # downstream is bit-for-bit the same, and the comparison isolates the
+  # representation instead of confounding it with the harness.
+  if (identical(features, "expression_baseline")) {
+    out <- list()
+    for (chr_now in names(chrom_idx)) {
+      ci <- chrom_idx[[chr_now]]
+      v <- as.numeric(y[ci$rows])
+      names(v) <- paste0("chr", chr_now, "_g", seq_along(v))
+      out[[chr_now]] <- v
+    }
+    if (!length(out)) return(NULL)
+    return(unlist(out, use.names = TRUE))
+  }
+
   pieces <- list()
   for (chr_now in names(chrom_idx)) {
     ci <- chrom_idx[[chr_now]]
@@ -35,24 +88,109 @@ fingerprint_vector <- function(y, chrom_idx, terms_cache, k_max = 64L,
     fit <- gls_observed(y[ci$rows], ci$t, ci$N, terms = terms_cache[[chr_now]])
     if (is.null(fit)) next
     sp <- gls_spectrum(fit$y, fit$terms)
-    keep <- sp$k <= k_max
-    sp <- sp[keep, , drop = FALSE]
+
+    # k_max caps cycles-per-chromosome, which is the right selection for the
+    # (chromosome, k) representations and the wrong one for the period-binned
+    # ones: on chr1 with N = 2066, k <= 64 means period >= 32 genes, so every
+    # bin below 32 would be empty and the short-period half of the common grid
+    # would exist only on the short chromosomes. The period range is itself the
+    # selection there, so k_max does not apply.
+    period_indexed <- features %in% c("period_bins", "period_bins_genomic")
+    if (!period_indexed) {
+      sp <- sp[sp$k <= k_max, , drop = FALSE]
+    }
     if (!nrow(sp)) next
 
     # log1p on amplitude: spectra are heavy-tailed, and a single dominant
     # component would otherwise drive every distance.
     amp <- log1p(sp$amplitude)
     nm <- paste0("chr", chr_now, "_k", sp$k)
-    if (identical(features, "amplitude")) {
-      v <- stats::setNames(amp, nm)
+    v <- if (identical(features, "amplitude")) {
+      stats::setNames(amp, nm)
+    } else if (identical(features, "amplitude_phase")) {
+      stats::setNames(c(amp * cos(sp$phase), amp * sin(sp$phase)),
+                      c(paste0(nm, "_c"), paste0(nm, "_s")))
     } else {
-      v <- stats::setNames(c(amp * cos(sp$phase), amp * sin(sp$phase)),
-                           c(paste0(nm, "_c"), paste0(nm, "_s")))
+      # Period-binned: average log-amplitude within each common period bin.
+      # Averaging rather than interpolating, because a bin on a short
+      # chromosome may contain no frequency at all and interpolation would
+      # invent a value there. An empty bin stays NA and is handled below.
+      # band_ratios averages across chromosomes exactly as period_bins_genomic
+      # does, so it needs the unprefixed bin names too. Prefixed names would
+      # make rbind align positionally while labelling every column with the
+      # first chromosome's name -- right by accident, wrong on the label.
+      period_bin_vector(sp, chr_now,
+                        genomic = features %in% c("period_bins_genomic",
+                                                  "band_ratios"),
+                        transform = if (identical(features, "band_ratios"))
+                          "log" else "log1p")
     }
+    if (is.null(v) || !length(v)) next
     pieces[[chr_now]] <- v
   }
   if (!length(pieces)) return(NULL)
-  unlist(pieces, use.names = TRUE)
+
+  if (identical(features, "band_ratios")) {
+    # Shazam's idea, translated: what identifies a spectrum is the RELATION
+    # between its landmarks, not their magnitudes. A ratio of two period bands
+    # within one sample is dimensionless -- library size, sequencing depth and
+    # platform scale cancel -- so it should survive the cohort effect that a
+    # raw amplitude carries.
+    m <- do.call(rbind, pieces)
+    genomic <- colMeans(m, na.rm = TRUE)
+    ok <- which(is.finite(genomic))
+    if (length(ok) < 2L) return(NULL)
+    pairs <- utils::combn(ok, 2L)
+    v <- genomic[pairs[1, ]] - genomic[pairs[2, ]]   # log amplitudes: difference IS the ratio
+    names(v) <- paste0(names(genomic)[pairs[1, ]], "/", names(genomic)[pairs[2, ]])
+    return(v)
+  }
+
+  if (identical(features, "period_bins_genomic")) {
+    # One spectrum for the whole genome: average each period bin across the
+    # chromosomes that have a frequency in it. 40 numbers instead of ~1500.
+    m <- do.call(rbind, pieces)
+    return(colMeans(m, na.rm = TRUE))
+  }
+
+  out <- unlist(pieces, use.names = TRUE)
+  # A bin with no frequency on that chromosome is NA, not zero: zero would
+  # claim the spectrum has no power there, which is a measurement the data did
+  # not make. Downstream distance code drops non-finite features pairwise.
+  out
+}
+
+#' Average log-amplitude within each common period bin.
+#'
+#' Returns one value per bin. Bins with no frequency on this chromosome are NA
+#' -- typical on short chromosomes at long periods, where the chromosome simply
+#' does not contain that many genes.
+#' @param transform "log1p" tames the heavy tail for distance-based features;
+#'   "log" is required whenever a DIFFERENCE of two bins has to be a RATIO of
+#'   amplitudes, because log1p(5a) - log1p(5b) is not log1p(a) - log1p(b) and
+#'   the scale invariance band_ratios exists for would not hold.
+period_bin_vector <- function(sp, chr_now, genomic = FALSE,
+                              breaks = FINGERPRINT_PERIOD_BREAKS,
+                              transform = c("log1p", "log")) {
+  transform <- match.arg(transform)
+  ok <- is.finite(sp$period) & sp$period >= min(breaks) & sp$period <= max(breaks)
+  n_bins <- length(breaks) - 1L
+  labels <- sprintf("p%05.1f", sqrt(breaks[-1] * breaks[-length(breaks)]))
+  out <- stats::setNames(rep(NA_real_, n_bins), labels)
+  if (!any(ok)) return(if (genomic) out else stats::setNames(out, paste0("chr", chr_now, "_", labels)))
+
+  idx <- cut(sp$period[ok], breaks = breaks, include.lowest = TRUE, labels = FALSE)
+  amp <- if (identical(transform, "log")) {
+    # Floored at a fixed constant, not at a fraction of the sample's own
+    # amplitudes: a data-dependent floor would scale with the signal and
+    # reintroduce exactly the dependence this transform removes.
+    log(pmax(sp$amplitude[ok], 1e-12))
+  } else {
+    log1p(sp$amplitude[ok])
+  }
+  agg <- tapply(amp, factor(idx, levels = seq_len(n_bins)), mean, na.rm = TRUE)
+  out[] <- as.numeric(agg)
+  if (genomic) out else stats::setNames(out, paste0("chr", chr_now, "_", labels))
 }
 
 #' Cache the window terms once per chromosome (they depend only on positions).
