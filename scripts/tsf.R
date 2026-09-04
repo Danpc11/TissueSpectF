@@ -83,6 +83,15 @@ Parameters (override config/project.R):
   --n-masks <n>         masks per coverage band in the reference calibration
   --cores <n>           local worker processes (or set N_WORKERS; default <= 8)
   --k-max <n>           frequencies per chromosome in a fingerprint
+  --features <s>        fingerprint representation:
+                          amplitude            (chr,k) log1p amplitude [default]
+                          amplitude_phase      the above, plus phase
+                          period_bins          (chr, period) on a common grid
+                          period_bins_genomic  one curve over period, 40 numbers
+                          band_ratios          ratios between period bands,
+                                               invariant to global scale
+                          expression_baseline  the CONTROL: raw expression,
+                                               same validation, no transform
   --target <s>          condition | tissue   (reference only)
 
 Matching:
@@ -134,7 +143,7 @@ OPTION_ALIASES <- c(
   cores = "cores",
   inputunit = "input_unit", input_unit = "input_unit", unit = "input_unit",
   out = "out", outputdir = "out", output_dir = "out",
-  kmax = "k_max", k_max = "k_max", seed = "seed",
+  seed = "seed", features = "features",
   chromosomes = "chromosomes", chrom = "chromosomes",
   annotation = "annotation", annotationformat = "annotation_format",
   annotation_format = "annotation_format",
@@ -260,6 +269,7 @@ apply_cli_overrides <- function(project, opt) {
   set(c("fingerprint", "n_masks"), opt$n_masks, as.integer)
   set(c("clean", "per_sample"), opt$per_sample, isTRUE)
   set(c("fingerprint", "k_max"), opt$k_max, as.integer)
+  set(c("fingerprint", "features"), opt$features, as.character)
   set(c("fingerprint", "target"), opt$target)
   project
 }
