@@ -50,14 +50,36 @@ lab162 <- harmonize_conditions(pheno_162, cfg_162)
 check("title token N -> Normal_histology, not F0 and not Control",
       identical(lab162$condition[1], "Normal_histology"))
 check("no Control label is ever produced", !any(lab162$condition %in% "Control"))
-check("the three healthy states are distinct classes under one state", {
-  # Merging them would assume what is worth testing: that a healthy liver looks
-  # the same whichever study recruited it.
+check("the three healthy groups map to one Controles class", {
+  # This asserted the opposite until the source publications settled it: all
+  # three are liver tissue without disease. Two of them also existed in a
+  # single cohort each, so leave-one-cohort-out could never learn them --
+  # GSE142530 was skipped as a hold-out and both classes won zero predictions.
   ids <- vapply(c("Control_disease_cohort", "Control_external_study",
                   "Normal_histology"),
                 function(c) tsf_class_id("liver", c, cfg_135$vocabulary_spec),
                 character(1))
-  all(startsWith(ids, "liver::healthy::")) && length(unique(ids)) == 3L })
+  all(ids == "liver::healthy::Controles") })
+
+check("F0 is not folded into Controles", {
+  # F0 is a histological stage in a NAFLD patient. Merging it with the controls
+  # would assume what the Controles vs F0 contrast exists to test.
+  f0 <- tsf_class_id("liver", "F0", cfg_135$vocabulary_spec)
+  f0 != tsf_class_id("liver", "Normal_histology", cfg_135$vocabulary_spec) &&
+    startsWith(f0, "liver::disease::") })
+
+check("the raw labels survive the merge", {
+  # The merge is in `conditions` only. Ingest, the audit trail and cohort_roles
+  # must still be able to say which cohort a control came from.
+  v <- cfg_135$vocabulary_spec
+  all(c("Control_disease_cohort", "Control_external_study",
+        "Normal_histology") %in% names(v$cohort_roles)) &&
+    identical(unname(v$cohort_roles[["Normal_histology"]]),
+              "within_disease_normal") })
+
+check("the baseline names a class that exists after the merge", {
+  v <- cfg_135$vocabulary_spec
+  v$baseline %in% unname(v$conditions) })
 check("a stage becomes a disease class", {
   identical(tsf_class_id("liver", "F2", cfg_135$vocabulary_spec),
             "liver::disease::NAFLD_fibrosis_F2") })
@@ -77,14 +99,18 @@ check("the phenotype field and the title token agree on the healthy class", {
     identical(lab162$label_rule[1], "normal_histology_field") })
 
 # --- guardrails --------------------------------------------------------------
-check("config with has_control_cohort=FALSE rejects a Control rule",
-      inherits(tryCatch({
-        bad <- cfg_162
-        bad$condition_rules <- list(list(id = "x", type = "column_match",
-                                         column = "title", values = c("Liver N 01"),
-                                         assign = "Control_disease_cohort"))
-        harmonize_conditions(pheno_162, bad); FALSE
-      }, error = function(e) e), "error"))
+check("config with has_control_cohort=FALSE rejects a Control rule", {
+  # The flag is set explicitly here rather than borrowed from a real dataset
+  # config: this test used cfg_162 as its FALSE example, and broke the moment
+  # that dataset legitimately became a control contributor. A guardrail test
+  # should fail when the guardrail breaks, not when a config changes.
+  bad <- cfg_162
+  bad$has_control_cohort <- FALSE
+  bad$condition_rules <- list(list(id = "x", type = "column_match",
+                                   column = "title", values = c("Liver N 01"),
+                                   assign = "Control_disease_cohort"))
+  inherits(tryCatch({ harmonize_conditions(pheno_162, bad); FALSE },
+                    error = function(e) e), "error") })
 
 check("ambiguous title with two stage tokens is unresolved by the title rule",
       is.na(parse_title_stage("sample F1 vs F3")))
@@ -670,6 +696,61 @@ check("the help says datasets are positional", {
   out <- suppressWarnings(system2("./tsf", c("window", "--datasets", "GSE1"),
                                   stdout = TRUE, stderr = TRUE))
   any(grepl("positional", paste(out, collapse = " "), fixed = TRUE)) })
+
+# --- exclusion by accession ---------------------------------------------------
+#
+# sample_filter evaluates one column across all samples, which is right for
+# "this series mixes MASLD with HBV" and wrong for "these two samples are
+# mislabelled": excluding fibrosis stages 1 and 2 to drop two miscoded controls
+# would also delete every real F1 and F2 in the cohort.
+
+check("exclude_samples drops exactly the named samples", {
+  lab <- data.frame(sample_id = paste0("GSM", 1:5),
+                    condition = c("Control", "Control", "F1", "F2", "F3"),
+                    in_scope = TRUE, filtered_out = FALSE,
+                    label_resolved = TRUE, condition_selected = TRUE,
+                    stringsAsFactors = FALSE)
+  ph <- data.frame(geo_accession = lab$sample_id, stringsAsFactors = FALSE)
+  out <- apply_sample_filter(lab, ph,
+    list(id = "T", exclude_samples = c("GSM1", "GSM2")))
+  identical(out$in_scope, c(FALSE, FALSE, TRUE, TRUE, TRUE)) &&
+    all(out$filtered_out[1:2]) })
+
+check("the real F1 and F2 survive a control-only exclusion", {
+  # The failure this replaces: two miscoded controls removed, and 100 genuine
+  # mid-stage samples removed with them.
+  lab <- data.frame(sample_id = paste0("GSM", 1:5),
+                    condition = c("Control", "Control", "F1", "F2", "F3"),
+                    in_scope = TRUE, filtered_out = FALSE,
+                    label_resolved = TRUE, condition_selected = TRUE,
+                    stringsAsFactors = FALSE)
+  ph <- data.frame(geo_accession = lab$sample_id, stringsAsFactors = FALSE)
+  out <- apply_sample_filter(lab, ph,
+    list(id = "T", exclude_samples = c("GSM1", "GSM2")))
+  all(out$in_scope[out$condition %in% c("F1", "F2", "F3")]) })
+
+check("a misspelled accession aborts instead of excluding nothing", {
+  lab <- data.frame(sample_id = paste0("GSM", 1:3), condition = "Control",
+                    in_scope = TRUE, filtered_out = FALSE,
+                    label_resolved = TRUE, condition_selected = TRUE,
+                    stringsAsFactors = FALSE)
+  ph <- data.frame(geo_accession = lab$sample_id, stringsAsFactors = FALSE)
+  e <- tryCatch(apply_sample_filter(lab, ph,
+    list(id = "T", exclude_samples = c("GSM1", "GSM_typo"))),
+    error = function(e) e)
+  inherits(e, "error") && grepl("GSM_typo", conditionMessage(e), fixed = TRUE) })
+
+check("the two miscoded GSE135251 controls are excluded by the config", {
+  cfg <- source("config/datasets/GSE135251.R")$value
+  identical(sort(cfg$exclude_samples), c("GSM3998224", "GSM3998341")) })
+
+check("the control guardrail compares raw labels against the baseline CLASS", {
+  # The guardrail compared a raw label with a class name. Once the three
+  # healthy groups merged into "Controles", nothing matched and it stopped
+  # firing -- a dataset declaring has_control_cohort = FALSE could assign
+  # controls unnoticed.
+  src <- paste(readLines("R/labels.R", warn = FALSE), collapse = " ")
+  grepl("control_labels", src, fixed = TRUE) })
 
 # --- licensing ---------------------------------------------------------------
 #
