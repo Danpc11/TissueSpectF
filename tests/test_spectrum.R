@@ -1078,6 +1078,92 @@ check("too few null draws leaves the calibrated p as NA", {
   draws <- matrix(runif(5), nrow = 1, dimnames = list("1|100|1", NULL))
   is.na(plv_null_pvalues(cs, list(per_key_plv = draws))$p_plv_null[1]) })
 
+# --- period-indexed features --------------------------------------------------
+#
+# "amplitude" indexes by (chromosome, k). k is cycles per chromosome, so the
+# same k is a different physical scale on each: chr1_k64 is a period of 32 genes
+# and chr21_k64 is 12, and the model treats them as parallel columns.
+
+mk_ci <- function(N) { t <- as.integer(seq(1, N, by = 2))
+  list(rows = seq_along(t), t = t, N = as.integer(N), coverage = length(t) / N) }
+
+check("a period bin means the same thing on every chromosome", {
+  ci <- list("1" = mk_ci(2066), "21" = mk_ci(759))
+  v <- fingerprint_vector(rnorm(2066), ci, fingerprint_terms(ci),
+                          features = "period_bins")
+  suffix <- sub("^.*chr[0-9XY]+_", "", names(v))
+  # Both chromosomes contribute the same bin labels, so a column pair
+  # chr1_p021 / chr21_p021 describes one period, not two.
+  length(unique(suffix)) == length(FINGERPRINT_PERIOD_BREAKS) - 1L &&
+    sum(grepl("^1[.]", names(v))) == sum(grepl("^21[.]", names(v))) })
+
+check("the genomic spectrum is one curve over period", {
+  ci <- list("1" = mk_ci(2066), "21" = mk_ci(759))
+  v <- fingerprint_vector(rnorm(2066), ci, fingerprint_terms(ci),
+                          features = "period_bins_genomic")
+  length(v) == length(FINGERPRINT_PERIOD_BREAKS) - 1L &&
+    !any(grepl("chr", names(v))) })
+
+check("k_max does not truncate the period representations", {
+  # k_max caps cycles per chromosome. On chr1 with N = 2066 that puts k <= 64
+  # at period >= 32, so every bin below 32 would be empty and the short-period
+  # half of the grid would exist only on the short chromosomes.
+  ci <- list("1" = mk_ci(2066))
+  tc <- fingerprint_terms(ci); y <- rnorm(2066)
+  lo <- fingerprint_vector(y, ci, tc, k_max = 8L, features = "period_bins")
+  hi <- fingerprint_vector(y, ci, tc, k_max = 512L, features = "period_bins")
+  identical(lo, hi) && sum(is.finite(lo)) > 20L })
+
+check("an empty period bin is NA, never zero", {
+  # chr21 cannot hold a 500-gene period many times. Zero would claim the
+  # spectrum has no power there, which is a measurement the data did not make.
+  ci <- list("21" = mk_ci(759))
+  v <- fingerprint_vector(rnorm(759), ci, fingerprint_terms(ci),
+                          features = "period_bins")
+  any(is.na(v)) && !any(v[is.finite(v)] == 0 & is.na(v)) })
+
+check("band ratios are invariant to a global scale factor", {
+  # The premise of the representation: what identifies a spectrum is the
+  # relation between its landmarks, not their magnitudes, so library size and
+  # sequencing depth cancel. This failed on the first attempt because log1p was
+  # used -- log1p(5a) - log1p(5b) is not log1p(a) - log1p(b) -- and a feature
+  # that does not have the property it exists for is worse than no feature.
+  ci <- list("1" = mk_ci(2066), "21" = mk_ci(759))
+  tc <- fingerprint_terms(ci); y <- abs(rnorm(2066)) + 1
+  base <- fingerprint_vector(y, ci, tc, features = "band_ratios")
+  all(vapply(c(5, 100, 0.01), function(k)
+    isTRUE(all.equal(base, fingerprint_vector(y * k, ci, tc,
+                                              features = "band_ratios"))),
+    logical(1))) })
+
+check("the amplitude representations are NOT scale invariant", {
+  # Stated as a test so the distinction is deliberate: period_bins keeps log1p
+  # and therefore keeps absolute scale, which is what makes band_ratios a
+  # different feature rather than a renaming.
+  ci <- list("1" = mk_ci(2066))
+  tc <- fingerprint_terms(ci); y <- abs(rnorm(2066)) + 1
+  !isTRUE(all.equal(fingerprint_vector(y, ci, tc, features = "period_bins"),
+                    fingerprint_vector(y * 5, ci, tc, features = "period_bins"))) })
+
+check("the expression baseline returns the expression, in grid order", {
+  # The control the pipeline lacked: without it the accuracy of a spectral
+  # fingerprint cannot be read as good or bad.
+  ci <- list("1" = mk_ci(20), "21" = mk_ci(10))
+  y <- seq_len(20) * 1.0
+  v <- fingerprint_vector(y, ci, fingerprint_terms(ci),
+                          features = "expression_baseline")
+  n1 <- length(ci[["1"]]$t); n2 <- length(ci[["21"]]$t)
+  length(v) == n1 + n2 &&
+    isTRUE(all.equal(unname(v[seq_len(n1)]), y[ci[["1"]]$rows])) })
+
+check("every declared feature representation builds a vector", {
+  ci <- list("1" = mk_ci(2066), "21" = mk_ci(759))
+  tc <- fingerprint_terms(ci); y <- rnorm(2066)
+  all(vapply(FINGERPRINT_FEATURES, function(f) {
+    v <- fingerprint_vector(y, ci, tc, features = f)
+    !is.null(v) && length(v) > 0L && !is.null(names(v))
+  }, logical(1))) })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
