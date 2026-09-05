@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/grid.R"); source("R/period_floor.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
+source("R/grid.R"); source("R/period_floor.R"); source("R/contrast.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
 source("R/condition_test.R"); source("R/clean.R"); source("R/fingerprint.R"); source("R/reference.R"); source("R/consensus.R"); source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
@@ -1163,6 +1163,113 @@ check("every declared feature representation builds a vector", {
     v <- fingerprint_vector(y, ci, tc, features = f)
     !is.null(v) && length(v) > 0L && !is.null(names(v))
   }, logical(1))) })
+
+# --- test a peak with the statistic it was selected by ------------------------
+#
+# `prevalence` is the maxT one when maxT ran, but the null was built from rank
+# prevalence only, so a peak was SELECTED by one statistic and TESTED against
+# another. The null draws subsets of real samples and per-sample significance
+# already exists, so the maxT-based score costs one extra logical matrix.
+
+mk_prepared <- function(m = 30L, ns = 8L, with_maxt = TRUE) {
+  keys <- paste0("1|100|", seq_len(m)); smp <- paste0("S", seq_len(ns))
+  d <- expand.grid(k = seq_len(m), s = seq_len(ns))
+  df <- data.frame(chr = "1", N = 100L, k = d$k, sample = smp[d$s],
+                   power = runif(nrow(d)), phase = runif(nrow(d), 0, 2 * pi),
+                   stringsAsFactors = FALSE)
+  mt <- if (with_maxt) data.frame(chr = "1", N = 100L, k = d$k,
+                                  sample = smp[d$s],
+                                  p_empirical_maxT = runif(nrow(d)),
+                                  stringsAsFactors = FALSE) else NULL
+  prepare_null_consensus_matrices(df, maxt = mt, alpha = 0.5)
+}
+
+check("the null carries a maxT standing matrix when maxT is supplied", {
+  set.seed(2); p <- mk_prepared()
+  !is.null(p$stands_maxt) && identical(dim(p$stands_maxt), dim(p$stands)) &&
+    all(p$stands_maxt %in% c(0, 1, NA)) })
+
+check("without maxT the null falls back to the rank route alone", {
+  set.seed(2); p <- mk_prepared(with_maxt = FALSE)
+  is.null(p$stands_maxt) && !is.null(p$stands) })
+
+check("a null draw produces both scores", {
+  set.seed(2); p <- mk_prepared()
+  d <- null_matrix_draw(p, p$samples[1:6])
+  !is.null(d$score_maxt) && length(d$score_maxt) == length(d$score) &&
+    !identical(unname(d$score), unname(d$score_maxt)) })
+
+check("an unscored frequency/sample pair is not significant, not NA", {
+  # NA would propagate into the prevalence and shrink the denominator without
+  # saying so.
+  set.seed(2)
+  df <- data.frame(chr = "1", N = 100L, k = rep(1:4, 3),
+                   sample = rep(paste0("S", 1:3), each = 4),
+                   power = runif(12), phase = runif(12, 0, 2 * pi),
+                   stringsAsFactors = FALSE)
+  mt <- data.frame(chr = "1", N = 100L, k = 1L, sample = "S1",
+                   p_empirical_maxT = 0.001, stringsAsFactors = FALSE)
+  p <- prepare_null_consensus_matrices(df, maxt = mt)
+  sum(p$stands_maxt, na.rm = TRUE) == 1 })
+
+check("maxt_null_pvalues stays silent when there is no maxT null", {
+  cs <- data.frame(chr = "1", N = 100L, k = 1L,
+                   consensus_score_maxt = 0.5, stringsAsFactors = FALSE)
+  out <- maxt_null_pvalues(cs, list(per_key = NULL))
+  all(is.na(out$p_null_maxt)) && "q_null_maxt" %in% names(out) })
+
+# --- characteristic OF a condition, not merely prevalent in it ----------------
+#
+# consensus_score is computed within one condition, so a frequency prevalent
+# everywhere tops every condition's list and identifies none. On real data
+# chr4 k36 had prevalence 0.97-1.00 across all six stages.
+
+ctr_setup <- function(seed = 1) {
+  set.seed(seed)
+  m <- 120L
+  g <- rep(c("Control", "F0", "F1", "F2", "F3", "F4"), each = 10)
+  st <- matrix(rbinom(m * length(g), 1, 0.05), m, length(g),
+               dimnames = list(paste0("1|100|", seq_len(m)), NULL))
+  st[1, ] <- 1                                  # invariant
+  st[2, g == "F4"] <- 1                         # characteristic of F4
+  st[3, g %in% c("F3", "F4")] <- 1              # shared: identifies neither
+  list(stands = st, groups = g)
+}
+
+check("a frequency prevalent everywhere gets a contrast of zero", {
+  d <- ctr_setup()
+  out <- condition_contrast(d$stands, d$groups, B = 199L, seed = 4L)
+  r <- out[out$key == "1|100|1", ]
+  all(abs(r$contrast) < 1e-9) && all(r$class == "invariant") })
+
+check("a frequency confined to one condition has a large positive contrast", {
+  d <- ctr_setup()
+  out <- condition_contrast(d$stands, d$groups, B = 199L, seed = 4L)
+  r <- out[out$key == "1|100|2", ]
+  top <- r[which.max(r$contrast), ]
+  top$condition == "F4" && top$contrast > 0.7 && top$p_contrast < 0.05 })
+
+check("a frequency shared by two conditions identifies neither", {
+  # The maximum of the others, not their mean: a frequency equally prevalent in
+  # F3 cannot identify F4 however rare it is elsewhere, and a mean would hide
+  # that. It must also not be called invariant -- it is absent from Control.
+  d <- ctr_setup()
+  out <- condition_contrast(d$stands, d$groups, B = 199L, seed = 4L)
+  r <- out[out$key == "1|100|3", ]
+  max(r$contrast) < 1e-9 && !any(r$class == "characteristic") &&
+    !any(r$class == "invariant") })
+
+check("invariant is judged on the minimum prevalence, not this condition's", {
+  d <- ctr_setup()
+  out <- condition_contrast(d$stands, d$groups, B = 199L, seed = 4L)
+  inv <- out[out$class == "invariant", ]
+  nrow(inv) == 0L || all(inv$min_prevalence >= 0.8) })
+
+check("a condition with too few samples is dropped, not contrasted", {
+  d <- ctr_setup()
+  g <- d$groups; g[1:9] <- "F0"          # leaves Control with one sample
+  out <- suppressWarnings(condition_contrast(d$stands, g, B = 99L, seed = 4L))
+  !("Control" %in% out$condition) })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
