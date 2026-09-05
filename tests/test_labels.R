@@ -501,10 +501,15 @@ check("every option the CLI accepts is wired to something", {
                                     regexpr('= "[a-z_0-9]+"', alias_block))))
   body <- paste(src, collapse = " ")
   # Paths and scope options are consumed directly rather than through set().
+  # Options a stage reads straight off `opt` rather than through set(): they
+  # are still wired, just not into the project config. `grepl("opt$<name>")`
+  # below catches them; the list is for the ones consumed before that point.
   consumed_directly <- c("geo_dir", "interim_dir", "results_dir", "config",
                          "from", "to", "cond", "branch", "force", "dry_run",
                          "log", "help", "query", "reference", "input_unit",
                          "out", "cores", "datasets")
+  body <- paste(body, paste(readLines("R/stages.R", warn = FALSE),
+                            collapse = " "))
   unwired <- Filter(function(t) {
     if (t %in% consumed_directly) return(FALSE)
     !grepl(paste0('"', t, '"'), body, fixed = TRUE) ||
