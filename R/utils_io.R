@@ -118,7 +118,11 @@ tsf_script_not_module <- function(path) {
 }
 
 tsf_module_order <- function(dir = "R") {
-  first <- c("utils_io", "config", "labels", "paths")
+  # stages.R calls into contrast.R and differential.R, and alphabetical order
+  # would put "stages" before them only by luck. Named explicitly so a new
+  # module cannot silently break the load order.
+  first <- c("utils_io", "config", "labels", "paths", "grid", "period_floor",
+             "fingerprint", "contrast", "differential")
   paths <- list.files(dir, pattern = "\\.R$", full.names = TRUE)
 
   # Refuse before sourcing, not after. A script in here is a bug in the tree
