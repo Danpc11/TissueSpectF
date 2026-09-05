@@ -5,8 +5,8 @@
 # datasets, cond, branch and force, and each returns a short summary the caller
 # can print or aggregate.
 
-stage_names <- c("ingest", "spectra", "maxt", "condition", "consensus", "clean",
-                 "stability", "peaks", "compare")
+stage_names <- c("ingest", "spectra", "maxt", "condition", "consensus",
+                 "differential", "clean", "stability", "peaks", "compare")
 
 # Stages that can be skipped on a small machine. `maxt` is per sample and costs
 # hours; `condition` answers the primary question at ~1/n of the cost, so a run
@@ -889,6 +889,106 @@ stage_reference <- function(project, opt) {
 #' pattern has power at the same frequency as an observed peak, that peak can be
 #' an alias of structure elsewhere rather than structure at its own frequency.
 #' Run it before interpreting any high-frequency result.
+#' Differential spectral power between conditions.
+#'
+#' PLACED AFTER consensus, DEPENDS ONLY ON spectra. It reads the per-sample
+#' spectra and nothing else, so `--from differential` works without maxT,
+#' condition or consensus having run. It sits here because it is an analysis
+#' endpoint, not because anything before it is required.
+#'
+#' It answers a DIFFERENT QUESTION from consensus, which is why both exist:
+#'
+#'   consensus     detection. Is this frequency stronger than a null in which
+#'                 gene positions were shuffled? A component has to stand out
+#'                 WITHIN a condition to pass.
+#'   differential  comparison. Is this frequency's power different BETWEEN
+#'                 conditions? A difference does not have to stand out anywhere
+#'                 to exist -- and since the spectrum is a linear transform of
+#'                 the ordered expression vector, differential expression
+#'                 implies a spectral difference by construction. Detection
+#'                 cannot see one that is real but modest; this can.
+#'
+#' `--period-bins` collapses the ~2,000 frequencies to ~40 common period bands.
+#' That is a power decision, not a cosmetic one: the minimum detectable effect
+#' on this design is ~0.85 sd at m = 1995 and multiplicity is the binding
+#' constraint, so m is the only lever available.
+stage_differential <- function(project, opt) {
+  written <- 0L
+  stage_order <- opt$stage_order
+  if (is.null(stage_order)) {
+    v <- project$vocabulary_spec %||% list()
+    stage_order <- unname(v$conditions) %||% NULL
+    if (!is.null(stage_order)) stage_order <- unique(stage_order)
+  } else {
+    stage_order <- strsplit(as.character(stage_order), ",")[[1]]
+  }
+
+  for (id in stage_datasets(opt)) {
+    inp <- tsf_stage_inputs(project, id)
+    conds <- tsf_conditions(inp$conditions, opt)
+    parts <- list()
+    for (cond in conds) {
+      d <- read_tsv_tsf(p_spectra_samples(inp$paths, cond), required = FALSE)
+      if (is.null(d) || !nrow(d)) next
+      d$condition <- cond
+      parts[[cond]] <- d
+    }
+    if (length(parts) < 2L) {
+      tsf_warn(id, ": fewer than two conditions with per-sample spectra; skipped")
+      next
+    }
+    sp <- do.call(rbind, parts)
+
+    groups <- stats::setNames(sp$condition[!duplicated(sp$sample)],
+                              sp$sample[!duplicated(sp$sample)])
+
+    min_period <- suppressWarnings(as.numeric(
+      opt$min_period_biological %||% project$consensus$min_period_biological %||% 10))
+    if (is.finite(min_period) && "period" %in% names(sp)) {
+      sp <- sp[is.finite(sp$period) & sp$period >= min_period, , drop = FALSE]
+    }
+
+    if (isTRUE(opt$period_bins)) {
+      sp <- collapse_to_period_bands(sp)
+      tsf_log("  ", id, ": collapsed to ", length(unique(sp$k)), " period band(s)")
+    }
+
+    res <- differential_spectrum(sp, groups, stage_order = stage_order)
+    if (is.null(res)) { tsf_warn(id, ": nothing to test"); next }
+
+    out_dir <- file.path(inp$paths$base, "differential")
+    ensure_dir(out_dir)
+    write_tsv_tsf(res, file.path(out_dir, "differential_spectrum.tsv"))
+    written <- written + 1L
+
+    sig <- res[is.finite(res$q) & res$q <= 0.05, , drop = FALSE]
+    tsf_log("  ", id, ": ", nrow(sig), " result(s) at q <= 0.05 of ", nrow(res))
+    for (t in unique(res$test)) {
+      tsf_log("    ", t, ": ", sum(sig$test == t))
+    }
+  }
+  paste0(written, " dataset(s) tested")
+}
+
+#' Average power within common period bands, across chromosomes.
+#'
+#' One genome-wide curve over period per sample. A band means the same thing on
+#' every chromosome, which (chromosome, k) does not: k is cycles per chromosome,
+#' so k = 64 is a period of 32 genes on chr1 and 12 on chr21.
+collapse_to_period_bands <- function(sp, breaks = FINGERPRINT_PERIOD_BREAKS) {
+  sp <- sp[is.finite(sp$period) &
+             sp$period >= min(breaks) & sp$period <= max(breaks), , drop = FALSE]
+  if (!nrow(sp)) return(sp)
+  idx <- cut(sp$period, breaks = breaks, include.lowest = TRUE, labels = FALSE)
+  lab <- sprintf("p%05.1f", sqrt(breaks[-1] * breaks[-length(breaks)]))
+  agg <- stats::aggregate(sp$power_normalised,
+                          by = list(sample = sp$sample, band = idx),
+                          FUN = mean, na.rm = TRUE)
+  data.frame(chr = "genome", N = length(lab), k = agg$band,
+             sample = agg$sample, power_normalised = agg$x,
+             band = lab[agg$band], stringsAsFactors = FALSE)
+}
+
 stage_window <- function(project, opt) {
   rows <- list()
   for (id in stage_datasets(opt)) {
@@ -944,6 +1044,7 @@ stage_functions <- list(
   maxt      = stage_maxt,
   condition = stage_condition,
   consensus = stage_consensus,
+  differential = stage_differential,
   clean     = stage_clean,
   stability = stage_stability,
   peaks     = stage_peaks,
