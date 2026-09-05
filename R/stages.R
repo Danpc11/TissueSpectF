@@ -227,6 +227,8 @@ stage_consensus <- function(project, opt) {
     # once per condition, which dominates the stage's cost on real data.
     null_cache <- list()
     prepared_null <- NULL
+    # sample -> condition, accumulated across the loop, for the contrast below.
+    cond_groups <- character(0)
     # Samples are not always independent. When the metadata names a blocking
     # variable, the null draws whole blocks so its dependence structure matches
     # the data's.
@@ -323,6 +325,9 @@ stage_consensus <- function(project, opt) {
           draws_for_bh(nrow(cs)), n_b))
       }
 
+      these <- unique(as.character(sp$sample))
+      cond_groups[these] <- cond
+
       n_here <- length(unique(sp$sample))
       # Keyed on sample count AND the retained family: two conditions with the
       # same n can now have different families, because coverage -- and so the
@@ -349,8 +354,25 @@ stage_consensus <- function(project, opt) {
             t0 <- Sys.time()
             if (is.null(prepared_null)) {
               prep_t0 <- Sys.time()
+              # maxt is passed so the null can build a maxT-based score too:
+              # without it a peak is selected by maxT prevalence and tested
+              # against a rank-based null, which is not a permutation test of
+              # what was selected.
+              # POOLED across conditions, not inp$maxt[[cond]]. `prepared_null`
+              # is built once and reused for every condition of the dataset,
+              # and `pool` spans them all, so a single condition's maxT would
+              # be silently applied to the rest -- every frequency absent from
+              # that table would count as non-significant everywhere.
+              pooled_maxt <- tryCatch(
+                do.call(rbind, Filter(Negate(is.null), inp$maxt)),
+                error = function(e) NULL)
               prepared_null <- prepare_null_consensus_matrices(
-                pool, project$consensus$quantile_cut %||% 0.95)
+                pool, quantile_cut = project$consensus$quantile_cut %||% 0.95,
+                maxt = pooled_maxt, alpha = project$maxt$alpha %||% 0.05)
+              if (!is.null(prepared_null$stands_maxt)) {
+                tsf_log("  null carries a maxT-based score as well: peaks are ",
+                        "tested with the statistic they were selected by")
+              }
               tsf_log("  prepared null matrices: ",
                       nrow(prepared_null$pnorm), " frequencies x ",
                       ncol(prepared_null$pnorm), " samples in ",
@@ -403,6 +425,34 @@ stage_consensus <- function(project, opt) {
       } else {
         tsf_log("  ", cond, ": no component passes prevalence and phase alignment")
       }
+    }
+  }
+
+  # --- one-vs-rest contrast, after every condition of this dataset -----------
+  #
+  # consensus_score is computed within a condition, so it answers "how strong
+  # and how common is this frequency here" and never "is it here rather than
+  # there". The contrast supplies the missing half, using the same standing
+  # matrix the score was built from and a null that permutes condition labels.
+  if (!is.null(prepared_null) && length(cond_groups) > 1L) {
+    st <- prepared_null$stands_maxt %||% prepared_null$stands
+    cols <- match(names(cond_groups), colnames(st))
+    ok <- !is.na(cols)
+    ct <- tryCatch(
+      condition_contrast(st[, cols[ok], drop = FALSE],
+                         unname(cond_groups[ok]),
+                         B = project$consensus$n_contrast %||% 999L,
+                         seed = project$maxt$seed %||% 42L),
+      error = function(e) { tsf_warn("contrast failed: ", conditionMessage(e)); NULL })
+    if (!is.null(ct)) {
+      out_path <- file.path(inp$paths$base, "consensus",
+                            "condition_contrast.tsv")
+      write_tsv_tsf(ct, out_path)
+      n_char <- sum(ct$class == "characteristic")
+      n_inv <- length(unique(ct$key[ct$class == "invariant"]))
+      tsf_log("  contrast: ", n_char, " characteristic component(s) over ",
+              length(unique(ct$condition)), " condition(s), ", n_inv,
+              " invariant frequency(ies)")
     }
   }
   sprintf("%d confirmed signature component(s) across conditions", n_sig)
