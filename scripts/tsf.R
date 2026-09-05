@@ -79,6 +79,7 @@ Parameters (override config/project.R):
   --margin-mode <s>     add | mult                          (default add)
   --min-period-biological <g>  flat floor in genes          (default 0)
   --n-null <n>          permutation draws for the consensus null
+  --n-contrast <n>      label permutations for the condition contrast
   --n-boot <n>          bootstrap resamples of the consensus score
   --n-masks <n>         masks per coverage band in the reference calibration
   --cores <n>           local worker processes (or set N_WORKERS; default <= 8)
@@ -155,6 +156,7 @@ OPTION_ALIASES <- c(
   minperiodbiological = "min_period_biological",
   min_period_biological = "min_period_biological",
   nnull = "n_null", n_null = "n_null",
+  ncontrast = "n_contrast", n_contrast = "n_contrast",
   nboot = "n_boot", n_boot = "n_boot",
   nmasks = "n_masks", n_masks = "n_masks"
 )
@@ -253,6 +255,7 @@ apply_cli_overrides <- function(project, opt) {
   set(c("maxt", "primary_scheme"), opt$primary_scheme)
   set(c("clean", "ebic_gamma"), opt$ebic_gamma, as.numeric)
   set(c("consensus", "n_null"), opt$n_null, as.integer)
+  set(c("consensus", "n_contrast"), opt$n_contrast, as.integer)
   # Period floors reach consensus, where they shrink the tested family before
   # the null runs. They are pre-specifications, so they belong on the command
   # line or in a config -- never adjusted after seeing which components survive.
