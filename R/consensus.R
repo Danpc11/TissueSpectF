@@ -237,7 +237,22 @@ consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
 #' between draws. This representation pays the reshape cost once and lets every
 #' permutation reduce three shared matrices: normalised power, rank prevalence
 #' and unit phase vectors.
-prepare_null_consensus_matrices <- function(spectra_all, quantile_cut = 0.95) {
+#' @param maxt optional per-sample maxT table. When supplied, a SECOND standing
+#'   matrix is built from per-sample significance, so the null can produce a
+#'   maxT-based score as well as a rank-based one.
+#'
+#'   Why it can: the null draws random SUBSETS OF REAL SAMPLES. Significance was
+#'   already decided per (frequency, sample) when maxT ran, so the prevalence of
+#'   a draw is just the fraction of its samples that were significant -- no maxT
+#'   is recomputed, and the cost is one extra logical matrix.
+#'
+#'   Why it matters: without it, a peak is SELECTED by maxT prevalence and then
+#'   TESTED against a null built from rank prevalence. Selecting on one statistic
+#'   and testing on another is not a permutation test of the thing selected, and
+#'   it is the reason `consensus_score_maxt` could only ever be reported as
+#'   "confirmatory" rather than as the quantity carrying a p-value.
+prepare_null_consensus_matrices <- function(spectra_all, quantile_cut = 0.95,
+                                            maxt = NULL, alpha = 0.05) {
   needed <- c("chr", "N", "k", "sample", "power", "phase")
   missing <- setdiff(needed, colnames(spectra_all))
   if (length(missing)) tsf_abort("null consensus needs columns: ",
@@ -251,6 +266,17 @@ prepare_null_consensus_matrices <- function(spectra_all, quantile_cut = 0.95) {
     pnorm <- d$power / pmax(tot, .Machine$double.eps)
   }
   stands <- prevalence_from_rank(pnorm, d$sample, d$chr, quantile_cut)
+
+  stands_maxt <- NULL
+  if (!is.null(maxt) && "p_empirical_maxT" %in% colnames(maxt)) {
+    km <- paste(maxt$chr, maxt$N, maxt$k, maxt$sample)
+    sig <- maxt$p_empirical_maxT <= alpha
+    stands_maxt <- sig[match(paste(d$chr, d$N, d$k, d$sample), km)]
+    # A frequency/sample pair maxT never scored is not significant. NA would
+    # propagate into the prevalence and silently shrink the denominator.
+    stands_maxt[is.na(stands_maxt)] <- FALSE
+  }
+
   key <- paste(d$chr, d$N, d$k, sep = "|")
   keys <- sort(unique(key))             # same key order as split()
   samples <- unique(as.character(d$sample))
@@ -273,7 +299,16 @@ prepare_null_consensus_matrices <- function(spectra_all, quantile_cut = 0.95) {
   pn[pos] <- pnorm[valid]
   so[pos] <- as.numeric(stands[valid])
   ph[pos] <- exp(1i * d$phase[valid])
-  list(pnorm = pn, stands = so, phase = ph, keys = keys, samples = samples)
+
+  sm <- NULL
+  if (!is.null(stands_maxt)) {
+    sm <- matrix(NA_real_, nrow = dims[1], ncol = dims[2],
+                 dimnames = list(keys, samples))
+    sm[pos] <- as.numeric(stands_maxt[valid])
+  }
+
+  list(pnorm = pn, stands = so, stands_maxt = sm, phase = ph,
+       keys = keys, samples = samples)
 }
 
 row_medians_tsf <- function(x) {
@@ -297,6 +332,16 @@ null_matrix_draw <- function(prepared, picked_samples) {
   prev <- rowMeans(so, na.rm = TRUE)
   plv <- Mod(rowMeans(ph, na.rm = TRUE))
   score <- med * prev * plv
+
+  # The same score built on maxT prevalence, when maxT was available. This is
+  # what lets a peak be tested with the statistic it was selected by.
+  score_maxt <- NULL
+  if (!is.null(prepared$stands_maxt)) {
+    prev_m <- rowMeans(prepared$stands_maxt[, j, drop = FALSE], na.rm = TRUE)
+    score_maxt <- med * prev_m * plv
+    score_maxt[n_valid < 2L | !is.finite(score_maxt)] <- NA_real_
+    names(score_maxt) <- prepared$keys
+  }
   score[n_valid < 2L | !is.finite(score)] <- NA_real_
   plv[n_valid < 2L | !is.finite(plv)] <- NA_real_
   names(score) <- prepared$keys
@@ -310,7 +355,7 @@ null_matrix_draw <- function(prepared, picked_samples) {
   # observed PLV against it asks the question the Rayleigh test could not: is
   # this frequency more phase-coherent than the same tissue on the same grid
   # produces by itself?
-  list(score = score, plv = plv)
+  list(score = score, plv = plv, score_maxt = score_maxt)
 }
 
 #' Permutation null for the consensus score.
@@ -378,9 +423,12 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
   draws <- parallel::mclapply(seq_len(n_null), function(b) {
     pick <- picks[[b]]
     plv_draw <- NULL
+    maxt_draw <- NULL
     values <- if (engine == "matrix") {
       d <- tryCatch(null_matrix_draw(prepared, pick), error = function(e) NULL)
-      if (is.null(d)) NULL else { plv_draw <- d$plv; d$score }
+      if (is.null(d)) NULL else {
+        plv_draw <- d$plv; maxt_draw <- d$score_maxt; d$score
+      }
     } else {
       idx <- unlist(rows_by_sample[pick], use.names = FALSE)
       sub <- spectra_all[idx, , drop = FALSE]
@@ -402,13 +450,19 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
       if (!is.null(plv_draw)) {
         plv_draw <- plv_draw[names(plv_draw) %in% retained_keys]
       }
+      if (!is.null(maxt_draw)) {
+        maxt_draw <- maxt_draw[names(maxt_draw) %in% retained_keys]
+      }
     }
     if (!length(values)) return(NULL)
     # plv_null: the phase coherence this tissue, on this grid, produces from a
     # random subset of the same pool. It is the reference the Rayleigh test
     # should have been.
     list(values = values, best = max(values),
-         plv = if (is.null(plv_draw)) NULL else plv_draw[is.finite(plv_draw)])
+         plv = if (is.null(plv_draw)) NULL else plv_draw[is.finite(plv_draw)],
+         maxt = if (is.null(maxt_draw)) NULL else maxt_draw[is.finite(maxt_draw)],
+         best_maxt = if (is.null(maxt_draw) || !any(is.finite(maxt_draw))) NA_real_
+                     else max(maxt_draw, na.rm = TRUE))
   }, mc.cores = n_cores, mc.preschedule = TRUE, mc.set.seed = FALSE)
 
   draws <- draws[!vapply(draws, is.null, logical(1))]
@@ -434,8 +488,25 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
     rownames(plv_mat) <- plv_keys
   }
 
+  # The maxT-based null, assembled the same way. Present only when maxT reached
+  # the consensus stage; NULL otherwise, and the p-values fall back to the
+  # rank route.
+  maxt_draws <- lapply(draws, `[[`, "maxt")
+  maxt_draws <- maxt_draws[!vapply(maxt_draws, is.null, logical(1))]
+  maxt_mat <- NULL
+  best_maxt <- NULL
+  if (length(maxt_draws)) {
+    mk <- Reduce(union, lapply(maxt_draws, names))
+    maxt_mat <- vapply(maxt_draws, function(v) v[mk], numeric(length(mk)))
+    if (is.null(dim(maxt_mat))) maxt_mat <- matrix(maxt_mat, nrow = length(mk))
+    rownames(maxt_mat) <- mk
+    best_maxt <- vapply(draws, function(d) d$best_maxt %||% NA_real_, numeric(1))
+    best_maxt <- best_maxt[is.finite(best_maxt)]
+  }
+
   list(per_key = mat, global = unname(stats::quantile(best, q_global)),
        global_max_draws = best, per_key_plv = plv_mat,
+       per_key_maxt = maxt_mat, global_max_draws_maxt = best_maxt,
        n_null = ncol(mat), n_samples = n_samples)
 }
 
@@ -487,8 +558,49 @@ plv_null_pvalues <- function(cs, null_dist) {
   cs
 }
 
+#' p-values for the maxT-based consensus score, against the maxT-based null.
+#'
+#' Selecting a peak by maxT prevalence and testing it against a rank-based null
+#' compares an observed score built on one statistic with a null built on
+#' another. It is conservative or anticonservative depending on how the two
+#' statistics differ on that frequency, and either way it is not a permutation
+#' test of the thing that was selected. With both nulls available the peak can
+#' finally be tested with the statistic it was chosen by.
+#'
+#' The rank-based columns are kept unchanged beside these, so a result computed
+#' before this existed still means what it said.
+maxt_null_pvalues <- function(cs, null_dist) {
+  cs$p_null_maxt <- NA_real_
+  cs$q_null_maxt <- NA_real_
+  cs$p_null_fwer_maxt <- NA_real_
+  if (is.null(null_dist) || is.null(null_dist$per_key_maxt)) return(cs)
+  if (!"consensus_score_maxt" %in% names(cs)) return(cs)
+
+  m <- null_dist$per_key_maxt
+  idx <- match(paste(cs$chr, cs$N, cs$k, sep = "|"), rownames(m))
+  for (i in which(!is.na(idx))) {
+    dr <- m[idx[i], ]; dr <- dr[is.finite(dr)]
+    obs <- cs$consensus_score_maxt[i]
+    if (!length(dr) || !is.finite(obs)) next
+    cs$p_null_maxt[i] <- (1 + sum(dr >= obs)) / (length(dr) + 1)
+  }
+  ok <- is.finite(cs$p_null_maxt)
+  if (any(ok)) cs$q_null_maxt[ok] <- stats::p.adjust(cs$p_null_maxt[ok], "BH")
+
+  # Family-wise: against the per-draw maximum, exactly as the rank route does.
+  gm <- null_dist$global_max_draws_maxt
+  if (!is.null(gm) && length(gm)) {
+    obs <- cs$consensus_score_maxt
+    cs$p_null_fwer_maxt <- vapply(obs, function(o)
+      if (!is.finite(o)) NA_real_ else (1 + sum(gm >= o)) / (length(gm) + 1),
+      numeric(1))
+  }
+  cs
+}
+
 null_component_pvalues <- function(cs, null_dist, null_q = 0.05) {
   cs <- plv_null_pvalues(cs, null_dist)
+  cs <- maxt_null_pvalues(cs, null_dist)
   if (is.null(null_dist)) {
     cs$p_null_fwer <- NA_real_
     cs$p_null <- NA_real_; cs$q_null <- NA_real_
