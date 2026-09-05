@@ -33,6 +33,7 @@ Commands:
   maxt        per-sample permutation test              [the slow stage]
   condition   condition-level test on the summary signal  [~1/n the cost]
   consensus   characteristic spectrum of each condition (power, prevalence, PLV)
+  differential  power per frequency compared BETWEEN conditions
   clean       CLEAN decomposition: components by EBIC, no threshold
   stability   stable peaks per condition + peak tables
   peaks       gene-level reconstruction of every stable peak
@@ -80,6 +81,10 @@ Parameters (override config/project.R):
   --min-period-biological <g>  flat floor in genes          (default 0)
   --n-null <n>          permutation draws for the consensus null
   --n-contrast <n>      label permutations for the condition contrast
+  --period-bins         differential: collapse to ~40 common period bands.
+                        Multiplicity is the binding constraint and m is the
+                        only lever, so this is a power decision.
+  --stage-order <a,b>   ordered levels for the differential trend test
   --n-boot <n>          bootstrap resamples of the consensus score
   --n-masks <n>         masks per coverage band in the reference calibration
   --cores <n>           local worker processes (or set N_WORKERS; default <= 8)
@@ -157,11 +162,14 @@ OPTION_ALIASES <- c(
   min_period_biological = "min_period_biological",
   nnull = "n_null", n_null = "n_null",
   ncontrast = "n_contrast", n_contrast = "n_contrast",
+  stageorder = "stage_order", stage_order = "stage_order",
   nboot = "n_boot", n_boot = "n_boot",
   nmasks = "n_masks", n_masks = "n_masks"
 )
 
-FLAG_ALIASES <- c(force = "force", dryrun = "dry_run", dry_run = "dry_run",
+FLAG_ALIASES <- c(
+  periodbins = "period_bins", period_bins = "period_bins",
+  force = "force", dryrun = "dry_run", dry_run = "dry_run",
                   help = "help", h = "help", persample = "per_sample",
                   per_sample = "per_sample")
 
