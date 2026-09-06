@@ -15,6 +15,10 @@ matplotlib>=3.8
 seaborn>=0.13
 
 # Optional, only if Parquet is used for the tensor exchange:
-# pyarrow>=15.0
+pyarrow>=15.0
 # Optional baseline:
-# xgboost>=2.0
+xgboost>=2.0
+
+# scripts/classify_spectra.py, optional:
+pycatch22   
+sktime     
