@@ -524,6 +524,36 @@ check("--seed reaches maxt$seed", {
       "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
   grepl("maxt$seed = 99", out, fixed = TRUE) })
 
+check("the rejection band comes from gene coverage, not feature coverage", {
+  # The calibration builds its bands with coverage_band(gene_cov), and the two
+  # quantities diverge by design: the GLS estimates almost every frequency from
+  # half a chromosome's genes, so feature coverage sits near 100% while gene
+  # coverage is 50%. Both call sites passed the feature figure, handing a
+  # 60%-of-genes query the near-full-coverage threshold.
+  for (f in c("scripts/match_query.R", "app/app.R")) {
+    src <- paste(readLines(f, warn = FALSE), collapse = " ")
+    calls <- regmatches(src, gregexpr("apply_rejection\\([^)]*\\)", src))[[1]]
+    for (cl in calls) {
+      if (grepl("feature_coverage", cl, fixed = TRUE) &&
+          !grepl("coverage = fq\\$coverage", cl)) return(FALSE)
+    }
+  }
+  TRUE })
+
+check("apply_rejection documents which coverage it wants", {
+  src <- paste(readLines("R/reference.R", warn = FALSE), collapse = " ")
+  grepl("GENE coverage", src, fixed = TRUE) })
+
+check("the classifier imputes inside each fold", {
+  # Computing column means over every sample before splitting lets the held-out
+  # cohort shape the training data. Textbook leakage, and it inflates every
+  # metric by an amount that cannot be quantified without re-running.
+  src <- paste(readLines("scripts/classify_spectra.py", warn = FALSE),
+               collapse = "\n")
+  grepl("impute_within_fold", src, fixed = TRUE) &&
+    grepl("mu = np.nanmean(Xtr", src, fixed = TRUE) &&
+    !grepl("col_mean = np.nanmean(X, axis=0)", src, fixed = TRUE) })
+
 check("path requirements are per command, not in bulk", {
   # An earlier version demanded all three paths from every command. That broke
   # `./tsf fetch --geo-dir data` -- fetch downloads and has no results tree --
