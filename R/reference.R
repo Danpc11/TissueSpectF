@@ -611,7 +611,28 @@ calibrate_rejection <- function(pred_all, quantile_correct = 0.05) {
 #' number: fewer shared features shift the whole similarity distribution. When a
 #' band threshold exists it wins; the per-class and global thresholds are the
 #' fallback for full coverage only.
-apply_rejection <- function(res, calibration, coverage = NA_real_) {
+#' @param coverage GENE coverage: observed genes / annotation grid genes. NOT
+#'   feature coverage. The calibration bands were built with
+#'   coverage_band(gene_cov), and the two diverge by design -- the GLS estimates
+#'   almost every frequency from half a chromosome's genes, so feature coverage
+#'   stays near 100% while gene coverage is 50%. Both call sites once passed the
+#'   feature figure, which handed a 60%-of-genes query the near-full-coverage
+#'   threshold; on a synthetic case that turned UNKNOWN into an accepted class.
+#'
+#'   The name is `coverage` rather than `gene_coverage` for backward
+#'   compatibility, so the argument is checked instead: a value that looks like
+#'   feature coverage on a query with poor gene coverage cannot be told apart
+#'   from a legitimate one, but a caller that supplies both lets the mismatch be
+#'   caught. `feature_coverage` is optional and only used for that check.
+apply_rejection <- function(res, calibration, coverage = NA_real_,
+                            feature_coverage = NA_real_) {
+  if (is.finite(coverage) && is.finite(feature_coverage) &&
+      coverage > feature_coverage + 1e-9) {
+    tsf_warn("apply_rejection: gene coverage (", round(100 * coverage, 1),
+             "%) exceeds feature coverage (", round(100 * feature_coverage, 1),
+             "%), which is the wrong way round. The arguments are probably ",
+             "swapped: the band must come from GENE coverage.")
+  }
   if (is.null(calibration)) {
     res$decision <- "UNCALIBRATED"
     return(res)
