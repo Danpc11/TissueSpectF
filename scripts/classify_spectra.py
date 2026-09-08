@@ -96,18 +96,44 @@ def load_tensor(results_dir, datasets, n_bins):
       agg["chr"].astype(str).map(c_ix).values,
       agg["bin"].values] = agg["power_normalised"].values
 
-    # A bin no frequency of that chromosome falls into is genuinely unmeasured.
-    # Filling with zero would assert the spectrum has no power there; the column
-    # mean keeps the sample comparable without inventing a measurement, and the
-    # models below cannot take NaN.
-    col_mean = np.nanmean(X, axis=0)
-    inds = np.where(np.isnan(X))
-    X[inds] = np.take(col_mean, inds[1] * n_bins + inds[2])
-    X = np.nan_to_num(X, nan=0.0)
-
+    # NaN is LEFT IN. A bin no frequency of that chromosome falls into is
+    # genuinely unmeasured, and the imputation that replaces it has to be
+    # learned inside each fold: computing column means over every sample first
+    # lets the held-out cohort influence the values the model trains on, which
+    # is textbook data leakage and inflates every metric by an amount that
+    # cannot be quantified without re-running. See impute_within_fold().
     meta = sp[["sample", "condition", "dataset"]].drop_duplicates("sample")
     meta = meta.set_index("sample").loc[samples].reset_index()
     return X, meta["condition"].values, meta["dataset"].values, chroms
+
+
+def impute_within_fold(Xtr, Xte):
+    """Column means from TRAINING ONLY, applied to both halves.
+
+    Filling with zero would assert the spectrum has no power at that period,
+    which is a measurement the data did not make; the column mean keeps a sample
+    comparable without inventing one, and the models cannot take NaN. What
+    matters is WHERE the mean comes from: an earlier version computed it over
+    all samples before splitting, so the held-out cohort shaped the training
+    data.
+    """
+    # A column that is all-NaN in TRAINING has no mean to borrow, and warning
+    # about it on every fold would bury the real messages. Falls back to zero,
+    # which for a feature the training half never measured is the only value
+    # that says nothing.
+    with np.errstate(invalid="ignore"):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            mu = np.nanmean(Xtr, axis=0)
+    mu = np.where(np.isfinite(mu), mu, 0.0)
+    out = []
+    for A in (Xtr, Xte):
+        B = A.copy()
+        idx = np.where(np.isnan(B))
+        B[idx] = mu[idx[1], idx[2]]
+        out.append(np.nan_to_num(B, nan=0.0))
+    return out
 
 
 def run_folds(X, y, cohorts, fit_predict, name):
@@ -128,8 +154,9 @@ def run_folds(X, y, cohorts, fit_predict, name):
         tr, te = fold.train_idx, fold.test_idx
         if len(np.unique(y[tr])) < 2 or not len(te):
             continue
+        Xtr, Xte = impute_within_fold(X[tr], X[te])
         try:
-            pred = fit_predict(X[tr], y[tr], X[te])
+            pred = fit_predict(Xtr, y[tr], Xte)
         except Exception as exc:                      # noqa: BLE001
             print(f"  {name}: fold {fold.held_out} failed: {exc}")
             continue
