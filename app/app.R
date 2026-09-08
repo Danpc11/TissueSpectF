@@ -187,8 +187,15 @@ server <- function(input, output, session) {
       }
       res <- match_query(r$model, proj$vector, proj$available)
       if (is.null(res)) return(NULL)
+      # GENE coverage, not feature coverage. The calibration built its bands with
+      # coverage_band(gene_cov) (R/reference.R), and the two quantities diverge by
+      # design: the GLS can estimate almost every frequency from half a
+      # chromosome's genes, so feature coverage sits near 100% while gene coverage
+      # is 50%. Passing the feature figure hands a 60%-of-genes query the
+      # near-full-coverage threshold, and that is the difference between UNKNOWN
+      # and an accepted class.
       res <- apply_rejection(res, r$validation$calibration,
-                             coverage = proj$feature_coverage)
+                             coverage = fq$coverage)
       list(name = col, result = res, coverage = fq$coverage,
            feature_coverage = proj$feature_coverage, id_type = fq$id_type,
            collapsed = fq$collapsed, n_features_used = res$n_features_used)
