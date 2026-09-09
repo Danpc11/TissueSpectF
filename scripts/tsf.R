@@ -69,6 +69,11 @@ Paths:
 
 Parameters (override config/project.R):
   --gene-universe <re>  biotypes on the grid, e.g. '^protein-coding$'
+  --grid-axis <s>       gene | bp   the spectral axis. bp makes a period a
+                        physical distance; on the gene axis it is not, because
+                        gene density varies with the chromatin state itself
+  --bin-size <n>        bin width in bp for --grid-axis bp (default 100000)
+  --bin-aggregate <s>   mean | sum   how genes in one bin combine
   --maxt-b <n>          permutations, per-sample maxT
   --condition-b <n>     permutations, condition-level test
   --stable-frac <f>     consistency threshold
@@ -144,6 +149,9 @@ OPTION_ALIASES <- c(
   interimdir = "interim_dir", interim_dir = "interim_dir",
   resultsdir = "results_dir", results_dir = "results_dir",
   geneuniverse = "gene_universe", gene_universe = "gene_universe",
+  gridaxis = "grid_axis", grid_axis = "grid_axis",
+  binsize = "bin_size", bin_size = "bin_size",
+  binaggregate = "bin_aggregate", bin_aggregate = "bin_aggregate",
   maxtb = "maxt_b", maxt_b = "maxt_b", b = "maxt_b",
   conditionb = "condition_b", condition_b = "condition_b",
   stablefrac = "stable_frac", stable_frac = "stable_frac",
@@ -241,6 +249,12 @@ apply_cli_overrides <- function(project, opt) {
   set("interim_dir", opt$interim_dir)
   set("results_dir", opt$results_dir)
   set("gene_universe", opt$gene_universe)
+  # The spectral axis. Threaded here rather than left to the config so the two
+  # bin widths can be run from one command line without editing a file between
+  # them -- and so the invocation records which axis produced a result.
+  set("grid_axis", opt$grid_axis)
+  set("bin_size", opt$bin_size, as.numeric)
+  set("bin_aggregate", opt$bin_aggregate)
   set("annotation_file", opt$annotation)
   set("annotation_format", opt$annotation_format)
   # Restricting the chromosomes is what makes an exploratory run possible on a
