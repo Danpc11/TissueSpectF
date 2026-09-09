@@ -105,7 +105,27 @@ match_query <- function(model, query_vec, available = NULL,
 }
 
 #' Leave-one-dataset-out validation. The only number worth reporting.
-validate_across_datasets <- function(fps, target = c("condition", "tissue"),
+#' @param target which label to predict.
+#'
+#'   "class_id" is the COMPOSITE key, tissue::state::condition, and is the one
+#'   to use. "condition" holds the RAW label a rule assigned, before the
+#'   vocabulary's `conditions` map is applied -- that map is only used to build
+#'   class_id (R/labels.R). So a vocabulary merging three healthy groups into
+#'   one class had no effect here: the confusion matrix still showed
+#'   Normal_histology, Control_disease_cohort and Control_external_study as
+#'   three classes, two of them present in a single cohort each and therefore
+#'   unlearnable by leave-one-cohort-out. One cohort was skipped as a hold-out
+#'   entirely and both classes won zero predictions while occupying centroids.
+#'
+#'   The composite key also removes a collision that arrives with the first
+#'   second tissue: `Controles` in liver and any control class in kidney are the
+#'   same string under "condition" and different classes under "class_id".
+#'
+#'   "condition" and "tissue" are kept so an existing reference still means what
+#'   it said, and because predicting tissue alone is a real question.
+validate_across_datasets <- function(fps,
+                                     target = c("class_id", "condition",
+                                                "tissue"),
                                      n_features = 500L, n_masks = 10L,
                                      datasets = NULL, ref_params = list(),
                                      max_queries_per_mask = 25L,
@@ -624,6 +644,24 @@ calibrate_rejection <- function(pred_all, quantile_correct = 0.05) {
 #'   feature coverage on a query with poor gene coverage cannot be told apart
 #'   from a legitimate one, but a caller that supplies both lets the mismatch be
 #'   caught. `feature_coverage` is optional and only used for that check.
+#' Short form of a composite class id, for printing only.
+#'
+#' "liver::disease::NAFLD_fibrosis_F4" is the right key and the wrong thing to
+#' put in a confusion matrix. The last field is kept, and the tissue prefixed
+#' only when more than one tissue is present -- so a liver-only reference reads
+#' exactly as it did before class_id became the target.
+short_class <- function(x, keep_tissue = NULL) {
+  x <- as.character(x)
+  parts <- strsplit(x, "::", fixed = TRUE)
+  tis <- vapply(parts, function(p) if (length(p) >= 1) p[1] else NA_character_,
+                character(1))
+  last <- vapply(parts, function(p) p[length(p)], character(1))
+  multi <- if (is.null(keep_tissue)) length(unique(tis[!is.na(tis)])) > 1L
+           else isTRUE(keep_tissue)
+  ifelse(is.na(x), NA_character_,
+         if (multi) paste(tis, last, sep = ":") else last)
+}
+
 apply_rejection <- function(res, calibration, coverage = NA_real_,
                             feature_coverage = NA_real_) {
   if (is.finite(coverage) && is.finite(feature_coverage) &&
@@ -688,7 +726,8 @@ apply_rejection <- function(res, calibration, coverage = NA_real_,
 }
 
 #' Build the reference: fingerprints, validation, and a model fitted on all data.
-build_reference <- function(fps, target = "condition", n_features = 500L,
+#' @param target see validate_across_datasets(); "class_id" is the composite key.
+build_reference <- function(fps, target = "class_id", n_features = 500L,
                             grid = NULL, params = list(), n_masks = 10L,
                             datasets = NULL, max_queries_per_mask = 25L,
                             threshold_policy = "pooled") {
