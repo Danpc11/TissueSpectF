@@ -162,7 +162,11 @@ list(
     k_max      = 64L,          # frequency indices kept per chromosome
     features   = "amplitude",  # or "amplitude_phase" to keep the phase
     n_features = 500L,         # features the centroid model selects, on train only
-    target     = "condition",  # or "tissue" for a cross-tissue reference
+    # "class_id" is the composite key tissue::state::condition, and is the
+    # default because "condition" holds the RAW label, before the vocabulary's
+    # `conditions` map is applied. A vocabulary merging three healthy groups
+    # into one class had no effect on the reference until this changed.
+    target     = "class_id",   # or "condition" (raw label) or "tissue"
     # Coverage calibration. Loss is simulated on GENES of the grid and the
     # fingerprint is recomputed, because that is what a real query loses;
     # masking spectral features instead would measure an easier, wrong quantity.
