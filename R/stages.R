@@ -874,9 +874,17 @@ stage_reference <- function(project, opt) {
     write_tsv_tsf(ref$validation$predictions,
                   file.path(project$results_dir, "reference",
                             "out_of_cohort_predictions.tsv"))
+    # The TSV keeps the full composite keys -- it is the machine-readable
+    # record and truncating it would lose the tissue. Only the printed matrix
+    # is shortened, and only when one tissue is present, so a liver-only
+    # reference reads exactly as it did before class_id became the target.
     write_tsv_tsf(as.data.frame(ref$validation$confusion),
                   file.path(project$results_dir, "reference", "confusion_matrix.tsv"))
-    print(ref$validation$confusion)
+    cm <- ref$validation$confusion
+    if (!is.null(dimnames(cm)) && any(grepl("::", rownames(cm), fixed = TRUE))) {
+      dimnames(cm) <- lapply(dimnames(cm), short_class)
+    }
+    print(cm)
   }
   tsf_log(reference_status(ref))
   sprintf("reference over %d sample(s), %d class(es)",
