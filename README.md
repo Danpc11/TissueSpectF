@@ -72,6 +72,7 @@ TSF_ROOT=/scratch/$USER/TissueSpectF ./tsf run
 tsf                        the command line entry point
 README.md
 THEORY.md                  the model, the estimators, what each test licenses
+PIPELINE.md                the full run, command by command, on three axes
 LICENSE                    CC BY-NC 4.0
 requirements-ml.txt        dependencies of the learned layer (optional)
 requirements-sonify.txt    dependencies of the sonification (optional)
@@ -944,6 +945,12 @@ matches reach, per class and per coverage band. It bounds how often a true membe
 It does **not** bound how often an out-of-domain sample is wrongly accepted:
 no out-of-domain sample was in the validation. Open-set specificity needs
 negatives — for a tissue reference, other tissues.
+
+## The full run
+
+`PIPELINE.md` has every command for the three spectral axes — gene rank, 100 kb
+bins and 250 kb bins — with the stopping points, what to check at each, and the
+parameters that are pre-specifications rather than settings.
 
 ## Licence
 
