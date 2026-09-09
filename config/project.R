@@ -112,6 +112,27 @@ list(
   #   NULL                          every annotated gene
   gene_universe = Sys.getenv("TSF_GENE_UNIVERSE", "^protein-coding$"),
 
+  # THE SPECTRAL AXIS: "gene" for consecutive gene ranks, "bp" for fixed
+  # base-pair bins. See build_reference_grid() for why the rank axis cannot
+  # support a physical interpretation -- gene density varies more than tenfold
+  # along a chromosome and varies WITH the chromatin state a spectral result
+  # would want to explain, so a period in genes does not name a distance.
+  #
+  # Kept at "gene" as the default so an existing results tree still means what
+  # it said. Every analysis intended for biological interpretation should use
+  # "bp": 100 kb for TAD-scale resolution, 250 kb for near-complete coverage.
+  # Run both -- a band that appears at one width and not the other is a
+  # property of the binning, not of the genome.
+  grid_axis = Sys.getenv("TSF_GRID_AXIS", "gene"),
+  bin_size  = as.numeric(Sys.getenv("TSF_BIN_SIZE", "100000")),
+
+  # What a bin's value means when several genes fall in it. Two different
+  # questions: "mean" is the region's average activity and is robust to how
+  # many genes it holds; "sum" is total transcriptional output and grows with
+  # gene density -- which on this axis is the confounder the axis exists to
+  # remove.
+  bin_aggregate = Sys.getenv("TSF_BIN_AGGREGATE", "mean"),
+
   # Genes are ordered by start position within a chromosome; a chromosome with
   # fewer than this many genes cannot support a meaningful spectrum.
   min_genes_per_chr = 8L,
