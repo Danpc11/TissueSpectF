@@ -524,6 +524,30 @@ check("--seed reaches maxt$seed", {
       "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
   grepl("maxt$seed = 99", out, fixed = TRUE) })
 
+check("bin aggregation leaves one row per grid position", {
+  # On the gene axis each gene is its own rank. On a bp axis several genes fall
+  # in one bin, and a repeated grid_index would make the estimator place two
+  # values at the same position: the FFT keeps whichever was written last and
+  # the rest vanish silently.
+  src <- paste(readLines("R/ingest.R", warn = FALSE), collapse = " ")
+  grepl("anyDuplicated(paste(genes_out$chr, genes_out$grid_index))", src,
+        fixed = TRUE) &&
+    grepl("bin_aggregate", src, fixed = TRUE) })
+
+check("an empty bin is never zero-filled", {
+  # The whole grid design rests on this, and a bp axis has far more empty
+  # positions than a gene axis.
+  src <- paste(readLines("R/grid.R", warn = FALSE), collapse = " ")
+  grepl("UNOBSERVED and is never zero-filled", src, fixed = TRUE) })
+
+check("the axis and bin width are selectable from the command line", {
+  # Both widths have to be runnable from one command line, and the invocation
+  # has to record which axis produced a result.
+  src <- paste(readLines("scripts/tsf.R", warn = FALSE), collapse = " ")
+  all(vapply(c("grid_axis", "bin_size", "bin_aggregate"),
+             function(k) grepl(paste0('set("', k, '"'), src, fixed = TRUE),
+             logical(1))) })
+
 check("class_id travels with every fingerprinted sample", {
   # Omitting it is why target = "class_id" failed with "arguments must have
   # same length": lab[["class_id"]] was NULL, because fingerprint_dataset built
