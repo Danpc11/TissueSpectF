@@ -50,7 +50,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from ml.splits import leave_one_cohort_out, assert_no_cohort_leak  # noqa: E402
+from ml.splits import assert_no_cohort_leak, leave_one_cohort_out
 
 
 def period_grid(n_bins, lo=10.0, hi=500.0):
@@ -66,7 +66,15 @@ def load_tensor(results_dir, datasets, n_bins):
         pat = os.path.join(results_dir, ds, "spectra", "spectra_samples_*.tsv")
         for f in sorted(glob.glob(pat)):
             cond = os.path.basename(f)[len("spectra_samples_"):-len(".tsv")]
-            d = pd.read_csv(f, sep="\t")
+            # Only these five columns are used, and `chr` is read as string
+            # because it mixes 1..22 with X and Y -- pandas otherwise infers
+            # mixed types and warns once per file, nine identical warnings that
+            # bury anything real.
+            d = pd.read_csv(f, sep="\t", low_memory=False,
+                            usecols=lambda c: c in {
+                                "chr", "k", "sample", "power_normalised",
+                                "period"},
+                            dtype={"chr": "string", "sample": "string"})
             need = {"chr", "k", "sample", "power_normalised", "period"}
             if not need.issubset(d.columns):
                 print(f"  skip {f}: missing {sorted(need - set(d.columns))}")
@@ -177,8 +185,17 @@ def run_folds(X, y, cohorts, fit_predict, name):
 # --- models -------------------------------------------------------------------
 
 def m_centroid(Xtr, ytr, Xte):
+    # A feature with zero variance inside a class is expected here: empty
+    # period bins are imputed to the same training mean, so every sample of a
+    # class shares that value. sklearn warns once per fold about it and the
+    # message is not actionable, so it is silenced by name rather than by
+    # blanket suppression.
+    import warnings
+
     from sklearn.neighbors import NearestCentroid
     from sklearn.preprocessing import StandardScaler
+    warnings.filterwarnings(
+        "ignore", message=".*zero standard deviation.*", category=UserWarning)
     a, b = Xtr.reshape(len(Xtr), -1), Xte.reshape(len(Xte), -1)
     sc = StandardScaler().fit(a)
     return NearestCentroid().fit(sc.transform(a), ytr).predict(sc.transform(b))
@@ -204,8 +221,8 @@ def m_catch22(Xtr, ytr, Xte):
 
 
 def m_minirocket(Xtr, ytr, Xte):
-    from sktime.transformations.panel.rocket import MiniRocketMultivariate
     from sklearn.linear_model import RidgeClassifierCV
+    from sktime.transformations.panel.rocket import MiniRocketMultivariate
     mr = MiniRocketMultivariate(random_state=42).fit(Xtr)
     # Ridge handles ~10k features against a few hundred samples; that is what
     # the regularisation is for, and RidgeClassifierCV picks alpha itself.
