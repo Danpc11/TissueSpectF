@@ -461,7 +461,9 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   # are simply unobserved; they are never imputed.
   grid <- build_reference_grid(genes, project$chrom_levels,
                                biotypes = project$gene_universe,
-                               min_genes_per_chr = project$min_genes_per_chr)
+                               min_genes_per_chr = project$min_genes_per_chr,
+                               axis = project$grid_axis %||% "gene",
+                               bin_size = project$bin_size %||% 100000L)
 
   # entrez_id is kept because GEO count tables are commonly keyed on it, and a
   # query file has to be matchable without the user converting identifiers.
@@ -478,6 +480,57 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   genes_out <- genes_out[order(match(genes_out$chr, project$chrom_levels),
                                genes_out$grid_index), ]
   expr_mat <- expr_mat[genes_out$gene_id, , drop = FALSE]
+
+  # ONE ROW PER GRID POSITION. On the gene axis that holds already: each gene
+  # is its own rank. On a base-pair axis several genes fall in one bin, and a
+  # repeated grid_index would make the spectral estimator place two values at
+  # the same position -- the FFT would keep whichever was written last and the
+  # rest would vanish without a word.
+  #
+  # `bin_aggregate` decides what a bin's value means, and the two answers are
+  # different questions: "mean" is the average activity of the region and is
+  # robust to how many genes it holds; "sum" is the region's total
+  # transcriptional output and grows with gene density, which on this axis is
+  # exactly the confounder the axis was chosen to remove. Hence mean by default.
+  if (identical(project$grid_axis %||% "gene", "bp")) {
+    dup <- anyDuplicated(paste(genes_out$chr, genes_out$grid_index))
+    if (dup) {
+      how <- project$bin_aggregate %||% "mean"
+      if (!how %in% c("mean", "sum")) {
+        tsf_abort("bin_aggregate must be 'mean' or 'sum', got '", how, "'")
+      }
+      key <- paste(genes_out$chr, genes_out$grid_index, sep = "|")
+      fun <- if (identical(how, "sum")) colSums else colMeans
+      idx <- split(seq_len(nrow(expr_mat)), key)
+      # na.rm is deliberately FALSE: a bin whose only gene is unmeasured stays
+      # NA and gls_observed() drops the position. Averaging over the measured
+      # genes of a bin would turn a partly-unobserved region into a confident
+      # value.
+      agg <- t(vapply(idx, function(i)
+        fun(expr_mat[i, , drop = FALSE]), numeric(ncol(expr_mat))))
+      colnames(agg) <- colnames(expr_mat)
+
+      first <- vapply(idx, function(i) i[1], integer(1))
+      genes_bin <- genes_out[first, , drop = FALSE]
+      genes_bin$n_genes_in_bin <- vapply(idx, length, integer(1))
+      # The bin, not one of its genes, is the axis position now. Keeping a
+      # single gene_id would let a downstream table claim the bin IS that gene.
+      genes_bin$gene_id <- paste0("bin_", genes_bin$chr, "_", genes_bin$grid_index)
+      genes_bin$gene_name <- paste0(genes_bin$chr, ":",
+        format((genes_bin$grid_index - 1) *
+               (project$bin_size %||% 100000L) / 1e6, trim = TRUE), "Mb")
+
+      ord <- order(match(genes_bin$chr, project$chrom_levels), genes_bin$grid_index)
+      genes_out <- genes_bin[ord, , drop = FALSE]
+      expr_mat <- agg[ord, , drop = FALSE]
+      rownames(expr_mat) <- genes_out$gene_id
+
+      tsf_log("Binned ", sum(genes_out$n_genes_in_bin), " gene(s) into ",
+              nrow(genes_out), " occupied bin(s) by ", how,
+              " (median ", stats::median(genes_out$n_genes_in_bin),
+              " gene(s) per bin, max ", max(genes_out$n_genes_in_bin), ")")
+    }
+  }
 
   cov <- stats::aggregate(genes_out$gene_id, list(chr = genes_out$chr), length)
   cov$N <- grid$grid_N[match(cov$chr, grid$chr)]
