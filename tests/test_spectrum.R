@@ -1271,6 +1271,59 @@ check("a condition with too few samples is dropped, not contrasted", {
   out <- suppressWarnings(condition_contrast(d$stands, g, B = 99L, seed = 4L))
   !("Control" %in% out$condition) })
 
+# --- the base-pair axis -------------------------------------------------------
+#
+# On the gene-rank axis a period is a count of genes, and genes are not evenly
+# spaced: gene density varies more than tenfold along a chromosome, and it
+# varies WITH the chromatin state a spectral result would want to explain. So
+# "period = 30 genes" does not name a distance, and no mechanism -- TADs at
+# 0.1-1 Mb, replication domains at 0.4-0.8 Mb -- can be assigned to it.
+
+bp_annot <- function(n = 400, seed = 1) {
+  set.seed(seed)
+  # Deliberately clustered: 80% of the genes in the first 50 Mb, the rest
+  # scattered to 200 Mb. A uniform draw would hide the very non-uniformity
+  # that makes the gene axis unusable.
+  st <- sort(c(round(runif(round(n * .8), 1e6, 5e7)),
+               round(runif(n - round(n * .8), 1.5e8, 2e8))))
+  data.frame(gene_id = paste0("G", seq_along(st)), chr = "1", start = st,
+             gene_type = "protein-coding", stringsAsFactors = FALSE)
+}
+
+check("the bp axis places genes by position, not by rank", {
+  a <- bp_annot()
+  g <- build_reference_grid(a, "1", "^protein-coding$", axis = "bp",
+                            bin_size = 1e5)
+  # Two genes 30 Mb apart cannot be 30 ranks apart on this axis.
+  gap <- diff(range(g$grid_index))
+  gap > 1500 && g$grid_N[1] > 1500 })
+
+check("N is the chromosome in bins, not the span of observed genes", {
+  # If N were the observed span, a gene desert at either end would vanish from
+  # the axis and the coverage figure would be flattering.
+  a <- bp_annot()
+  g <- build_reference_grid(a, "1", "^protein-coding$", axis = "bp",
+                            bin_size = 1e5)
+  g$grid_N[1] >= floor(max(a$start) / 1e5) })
+
+check("a wider bin means fewer positions and higher occupancy", {
+  a <- bp_annot()
+  g1 <- build_reference_grid(a, "1", "^protein-coding$", axis = "bp", bin_size = 1e5)
+  g2 <- build_reference_grid(a, "1", "^protein-coding$", axis = "bp", bin_size = 2.5e5)
+  occ <- function(g) length(unique(g$grid_index)) / g$grid_N[1]
+  g2$grid_N[1] < g1$grid_N[1] && occ(g2) > occ(g1) })
+
+check("the gene axis is unchanged and still the default", {
+  a <- bp_annot()
+  g <- build_reference_grid(a, "1", "^protein-coding$")
+  identical(g$grid_index, seq_len(nrow(g))) && g$grid_N[1] == nrow(g) })
+
+check("a bin too small to be meaningful is refused", {
+  a <- bp_annot()
+  inherits(tryCatch(build_reference_grid(a, "1", "^protein-coding$",
+                                         axis = "bp", bin_size = 100),
+                    error = function(e) e), "error") })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
