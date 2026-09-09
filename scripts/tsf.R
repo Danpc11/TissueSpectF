@@ -99,7 +99,10 @@ Parameters (override config/project.R):
                                                invariant to global scale
                           expression_baseline  the CONTROL: raw expression,
                                                same validation, no transform
-  --target <s>          condition | tissue   (reference only)
+  --target <s>          class_id | condition | tissue   (reference only)
+                        class_id is the composite tissue::state::condition key
+                        and the default; condition is the RAW label, before the
+                        vocabulary map, and will not reflect a merged class
 
 Matching:
   --query <file>        counts TSV to identify
