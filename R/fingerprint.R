@@ -223,11 +223,32 @@ fingerprint_dataset <- function(dataset, chrom_idx, k_max = 64L,
 
   lab <- dataset$samples[match(samples, dataset$samples$sample_id), , drop = FALSE]
   list(matrix = mat,
+       # class_id travels with every sample. It is the composite key
+       # tissue::state::condition and the only label that survives a second
+       # tissue: `Controles` in liver and a control class in kidney are the
+       # same string under `condition` and different classes under `class_id`.
+       #
+       # It also carries the vocabulary's `conditions` map, which `condition`
+       # does not -- that column holds the RAW label a rule assigned. Omitting
+       # class_id here is why a vocabulary merging three healthy groups had no
+       # effect on the reference, and why asking for target = "class_id"
+       # produced "arguments must have same length" rather than a merged class.
+       #
+       # Reconstructed when absent, so an interim tree written before class_id
+       # existed still works instead of failing on a missing column.
        labels = data.frame(sample_id = samples,
                            dataset_id = dataset$id,
                            tissue = if ("tissue" %in% colnames(lab))
                              as.character(lab$tissue) else NA_character_,
                            condition = as.character(lab$condition),
+                           class_id = if ("class_id" %in% colnames(lab))
+                             as.character(lab$class_id)
+                           else paste(
+                             if ("tissue" %in% colnames(lab))
+                               as.character(lab$tissue) else "unknown",
+                             if ("state" %in% colnames(lab))
+                               as.character(lab$state) else "unknown",
+                             as.character(lab$condition), sep = "::"),
                            stringsAsFactors = FALSE))
 }
 
