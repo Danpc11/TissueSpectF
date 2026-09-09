@@ -58,8 +58,40 @@ normalise_chrom_names <- function(x) {
 #'
 #' @param annot annotation table with gene_id, chr, start and optionally gene_type
 #' @param biotypes regular expression matched against gene_type; NULL keeps all
+#' @param axis "gene" places genes at consecutive ranks; "bp" places them in
+#'   fixed base-pair bins of `bin_size`.
+#'
+#'   THE GENE-RANK AXIS IS CONFOUNDED WITH THE BIOLOGY. Genes are not evenly
+#'   spaced: gene density varies more than tenfold along a chromosome, and it
+#'   varies WITH the things a spectral analysis would want to explain -- dense
+#'   regions are open chromatin, early-replicating, GC-rich; sparse regions are
+#'   lamina-associated, late-replicating gene deserts. So the rank-to-megabase
+#'   factor is not a constant: a period of 30 genes can be 1 Mb in a dense
+#'   region and 15 Mb in a desert, within one chromosome.
+#'
+#'   The consequence is that "period = 30 genes" does not name a physical
+#'   scale, and no mechanism can be assigned to it: TADs are 0.1-1 Mb,
+#'   replication timing domains 0.4-0.8 Mb, lamina-associated domains
+#'   0.1-10 Mb. Those are base-pair statements and the rank axis cannot reach
+#'   them.
+#'
+#'   Coverage does not suffer -- it improves, and becomes honest. On the rank
+#'   axis "coverage" is expressed genes over annotated genes, and the axis is
+#'   DEFINED by gene positions, so it is high by construction. On a bp axis it
+#'   is bins-with-data over bins-in-the-chromosome, which is how much of the
+#'   chromosome was actually observed: about 83% at 100 kb on chr1 against
+#'   65-77% on the rank axis. The gaps are the regime the floating-mean GLS
+#'   exists for.
+#'
+#' @param bin_size bin width in base pairs, for axis = "bp". 100 kb gives TAD
+#'   resolution; 250 kb is near-complete coverage with less resolution. Run
+#'   both: a band that appears at one width and not the other is a property of
+#'   the binning.
 build_reference_grid <- function(annot, chrom_levels, biotypes = NULL,
-                                 min_genes_per_chr = 8L) {
+                                 min_genes_per_chr = 8L,
+                                 axis = c("gene", "bp"),
+                                 bin_size = 100000L) {
+  axis <- match.arg(axis)
   g <- annot[annot$chr %in% chrom_levels & !is.na(annot$start), , drop = FALSE]
 
   if (!is.null(biotypes) && "gene_type" %in% colnames(g)) {
@@ -78,10 +110,38 @@ build_reference_grid <- function(annot, chrom_levels, biotypes = NULL,
 
   g <- g[order(match(g$chr, chrom_levels), g$start, g$gene_id), ]
   g <- g[!duplicated(g$gene_id), ]
-  g$grid_index <- stats::ave(seq_len(nrow(g)), g$chr, FUN = seq_along)
-  n_by_chr <- table(g$chr)
-  g$grid_N <- as.integer(n_by_chr[g$chr])
 
+  if (identical(axis, "gene")) {
+    g$grid_index <- stats::ave(seq_len(nrow(g)), g$chr, FUN = seq_along)
+    n_by_chr <- table(g$chr)
+    g$grid_N <- as.integer(n_by_chr[g$chr])
+  } else {
+    bin_size <- as.numeric(bin_size)
+    if (!is.finite(bin_size) || bin_size < 1000) {
+      tsf_abort("bin_size must be at least 1000 bp; got ", bin_size)
+    }
+    # Bin 1 is the first bin of the chromosome, not the first bin that contains
+    # a gene: N must be the chromosome's length in bins, or the axis would
+    # shrink to the span of the observed genes and a gene desert at either end
+    # would silently disappear from the grid.
+    g$grid_index <- as.integer(floor(g$start / bin_size)) + 1L
+    span <- tapply(g$start, g$chr, max)
+    g$grid_N <- as.integer(floor(span[g$chr] / bin_size)) + 1L
+
+    per_chr <- tapply(g$grid_index, g$chr, function(x) length(unique(x)))
+    cov <- per_chr / tapply(g$grid_N, g$chr, function(x) x[1])
+    tsf_log("Grid axis: base pairs, ", format(bin_size, big.mark = ","),
+            " bp bins. Occupied bins per chromosome: median ",
+            round(100 * stats::median(cov), 1), "%, range ",
+            round(100 * min(cov), 1), "-", round(100 * max(cov), 1), "%")
+    tsf_log("  ", nrow(g), " gene(s) into ",
+            sum(unlist(per_chr)), " occupied bin(s) of ",
+            sum(vapply(split(g$grid_N, g$chr), function(x) x[1], numeric(1))),
+            " total; a bin with several genes is aggregated at ingest, an ",
+            "empty bin stays UNOBSERVED and is never zero-filled")
+  }
+
+  n_by_chr <- table(g$chr)
   short <- names(n_by_chr)[n_by_chr < min_genes_per_chr]
   if (length(short)) {
     tsf_warn("Chromosomes below ", min_genes_per_chr, " grid genes, dropped: ",
