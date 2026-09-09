@@ -524,6 +524,47 @@ check("--seed reaches maxt$seed", {
       "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
   grepl("maxt$seed = 99", out, fixed = TRUE) })
 
+check("class_id travels with every fingerprinted sample", {
+  # Omitting it is why target = "class_id" failed with "arguments must have
+  # same length": lab[["class_id"]] was NULL, because fingerprint_dataset built
+  # its labels from sample_id, dataset_id, tissue and condition only.
+  src <- paste(readLines("R/fingerprint.R", warn = FALSE), collapse = " ")
+  grepl("class_id = if (\"class_id\" %in% colnames(lab))", src, fixed = TRUE) })
+
+check("class_id is the default reference target", {
+  # `condition` holds the RAW label, before the vocabulary `conditions` map is
+  # applied -- that map only builds class_id. So a vocabulary merging three
+  # healthy groups into one class had no effect on the reference: the confusion
+  # matrix showed three classes, two of them in a single cohort each and
+  # therefore unlearnable by leave-one-cohort-out.
+  src <- paste(readLines("R/reference.R", warn = FALSE), collapse = " ")
+  p <- load_project_config("config/project.R")
+  identical(p$fingerprint$target, "class_id") &&
+    grepl('target = "class_id"', src, fixed = TRUE) })
+
+check("condition and tissue remain selectable", {
+  # Kept so an existing reference still means what it said, and because
+  # predicting tissue alone is a real question.
+  src <- paste(readLines("R/reference.R", warn = FALSE), collapse = " ")
+  grepl('c("class_id", "condition"', src, fixed = TRUE) &&
+    grepl('"tissue"', src, fixed = TRUE) })
+
+check("a composite key prints short with one tissue and long with two", {
+  one <- short_class(c("liver::healthy::Controles",
+                       "liver::disease::NAFLD_fibrosis_F4"))
+  two <- short_class(c("liver::healthy::Controles",
+                       "kidney::healthy::Controles"))
+  identical(one, c("Controles", "NAFLD_fibrosis_F4")) &&
+    identical(two, c("liver:Controles", "kidney:Controles")) })
+
+check("the confusion TSV keeps the full key", {
+  # The printed matrix is shortened; the machine-readable record must not be,
+  # or the tissue is lost from the only file a downstream script reads.
+  src <- paste(readLines("R/stages.R", warn = FALSE), collapse = " ")
+  i <- regexpr("write_tsv_tsf\\(as.data.frame\\(ref\\$validation\\$confusion", src)
+  j <- regexpr("dimnames\\(cm\\) <- lapply", src)
+  i > 0 && j > 0 && i < j })
+
 check("the rejection band comes from gene coverage, not feature coverage", {
   # The calibration builds its bands with coverage_band(gene_cov), and the two
   # quantities diverge by design: the GLS estimates almost every frequency from
