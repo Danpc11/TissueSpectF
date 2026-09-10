@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Dependency-free tests for the label layer. Run: Rscript tests/test_labels.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/grid.R"); source("R/ingest.R"); source("R/annotation.R")
+source("R/prepare.R"); source("R/grid.R"); source("R/ingest.R"); source("R/annotation.R")
 source("R/fingerprint.R")
 source("R/reference.R"); source("R/bundle.R")
 source("R/maxt.R")   # maxt_cores(); local_workers() comes from utils_io.R
@@ -337,8 +337,12 @@ check("the consensus entry points are reachable from the load path", {
   sys.source("R/utils_io.R", envir = env)
   invisible(lapply(get("tsf_module_order", envir = env)(),
                    function(f) sys.source(f, envir = env)))
+  # signature_features() se elimino: construia nombres de feature
+  # `chr<c>_k<k>` que ninguna etapa usaba --fingerprint_vector() los arma por
+  # su cuenta-- y su unica referencia en todo el repo era esta lista, lo que
+  # hacia que una auditoria de codigo muerto la contara como viva.
   all(vapply(c("consensus_spectrum", "consensus_signature", "phase_locking",
-               "prevalence_from_rank", "signature_features"),
+               "prevalence_from_rank"),
              function(f) is.function(get0(f, envir = env)), logical(1))) })
 
 check("no module is missing from the load order", {
