@@ -524,6 +524,36 @@ check("--seed reaches maxt$seed", {
       "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
   grepl("maxt$seed = 99", out, fixed = TRUE) })
 
+check("la cobertura por bin cuenta los genes ANOTADOS, no los expresados", {
+  # `n_genes_in_bin` contaba solo los que pasaron el filtro de expresion, asi
+  # que la informacion para detectar que el mismo bin significa cosas
+  # distintas entre cohortes se perdia antes de la agregacion.
+  src <- paste(readLines("R/ingest.R", warn = FALSE), collapse = " ")
+  grepl("n_genes_annotated", src, fixed = TRUE) &&
+    grepl("annot_key <- paste(grid$chr, grid$grid_index", src, fixed = TRUE) &&
+    grepl("ANTES del filtro de", src, fixed = TRUE) })
+
+check("un bin puede quedar no medido en una muestra y medido en otra", {
+  # La cobertura por bin es una MATRIZ, no un vector: una muestra de baja
+  # profundidad mide menos genes del mismo bin, y esa heterogeneidad es lo que
+  # hay que declarar en vez de promediar.
+  src <- paste(readLines("R/ingest.R", warn = FALSE), collapse = " ")
+  grepl("drop <- bin_cov < min_cov", src, fixed = TRUE) &&
+    grepl("agg[drop] <- NA_real_", src, fixed = TRUE) &&
+    grepl("bin_coverage.tsv", src, fixed = TRUE) })
+
+check("el umbral de cobertura por bin es una preespecificacion en el config", {
+  p <- load_project_config("config/project.R")
+  is.numeric(p$bin_min_coverage) && p$bin_min_coverage >= 0 &&
+    p$bin_min_coverage <= 1 &&
+    grepl("bin_min_coverage",
+          paste(readLines("scripts/tsf.R", warn = FALSE), collapse = " "),
+          fixed = TRUE) })
+
+check("un umbral fuera de [0,1] aborta", {
+  src <- paste(readLines("R/ingest.R", warn = FALSE), collapse = " ")
+  grepl("bin_min_coverage must be in [0, 1]", src, fixed = TRUE) })
+
 check("el eje de gen advierte que sus periodos no son distancias", {
   # El default sigue siendo "gene" por reproducibilidad, y eso deja un hueco:
   # una corrida estandar produce periodos que alguien puede interpretar como
