@@ -206,3 +206,34 @@ genomic_coverage <- function(n_observed, grid) {
   if (!is.finite(tot) || tot <= 0) return(NA_real_)
   min(max(n_observed / tot, 0), 1)
 }
+
+#' Re-normalizar tras enmascarar, como haria una consulta real.
+#'
+#' La calibracion de cobertura quitaba posiciones DESPUES de normalizar; una
+#' consulta real normaliza con los conteos que tiene. No es la misma
+#' perturbacion, y la diferencia es grande: al 26% de cobertura la media en
+#' escala asinh difiere en 1.53, que es log(1/0.26) = 1.35 como predice la
+#' teoria --quitar una fraccion f de genes baja el total y escala los que
+#' quedan por 1/f, y asinh(x/f) - asinh(x) ~ log(1/f) para x grande.
+#'
+#' El umbral se calibraba con una perturbacion y se aplicaba a otra.
+#'
+#' No hacen falta los conteos: asinh es invertible. sinh() devuelve el TPM (o
+#' CPM), se enmascara, se re-normaliza a 1e6 sobre lo que queda, y se vuelve a
+#' aplicar asinh. Eso reproduce exactamente lo que hace una consulta parcial.
+#'
+#' @param y valores en asinh(TPM) o asinh(CPM)
+#' @param keep logico, TRUE = posicion observada por la consulta simulada
+#' @param unit "logged" no se toca: sin normalizacion no hay nada que rehacer
+renormalise_after_mask <- function(y, keep, unit = "asinh(TPM)") {
+  if (identical(unit, "logged")) return(ifelse(keep, y, NA_real_))
+  if (length(keep) != length(y)) {
+    tsf_abort("renormalise_after_mask: ", length(keep), " indicador(es) para ",
+              length(y), " valor(es)")
+  }
+  lin <- sinh(y)                       # de vuelta a TPM/CPM
+  lin[!keep] <- NA_real_
+  tot <- sum(lin, na.rm = TRUE)
+  if (!is.finite(tot) || tot <= 0) return(rep(NA_real_, length(y)))
+  asinh(lin / tot * 1e6)
+}
