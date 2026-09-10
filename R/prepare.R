@@ -225,7 +225,26 @@ genomic_coverage <- function(n_observed, grid) {
 #' @param y valores en asinh(TPM) o asinh(CPM)
 #' @param keep logico, TRUE = posicion observada por la consulta simulada
 #' @param unit "logged" no se toca: sin normalizacion no hay nada que rehacer
-renormalise_after_mask <- function(y, keep, unit = "asinh(TPM)") {
+renormalise_after_mask <- function(y, keep, unit = "asinh(TPM)",
+                                   axis = "gene") {
+  # SOLO VALE EN EL EJE DE GEN, donde cada posicion ES un gen y sinh() devuelve
+  # su TPM exactamente.
+  #
+  # Con eje bp el valor guardado es mean(asinh(TPM de los genes del bin)), y
+  # sinh() de eso es una media geometrica -- ni la media ni la suma del bin.
+  # Medido: con genes a 500, 50 y 5 TPM la media es 185 y sinh(agregado) da
+  # 50.2, un 73% de error; con 1000, 10 y 1 el error es del 93%. Solo coincide
+  # cuando los genes del bin son iguales.
+  #
+  # Reconstruir la expresion lineal de un bin exige los valores POR GEN, que la
+  # agregacion ya descarto. Se aborta en vez de devolver un numero mal: una
+  # calibracion con un 90% de error es peor que no calibrar.
+  if (identical(axis, "bp")) {
+    tsf_abort("renormalise_after_mask() no vale con eje bp: el valor de un bin ",
+              "es mean(asinh(TPM)) y sinh() de eso es una media geometrica, no ",
+              "la expresion lineal del bin (hasta 93% de error medido). Hace ",
+              "falta la expresion POR GEN, que la agregacion descarto.")
+  }
   if (identical(unit, "logged")) return(ifelse(keep, y, NA_real_))
   if (length(keep) != length(y)) {
     tsf_abort("renormalise_after_mask: ", length(keep), " indicador(es) para ",
