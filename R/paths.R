@@ -48,25 +48,7 @@ tsf_stage_inputs <- function(project, dataset_id, need = character(0)) {
   out
 }
 
-#' Shared CLI parsing: dataset ids, --cond, --branch, --force.
-tsf_args <- function(args = commandArgs(trailingOnly = TRUE)) {
-  flag <- function(name) {
-    hit <- grep(paste0("^--", name, "="), args, value = TRUE)
-    if (length(hit)) sub(paste0("^--", name, "="), "", hit[1]) else NULL
-  }
-  list(
-    datasets = args[!grepl("^--", args)],
-    cond     = flag("cond"),
-    branch   = flag("branch"),
-    force    = any(args == "--force")
-  )
-}
 
-#' Datasets to process: those named on the command line, or all configured.
-tsf_dataset_ids <- function(cli) {
-  if (length(cli$datasets)) cli$datasets
-  else sub("\\.R$", "", list.files("config/datasets", pattern = "\\.R$"))
-}
 
 #' Conditions to process, honouring --cond=F2.
 tsf_conditions <- function(available, cli) {
@@ -76,10 +58,4 @@ tsf_conditions <- function(available, cli) {
   if (length(missing)) tsf_abort("Condition not present in this dataset: ",
                                  paste(missing, collapse = ", "))
   want
-}
-
-tsf_source_pipeline <- function() {
-  # Kept for callers that source paths.R directly; the real loader lives in
-  # utils_io.R and globs the directory, so no list has to be maintained.
-  tsf_load_all("R")
 }
