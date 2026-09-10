@@ -133,6 +133,18 @@ list(
   # remove.
   bin_aggregate = Sys.getenv("TSF_BIN_AGGREGATE", "mean"),
 
+  # Estimador espectral. El periodograma es inconsistente: su varianza no cae
+  # al acumular datos, y sobre ruido puro su coeficiente de variacion es ~1,
+  # medido. El multitaper promedia K periodogramas bajo tapers ortogonales y lo
+  # baja a ~0.45, una reduccion de 2.1x cerca del maximo teorico de sqrt(K).
+  #
+  # Cuesta resolucion: promediar con banda NW mezcla componentes mas cercanas
+  # que 2*NW/N. Es el intercambio correcto aqui, porque este proyecto nunca
+  # tuvo un problema de resolucion y siempre tuvo uno de varianza.
+  estimator = Sys.getenv("TSF_ESTIMATOR", "periodogram"),  # o "multitaper"
+  mt_nw     = as.numeric(Sys.getenv("TSF_MT_NW", "3")),
+  mt_k      = as.integer(Sys.getenv("TSF_MT_K", "5")),
+
   # Genes are ordered by start position within a chromosome; a chromosome with
   # fewer than this many genes cannot support a meaningful spectrum.
   min_genes_per_chr = 8L,
