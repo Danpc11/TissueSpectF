@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/grid.R"); source("R/multitaper.R")
+source("R/prepare.R"); source("R/grid.R"); source("R/multitaper.R")
 # no los carga el core: viven en R/experimental/ porque ninguna etapa los usa
 source("R/experimental/pdm.R"); source("R/experimental/background.R"); source("R/period_floor.R"); source("R/contrast.R"); source("R/differential.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
 source("R/condition_test.R"); source("R/clean.R"); source("R/fingerprint.R"); source("R/reference.R"); source("R/consensus.R"); source("R/peaks_genes.R"); source("R/compare.R")
@@ -1682,6 +1682,68 @@ check("el eje de gen no pasa por bin_query", {
   # `grid_axis` viaja en ref$params, y si no es "bp" la consulta va directa.
   src <- paste(readLines("R/fingerprint.R", warn = FALSE), collapse = " ")
   grepl('if (isTRUE(ref$params$grid_axis == "bp"))', src, fixed = TRUE) })
+
+# --- ingest y consulta tienen que preparar igual --------------------------------
+#
+# Las dos rutas hacian las mismas operaciones en ORDEN distinto:
+#   ingest:   counts -> TPM -> asinh -> filtrar -> agregar
+#   consulta: counts -> agregar -> CPM -> asinh
+# Y no conmutan.
+
+check("promediar y transformar no conmutan, y por eso el orden importa", {
+  # Con un bin de dos genes a 1000 y 1 TPM: 4.241 por una ruta y 6.909 por la
+  # otra, un 63% de diferencia. asinh es concavo, asi que la brecha crece con
+  # la dispersion de los genes del bin.
+  tpm <- c(1000, 1)
+  abs(mean(asinh(tpm)) - asinh(mean(tpm))) > 2 })
+
+check("ingest delega en la funcion compartida", {
+  # Si counts_to_expression() volviera a implementar el orden por su cuenta,
+  # las dos rutas podrian divergir otra vez sin que nada lo notara.
+  set.seed(61)
+  cm <- matrix(stats::rpois(20, 80), 10, 2,
+               dimnames = list(paste0("G", 1:10), c("S1", "S2")))
+  gl <- round(stats::runif(10, 500, 5000))
+  isTRUE(all.equal(unclass(counts_to_expression(cm, gl)),
+                   unclass(prepare_axis_values(cm, gl, "counts")))) })
+
+check("la preparacion da lo mismo por matriz y por vector", {
+  # Una cohorte llega como matriz y una consulta como vector: si difirieran,
+  # el desfase volveria por otra puerta.
+  set.seed(62)
+  cm <- matrix(stats::rpois(12, 50), 6, 2,
+               dimnames = list(paste0("G", 1:6), c("S1", "S2")))
+  gl <- rep(2000, 6); bk <- c("b1", "b1", "b1", "b2", "b2", "b3")
+  na <- c(b1 = 3L, b2 = 2L, b3 = 1L)
+  a <- prepare_axis_values(cm, gl, "counts", bin_key = bk, bin_annotated = na)
+  b <- prepare_axis_values(cm[, 1], gl, "counts", bin_key = bk,
+                           bin_annotated = na)
+  isTRUE(all.equal(as.numeric(a[, 1]), as.numeric(b))) })
+
+check("un gen ausente cuenta en el denominador del bin, no como cero", {
+  # `m[is.na(m)] <- 0` convertia los ausentes en ceros y la cobertura del bin
+  # salia 1: con 3 o 5 genes anotados y uno solo presente no se descartaba
+  # nada. Medido: 0 de 16 bins con umbral 0.9.
+  v <- c(100, NA, NA, 50, 50)
+  bk <- c("b1", "b1", "b1", "b2", "b2")
+  na <- c(b1 = 3L, b2 = 2L)
+  o <- prepare_axis_values(v, unit = "counts", bin_key = bk,
+                           bin_annotated = na, bin_min_coverage = 0.9)
+  cov <- attr(o, "bin_coverage")
+  abs(cov[1] - 1 / 3) < 1e-9 && abs(cov[2] - 1) < 1e-9 &&
+    is.na(o[["b1"]]) && is.finite(o[["b2"]]) })
+
+check("la consulta no transforma dos veces", {
+  # bin_query() ya normaliza y aplica asinh; volver a pasar por query_signal()
+  # daria asinh(asinh(TPM)).
+  src <- paste(readLines("R/fingerprint.R", warn = FALSE), collapse = " ")
+  grepl("if (prepared) v else query_signal(v, unit)", src, fixed = TRUE) &&
+    grepl("already_prepared", src, fixed = TRUE) })
+
+check("una unidad desconocida aborta en vez de pasar de largo", {
+  e <- tryCatch(prepare_axis_values(1:5, unit = "rpkm"),
+                error = function(e) e)
+  inherits(e, "error") && grepl("desconocida", conditionMessage(e)) })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
