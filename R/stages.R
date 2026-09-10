@@ -848,6 +848,7 @@ stage_reference <- function(project, opt) {
   grids <- stats::setNames(lapply(names(fps), function(id) load_grid(id, project)),
                            names(fps))
   canonical_grid <- assert_compatible_grids(grids)
+  is_bp <- identical(project$grid_axis %||% "gene", "bp")
   prov <- grids[[1]]$provenance
   ref <- build_reference(fps, target = project$fingerprint$target %||% "condition",
                          n_features = project$fingerprint$n_features %||% 500L,
@@ -855,10 +856,26 @@ stage_reference <- function(project, opt) {
                          datasets = kept_datasets,
                          max_queries_per_mask = project$fingerprint$max_queries_per_mask %||% 25L,
                          threshold_policy = project$fingerprint$threshold_policy %||% "pooled",
-                         grid = canonical_grid,
+                         # Con eje bp la referencia vive sobre BINS, asi que su
+                         # malla tiene que ser la de bins --derivada de la de
+                         # genes, no leida de genes.tsv, que es por cohorte-- y
+                         # la de genes viaja aparte para que la consulta pueda
+                         # contar los genes anotados de cada bin.
+                         grid = if (is_bp) bin_grid_from_genes(
+                             canonical_grid, project$bin_size %||% 100000L)
+                           else canonical_grid,
+                         gene_grid = if (is_bp) canonical_grid else NULL,
                          params = list(
                            k_max = project$fingerprint$k_max %||% 64L,
                            features = project$fingerprint$features %||% "amplitude",
+                           # El EJE y sus parametros viajan con la referencia.
+                           # Sin ellos fingerprint_query() no puede reproducir
+                           # la agregacion por bins, y compararia un espectro
+                           # de bins contra uno de genes.
+                           grid_axis = project$grid_axis %||% "gene",
+                           bin_size = project$bin_size %||% 100000L,
+                           bin_aggregate = project$bin_aggregate %||% "mean",
+                           bin_min_coverage = project$bin_min_coverage %||% 0.5,
                            gene_universe = prov$gene_universe %||% "all",
                            annotation = prov$annotation_file %||% project$annotation_file,
                            species = prov$species %||% NA_character_,
