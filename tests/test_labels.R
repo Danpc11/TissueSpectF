@@ -524,6 +524,59 @@ check("--seed reaches maxt$seed", {
       "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
   grepl("maxt$seed = 99", out, fixed = TRUE) })
 
+check("el eje de gen advierte que sus periodos no son distancias", {
+  # El default sigue siendo "gene" por reproducibilidad, y eso deja un hueco:
+  # una corrida estandar produce periodos que alguien puede interpretar como
+  # distancias. La advertencia cierra el hueco sin romper nada.
+  a <- data.frame(gene_id = paste0("G", 1:40), chr = "1",
+                  start = sort(round(runif(40, 1e6, 5e7))),
+                  gene_type = "protein-coding", stringsAsFactors = FALSE)
+  # tsf_warn() escribe por tsf_log(), no lanza una condicion de R, asi que se
+  # captura la salida y no con withCallingHandlers.
+  w <- utils::capture.output(
+    build_reference_grid(a, "1", "^protein-coding$"),
+    type = "message")
+  w <- c(w, utils::capture.output(
+    build_reference_grid(a, "1", "^protein-coding$"), type = "output"))
+  any(grepl("NO es una distancia", w, fixed = TRUE))
+})
+
+check("N en el eje bp es la longitud del cromosoma, no el ultimo gen", {
+  # max(start) termina el eje donde acaba el universo genico, lo que desplaza
+  # frecuencias, periodos y fase -- y hace que dos universos den N distintos
+  # para el mismo cromosoma. En chr21 el sesgo medido era del 1.6%.
+  a <- data.frame(gene_id = paste0("G", 1:200), chr = "21",
+                  start = sort(round(runif(200, 5e6, 4.4e7))),
+                  gene_type = "protein-coding", stringsAsFactors = FALSE)
+  g <- suppressWarnings(
+    build_reference_grid(a, "21", "^protein-coding$", axis = "bp",
+                         bin_size = 250000))
+  expected <- ceiling(GRCH38_CHROM_LENGTHS[["21"]] / 250000)
+  g$grid_N[1] == expected && g$grid_N[1] > floor(max(a$start) / 250000) + 1 })
+
+check("un cromosoma sin longitud declarada avisa en vez de fallar", {
+  a <- data.frame(gene_id = paste0("G", 1:40), chr = "scaffold9",
+                  start = sort(round(runif(40, 1e6, 5e6))),
+                  gene_type = "protein-coding", stringsAsFactors = FALSE)
+  g <- NULL
+  w <- utils::capture.output({
+    g <<- build_reference_grid(a, "scaffold9", "^protein-coding$", axis = "bp",
+                               bin_size = 100000, min_genes_per_chr = 8L)
+  }, type = "message")
+  w <- c(w, utils::capture.output({
+    build_reference_grid(a, "scaffold9", "^protein-coding$", axis = "bp",
+                         bin_size = 100000, min_genes_per_chr = 8L)
+  }, type = "output"))
+  nrow(g) == 40 && any(grepl("Sin longitud declarada", w, fixed = TRUE)) })
+
+check("los modulos sin usar no los carga el core", {
+  # PDM, GLS ponderado y el fondo 1/f no los llama ninguna etapa. Cargarlos
+  # con el core los haria parecer parte activa del metodo.
+  m <- basename(tsf_module_order("R"))
+  !any(grepl("^(pdm|background)[.]R$", m)) &&
+    file.exists("R/experimental/pdm.R") &&
+    file.exists("R/experimental/background.R") })
+
 check("el estimador llega a spectra y a maxt, no solo al config", {
   # Una bandera aceptada que no llega a ningun sitio es peor que no tenerla:
   # el log dice `override: estimator = multitaper` y el resultado sale del
