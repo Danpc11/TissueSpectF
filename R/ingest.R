@@ -4,6 +4,10 @@
 #
 #   samples.tsv      sample_id, dataset_id, condition, fibrosis_stage, cohort, ...
 #   genes.tsv        gene_id, gene_name, chr, start, gene_order
+#   retained_genes.tsv solo con --grid-axis bp: que genes sobrevivieron el
+#                     filtro de expresion de esta cohorte, con sus ids REALES.
+#                     genes.tsv guarda ids de bin, asi que no sirve para la
+#                     mascara compartida.
 #   bin_coverage.tsv  solo con --grid-axis bp: cobertura por (bin, muestra),
 #                     con los genes medidos y anotados de cada celda
 #   counts.tsv       gene_id + one integer column per sample
@@ -435,7 +439,49 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   }
   expr_mat <- counts_to_expression(count_mat, gene_len)
   unit <- attr(expr_mat, "unit")
-  expr_mat <- filter_expressed(expr_mat, project$min_tpm, project$min_fraction)
+  # MASCARA COMPARTIDA, si se declara. Es la unica forma de que todas las
+  # cohortes calculen el mismo bin a partir de los mismos genes.
+  #
+  # filter_expressed() decide con rowMeans sobre las muestras de ESTA cohorte,
+  # asi que cada una retiene un conjunto distinto y el mismo bin se calcula con
+  # genes distintos en cada una. Aplicar la interseccion solo a las consultas
+  # es PEOR que no aplicarla: el entrenamiento usaria A o B y la consulta
+  # A n B, tres representaciones en vez de dos.
+  #
+  # El flujo correcto son dos pasadas:
+  #   1. ingest de todas las cohortes sin mascara -> retained_genes.tsv
+  #   2. Rscript scripts/shared_gene_mask.R  -> shared_gene_mask.tsv
+  #   3. ingest de todas otra vez con --gene-mask, y entonces las cohortes y
+  #      las consultas comparten el conjunto.
+  if (!is.null(project$gene_mask_file) && nzchar(project$gene_mask_file)) {
+    gm <- read_tsv_tsf(project$gene_mask_file, required = TRUE)
+    if (!"gene_id" %in% names(gm)) {
+      tsf_abort("El archivo de mascara ", project$gene_mask_file,
+                " no tiene columna gene_id.")
+    }
+    keep_ids <- as.character(gm$gene_id)
+    before <- nrow(expr_mat)
+    hit <- rownames(expr_mat) %in% keep_ids
+    if (!any(hit)) {
+      tsf_abort("La mascara de ", project$gene_mask_file, " no interseca los ",
+                before, " gene(s) de esta cohorte. Los ids no coinciden: la ",
+                "mascara tiene que venir de retained_genes.tsv, no de ",
+                "genes.tsv, que con eje bp guarda ids de bin.")
+    }
+    expr_mat <- expr_mat[hit, , drop = FALSE]
+    tsf_log("Shared gene mask: ", nrow(expr_mat), "/", before,
+            " gene(s) kept from ", basename(project$gene_mask_file),
+            ". Todas las cohortes agregan los bins con este mismo conjunto.")
+  } else {
+    expr_mat <- filter_expressed(expr_mat, project$min_tpm, project$min_fraction)
+    if (identical(project$grid_axis %||% "gene", "bp")) {
+      tsf_warn("Sin --gene-mask, el filtro de expresion es POR COHORTE: cada ",
+               "una retiene un conjunto distinto y el mismo bin se calcula con ",
+               "genes distintos. Corre scripts/shared_gene_mask.R sobre los ",
+               "retained_genes.tsv y re-ingesta con --gene-mask para que las ",
+               "cohortes y las consultas compartan el conjunto.")
+    }
+  }
 
   # ---- reference grid ------------------------------------------------------
   # The axis is every annotated gene of the allowed biotypes, NOT the genes that
@@ -542,6 +588,25 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
       n_drop <- sum(drop, na.rm = TRUE)
       agg[drop] <- NA_real_
 
+      # LOS IDS REALES, ANTES de que el binning los reemplace.
+      #
+      # genes.tsv con eje bp guarda `bin_<chr>_<index>` como gene_id, asi que
+      # leer de ahi la mascara de genes compartida da ids de BIN y compararlos
+      # contra ids de gen no interseca nunca: 0 de 15 en el caso medido, y la
+      # consulta abortaba en la primera referencia real de dos cohortes.
+      #
+      # Este archivo conserva que genes sobrevivieron el filtro de expresion de
+      # ESTA cohorte, que es lo que hace falta para la interseccion.
+      retained <- data.frame(
+        dataset_id = project$.dataset_id %||% NA_character_,
+        gene_id = genes_out$gene_id,
+        entrez_id = if ("entrez_id" %in% names(genes_out))
+          as.character(genes_out$entrez_id) else NA_character_,
+        chr = as.character(genes_out$chr),
+        grid_index = genes_out$grid_index,
+        stringsAsFactors = FALSE)
+      attr(genes_out, "retained_genes") <- retained
+
       first <- vapply(idx, function(i) i[1], integer(1))
       genes_bin <- genes_out[first, , drop = FALSE]
       genes_bin$n_genes_annotated <- n_annot
@@ -625,6 +690,14 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   # cabe en genes.tsv, que tiene una fila por posicion del eje. Sin ella no se
   # puede saber despues por que un bin quedo fuera en una muestra concreta, y
   # esa trazabilidad es el punto de declarar la cobertura en vez de promediarla.
+  rg <- attr(genes_out, "retained_genes")
+  if (!is.null(rg)) {
+    if (is.na(rg$dataset_id[1])) rg$dataset_id <- dataset$id
+    write_tsv_tsf(rg, file.path(out_dir, "retained_genes.tsv"))
+    tsf_log("  wrote retained_genes.tsv (", nrow(rg), " gene(s) that survived ",
+            "this cohort's expression filter, with their real ids)")
+  }
+
   bc <- attr(genes_out, "bin_coverage")
   if (!is.null(bc)) {
     write_tsv_tsf(bc, file.path(out_dir, "bin_coverage.tsv"))
