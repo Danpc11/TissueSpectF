@@ -91,7 +91,12 @@ bic_of <- function(rss, n, n_components, penalty_factor = 1,
 #'   than a modelling choice; BIC normally stops first
 #' @return data.frame of components in the order they were extracted, with the
 #'   BIC drop each one bought and the variance it explains in the joint fit
+#' @param estimator list(estimator=, mt_nw=, mt_k=) o NULL para periodograma.
+#'   Explicito y no heredado del entorno: la eleccion tiene que ser la misma en
+#'   todas las etapas, y un `project` capturado por alcance lexico haria que
+#'   diverja sin aviso.
 clean_decompose <- function(y, terms, max_components = 20L, penalty_factor = 1,
+                            estimator = NULL,
                             min_bic_drop = 0, ebic_gamma = 1) {
   y <- as.numeric(y)
   y[!is.finite(y)] <- 0
@@ -108,7 +113,7 @@ clean_decompose <- function(y, terms, max_components = 20L, penalty_factor = 1,
   rows <- list()
 
   for (step in seq_len(max_components)) {
-    sp <- gls_spectrum(residual, terms)
+    sp <- tsf_spectrum(residual, terms, estimator)
     sp <- sp[!sp$k %in% selected, , drop = FALSE]
     if (!nrow(sp)) break
     k_new <- sp$k[which.max(sp$power)]
