@@ -66,6 +66,31 @@ def crest_mask(pos, crests, half_width):
     return d <= half_width
 
 
+def residualise_by_condition(X, cond):
+    """Quitar la media de cada gen DENTRO de cada condición.
+
+    Sin esto, una diferencia de medias entre condiciones crea correlación
+    aparente: si cien genes suben en F4, entre todas las muestras juntas
+    covarían --las de F4 altas, las demás bajas-- aunque dentro de F4 no
+    covaríen en absoluto. Eso es exactamente lo que un pico de expresión
+    diferencial produciría, y llamarlo módulo de coexpresión sería confundir
+    dos cosas distintas.
+
+    Residualizar deja sólo la covarianza INTRA-condición, que es la que define
+    un módulo. El costo: un módulo que existiera únicamente como diferencia
+    entre condiciones se vuelve invisible, y eso es correcto -- ese caso es
+    expresión diferencial y ya lo mide `differential`.
+    """
+    R = X.astype(float).copy()
+    for c in np.unique(cond):
+        sel = cond == c
+        if sel.sum() < 2:
+            R[:, sel] = np.nan
+            continue
+        R[:, sel] -= np.nanmean(R[:, sel], axis=1, keepdims=True)
+    return R
+
+
 def mean_abs_corr(X):
     """Mean |correlation| over gene pairs. Absolute value because a module can
     contain anti-correlated members -- a repressor and its target belong to the
@@ -198,9 +223,28 @@ def main():
           f"{pos.min():.1f}-{pos.max():.1f} Mb, {X.shape[1]} samples")
 
     rows = []
-    r = peak_module(pos, X, a.period_mb, a.phase_mb, a.half_width_mb,
+    # RESIDUALIZADO por condición cuando las etiquetas están. Sin residualizar,
+    # el resultado sobre todas las muestras juntas mezcla coexpresión con
+    # diferencias de medias entre condiciones.
+    Xr = X
+    if a.labels:
+        lab0 = pd.read_csv(a.labels, sep="\t")
+        cols0 = pd.read_csv(a.expr, sep="\t", index_col=0, nrows=0).columns
+        m0 = dict(zip(lab0[lab0.columns[0]], lab0[lab0.columns[-1]]))
+        cnd = np.array([m0.get(c, "NA") for c in cols0])
+        if len(set(cnd) - {"NA"}) >= 2:
+            Xr = residualise_by_condition(X, cnd)
+            keep = np.isfinite(Xr).all(axis=0)
+            Xr = Xr[:, keep]
+            print(f"residualizado por condición: {len(set(cnd) - {'NA'})} "
+                  f"condiciones, {Xr.shape[1]} muestras usables")
+        else:
+            print("una sola condición: no se residualiza")
+
+    r = peak_module(pos, Xr, a.period_mb, a.phase_mb, a.half_width_mb,
                     n_null=a.n_null)
-    r.update(period_mb=a.period_mb, phase_mb=a.phase_mb, scope="all_samples")
+    r.update(period_mb=a.period_mb, phase_mb=a.phase_mb,
+             scope="all_samples_residualised" if Xr is not X else "all_samples")
     rows.append(r)
     print(f"\nperiod {a.period_mb} Mb, phase {a.phase_mb} Mb:")
     print(f"  crest genes      {r['n']}")
@@ -233,6 +277,14 @@ def main():
     if a.out:
         pd.DataFrame(rows).to_csv(a.out, sep="\t", index=False)
         print(f"\nwrote {a.out}")
+
+    n_tests = len(rows)
+    if n_tests > 1:
+        print(f"\nMULTIPLICIDAD: {n_tests} pruebas en esta corrida (global mas "
+              f"una por condicion). Y a lo largo del proyecto se prueban varios "
+              f"picos, cromosomas y anchos de cresta: los p de arriba son SIN "
+              f"corregir, y hay que corregirlos por el total de combinaciones "
+              f"evaluadas, no por las de una sola invocacion.")
 
     print("\nWhat a small p does and does not mean: the crest set is more "
           "co-expressed than the same comb at another phase. It does not "
