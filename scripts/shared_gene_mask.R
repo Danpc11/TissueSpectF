@@ -52,13 +52,30 @@ flag <- function(n, d = NULL) {
 interim <- flag("--interim-dir", Sys.getenv("TSF_INTERIM_DIR", ""))
 datasets <- strsplit(flag("--datasets", ""), ",")[[1]]
 out <- flag("--out", "")
+# --mode se acepta pero solo "intersect" es coherente. Ver la nota de abajo.
 mode <- flag("--mode", "intersect")
 
 if (!nzchar(interim)) tsf_abort("Pasa --interim-dir <dir>.")
 if (!length(datasets)) tsf_abort("Pasa --datasets A,B,C.")
 if (!nzchar(out)) out <- file.path(interim, "shared_gene_mask.tsv")
-if (!mode %in% c("intersect", "union")) {
-  tsf_abort("--mode debe ser 'intersect' o 'union', no '", mode, "'")
+if (!identical(mode, "intersect")) {
+  # --mode union NO FUNCIONA, y recomendarlo era un error.
+  #
+  # La mascara solo puede QUITAR genes: en la segunda ingesta cada cohorte
+  # conserva los de la union que realmente tiene, asi que los conjuntos siguen
+  # siendo distintos y stage_reference() aborta igual al comparar interseccion
+  # contra union. La union no aporta nada que la cohorte no tuviera ya.
+  #
+  # Si la interseccion descarta demasiado, las salidas reales son otras: subir
+  # min_tpm o min_fraction para que el filtro por cohorte sea menos dependiente
+  # de la profundidad, ampliar el bin para que cada uno tenga mas genes
+  # anotados y sobreviva a perder algunos, o quitar la cohorte que mas
+  # discrepa. Ninguna se resuelve con la union.
+  tsf_abort("--mode '", mode, "' no esta soportado. Solo 'intersect' produce ",
+            "conjuntos identicos entre cohortes, que es lo que el eje bp ",
+            "necesita: la mascara solo puede quitar genes, asi que una union ",
+            "deja a cada cohorte con los que ya tenia y los conjuntos siguen ",
+            "difiriendo.")
 }
 
 sets <- list()
@@ -82,29 +99,32 @@ if (length(sets) < 2L) {
            "nada. El problema aparece al comparar cohortes.")
 }
 
-shared <- if (identical(mode, "intersect")) {
-  Reduce(intersect, sets)
-} else {
-  Reduce(union, sets)
-}
+shared <- Reduce(intersect, sets)
 un <- length(Reduce(union, sets))
 
 tsf_log("")
-tsf_log(mode, ": ", length(shared), " de ", un, " gen(es) en la union (",
+tsf_log("interseccion: ", length(shared), " de ", un, " gen(es) en la union (",
         round(100 * length(shared) / max(un, 1)), "%)")
-if (identical(mode, "intersect")) {
-  # Lo que cuesta, dicho: cada cohorte pierde los genes que otra no midio.
-  for (ds in names(sets)) {
-    lost <- length(setdiff(sets[[ds]], shared))
-    tsf_log("  ", ds, " pierde ", lost, " de ", length(sets[[ds]]),
-            " (", round(100 * lost / max(length(sets[[ds]]), 1)), "%)")
-  }
-  if (length(shared) < 0.5 * un) {
-    tsf_warn("La interseccion es menos de la mitad de la union. Con cohortes ",
-             "de plataformas muy distintas eso descarta mucha senal; ",
-             "considera --mode union, que conserva los genes y deja que ",
-             "bin_min_coverage decida por muestra cuales bins son usables.")
-  }
+# Lo que cuesta, dicho: cada cohorte pierde los genes que otra no midio.
+for (ds in names(sets)) {
+  lost <- length(setdiff(sets[[ds]], shared))
+  tsf_log("  ", ds, " pierde ", lost, " de ", length(sets[[ds]]),
+          " (", round(100 * lost / max(length(sets[[ds]]), 1)), "%)")
+}
+if (length(shared) < 0.5 * un) {
+  tsf_warn("La interseccion es menos de la mitad de la union: se descarta ",
+           "mucha senal. La union NO es la salida --la mascara solo puede ",
+           "quitar genes, asi que cada cohorte se quedaria con los que ya ",
+           "tenia y los conjuntos seguirian difiriendo. Las salidas reales: ",
+           "bajar min_tpm o min_fraction para que el filtro por cohorte ",
+           "dependa menos de la profundidad, ampliar --bin-size para que cada ",
+           "bin tenga mas genes anotados y sobreviva a perder algunos, o ",
+           "quitar la cohorte que mas discrepa.")
+}
+if (length(shared) == 0L) {
+  tsf_abort("La interseccion esta vacia: ninguna posicion la miden todas las ",
+            "cohortes. Con eje bp no hay malla comun posible; revisa los ",
+            "filtros de expresion y la compatibilidad de plataformas.")
 }
 
 ref <- read_tsv_tsf(file.path(interim, datasets[1], "retained_genes.tsv"))
