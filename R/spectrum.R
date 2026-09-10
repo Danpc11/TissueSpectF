@@ -161,7 +161,10 @@ condition_signals <- function(dataset, cond) {
 }
 
 #' Spectra of every signal of one condition, over every usable chromosome.
-compute_condition_spectra <- function(dataset, cond, chrom_idx) {
+#' @param estimator list(estimator=, mt_nw=, mt_k=) o NULL. Explicito, para que
+#'   la eleccion no dependa de que `project` este por casualidad en el alcance.
+compute_condition_spectra <- function(dataset, cond, chrom_idx,
+                                      estimator = NULL) {
   sig <- condition_signals(dataset, cond)
   if (is.null(sig)) {
     tsf_warn("Condition ", cond, ": fewer than 2 samples, skipped")
@@ -187,7 +190,7 @@ compute_condition_spectra <- function(dataset, cond, chrom_idx) {
                  "dropping unmeasured genes, skipped")
         next
       }
-      res <- gls_spectrum(fit$y, fit$terms)
+      res <- tsf_spectrum(fit$y, fit$terms, estimator)
       if (is.null(res) || !nrow(res)) next
       res$chr <- chr_now
       res$sample <- nm
