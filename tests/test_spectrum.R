@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/grid.R"); source("R/period_floor.R"); source("R/contrast.R"); source("R/differential.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
+source("R/grid.R"); source("R/multitaper.R"); source("R/pdm.R"); source("R/background.R"); source("R/period_floor.R"); source("R/contrast.R"); source("R/differential.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
 source("R/condition_test.R"); source("R/clean.R"); source("R/fingerprint.R"); source("R/reference.R"); source("R/consensus.R"); source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
@@ -1323,6 +1323,283 @@ check("a bin too small to be meaningful is refused", {
   inherits(tryCatch(build_reference_grid(a, "1", "^protein-coding$",
                                          axis = "bp", bin_size = 100),
                     error = function(e) e), "error") })
+
+# --- multitaper ---------------------------------------------------------------
+#
+# El periodograma es inconsistente: su varianza no cae al acumular datos, y
+# sobre ruido puro su coeficiente de variacion es ~1. Ese piso de ruido es lo
+# que impide que un pico destaque contra un nulo de permutacion.
+
+check("los tapers DPSS son ortonormales en la rejilla completa", {
+  V <- dpss_tapers(256L, NW = 3, K = 5)
+  G <- crossprod(V)
+  max(abs(G - diag(5))) < 1e-8 })
+
+check("el multitaper reduce el cv sobre ruido puro", {
+  # La prueba tiene que hacerse en RUIDO, no en la frecuencia verdadera: donde
+  # la senal domina el periodograma ya es estable y no hay varianza que
+  # reducir. Medirlo alli fue el error que oculto el efecto.
+  set.seed(11); N <- 400L
+  t <- sort(sample.int(N, round(N * 0.26))); tm <- gls_prepare(t, N)
+  S1 <- replicate(25, gls_spectrum(rnorm(length(t)), tm)$power_normalised)
+  SM <- replicate(25, gls_multitaper(rnorm(length(t)), tm, NW = 3)$power_normalised)
+  cv <- function(M) stats::median(apply(M, 1, stats::sd) / rowMeans(M), na.rm = TRUE)
+  cv(S1) / cv(SM) > 1.5 })
+
+check("los tapers se cachean", {
+  # Sin cache la descomposicion propia N x N se repite en cada permutacion:
+  # 7.35 s con N = 2000, y maxT pasaria de 50 minutos a 118 dias. Medido.
+  dpss_cache_clear()
+  t1 <- system.time(dpss_tapers(512L, NW = 3, K = 5))[["elapsed"]]
+  t2 <- system.time(dpss_tapers(512L, NW = 3, K = 5))[["elapsed"]]
+  identical(dpss_tapers(512L, NW = 3, K = 5), dpss_tapers(512L, NW = 3, K = 5)) &&
+    (t1 <= 0.01 || t2 < t1 / 2) })
+
+check("el cache distingue parametros distintos", {
+  # Devolver los tapers de otro NW seria silencioso y catastrofico.
+  dpss_cache_clear()
+  a <- dpss_tapers(256L, NW = 3, K = 5)
+  b <- dpss_tapers(256L, NW = 4, K = 5)
+  c <- dpss_tapers(128L, NW = 3, K = 5)
+  !isTRUE(all.equal(a, b)) && nrow(c) == 128L && nrow(a) == 256L })
+
+check("devuelve las mismas frecuencias que el periodograma", {
+  set.seed(12); N <- 300L
+  t <- sort(sample.int(N, 100L)); tm <- gls_prepare(t, N); y <- rnorm(100)
+  identical(gls_spectrum(y, tm)$k, gls_multitaper(y, tm)$k) })
+
+check("reporta su propia incertidumbre", {
+  # power_sd es la dispersion entre tapers: una frecuencia cuya potencia
+  # depende de que taper se uso no es un pico. Un periodograma no puede
+  # reportar esto en absoluto.
+  set.seed(13); N <- 300L
+  t <- sort(sample.int(N, 100L)); tm <- gls_prepare(t, N)
+  s <- gls_multitaper(rnorm(100), tm, NW = 3)
+  "power_sd" %in% names(s) && all(is.finite(s$power_sd)) && all(s$power_sd >= 0) })
+
+check("el despacho pasa por un solo punto y por defecto no cambia nada", {
+  set.seed(14); N <- 300L
+  t <- sort(sample.int(N, 100L)); tm <- gls_prepare(t, N); y <- rnorm(100)
+  identical(tsf_spectrum(y, tm)$power, gls_spectrum(y, tm)$power) &&
+    identical(tsf_spectrum(y, tm, list(estimator = "periodogram"))$power,
+              gls_spectrum(y, tm)$power) })
+
+check("un estimador desconocido aborta en vez de caer al default", {
+  set.seed(15); N <- 300L
+  t <- sort(sample.int(N, 100L)); tm <- gls_prepare(t, N)
+  e <- tryCatch(tsf_spectrum(rnorm(100), tm, list(estimator = "welch")),
+                error = function(e) e)
+  inherits(e, "error") && grepl("multitaper", conditionMessage(e), fixed = TRUE) })
+
+check("un taper sin soporte en las posiciones observadas no domina", {
+  # Restringidos al subconjunto observado los DPSS pierden ortogonalidad, asi
+  # que se pesan por su concentracion ALLI y no en la rejilla completa.
+  set.seed(16); N <- 400L
+  t <- sort(sample.int(N, 60L)); tm <- gls_prepare(t, N)
+  s <- gls_multitaper(rnorm(60), tm, NW = 3, adaptive = TRUE)
+  nrow(s) == length(tm$k) && all(is.finite(s$power)) })
+
+# --- fondo 1/f -----------------------------------------------------------------
+#
+# La g de Fisher supone ruido blanco gaussiano en rejilla completa. Sobre ruido
+# 1/f al 26% de cobertura su tasa de falsos positivos medida es 1.000: declara
+# periodicidad en TODAS las replicas de puro ruido.
+
+red_noise <- function(n) { x <- cumsum(stats::rnorm(n)); x - mean(x) }
+
+check("la g de Fisher falla sobre ruido 1/f, y queda como comparador", {
+  # Fijado como test para que la afirmacion sea verificable y no un argumento:
+  # si alguna vez pasa, el comparador dejo de mostrar lo que muestra.
+  set.seed(31); N <- 256L
+  t <- sort(sample.int(N, round(N * 0.26))); tm <- gls_prepare(t, N)
+  fp <- mean(vapply(seq_len(60), function(i) {
+    pw <- gls_spectrum(red_noise(N)[t], tm)$power
+    g <- max(pw) / sum(pw); m <- length(pw)
+    j <- seq_len(floor(1 / g))
+    p <- sum((-1)^(j - 1) * exp(lchoose(m, j) + (m - 1) * log(pmax(1 - j * g, 0))))
+    min(max(p, 0), 1) <= 0.05
+  }, logical(1)))
+  fp > 0.5 })
+
+check("el fondo controla los falsos positivos sobre ruido 1/f", {
+  # UNA frecuencia fija, no el maximo. `any(p <= 0.05)` sobre las m
+  # frecuencias es una tasa FAMILIAR: con p perfectamente uniforme y m = 127
+  # da 1.0 por construccion, y medirlo asi hacia fallar un p bien calibrado.
+  # Ese fue el error del test, no del codigo.
+  set.seed(32); N <- 256L
+  t <- sort(sample.int(N, round(N * 0.26))); tm <- gls_prepare(t, N)
+  ps <- vapply(seq_len(200), function(i) {
+    sp <- gls_spectrum(red_noise(N)[t], tm)
+    sp$chr <- "1"; sp$sample <- "S1"
+    b <- peaks_over_background(sp)
+    k <- which.min(abs(b$period - 32))
+    as.numeric(b$p_background[k])
+  }, numeric(1))
+  fp <- mean(ps <= 0.05, na.rm = TRUE)
+  # Alrededor de 0.05, con margen para 200 replicas.
+  fp < 0.12 })
+
+check("y aun asi detecta una senal real", {
+  # Sin esto el test anterior se pasa con un p que siempre vale 1. La version
+  # inicial aplicaba BH sobre un p que ya era familiar por rango, y con piso
+  # 1/(m+1) eso daba q ~ 1 para cualquier senal: 0% de potencia con amplitud 8.
+  set.seed(33); N <- 256L
+  t <- sort(sample.int(N, round(N * 0.26))); tm <- gls_prepare(t, N)
+  hit <- mean(vapply(seq_len(60), function(i) {
+    y <- red_noise(N) + 8 * cos(2 * pi * seq_len(N) / 32)
+    sp <- gls_spectrum(y[t], tm)
+    sp$chr <- "1"; sp$sample <- "S1"
+    b <- peaks_over_background(sp)
+    k <- which.min(abs(b$period - 32))
+    isTRUE(b$p_background[k] <= 0.05)
+  }, logical(1)))
+  hit > 0.5 })
+
+check("p_background ya es familiar y no se vuelve a corregir", {
+  # El p se calcula por rango entre las m frecuencias del cromosoma, asi que
+  # corregirlo con BH lo multiplica por m y cancela su propio piso.
+  src <- paste(readLines("R/background.R", warn = FALSE), collapse = " ")
+  grepl("sp$q_background <- sp$p_background", src, fixed = TRUE) &&
+    !grepl('p.adjust(sp$p_background', src, fixed = TRUE) })
+
+check("el fondo es robusto: un pico no eleva su propio fondo", {
+  set.seed(34)
+  per <- 512 / seq_len(255)
+  pw <- 1 / per          # fondo 1/f limpio
+  pw[100] <- pw[100] * 50
+  bg <- spectral_background(per, pw)
+  # el fondo en el pico no debe seguirlo: a lo sumo un poco por encima de sus
+  # vecinos, no 50 veces
+  bg[100] < 3 * stats::median(bg[95:105]) })
+
+# --- marcar picos sobre el fondo -----------------------------------------------
+
+check("un umbral por frecuencia es circular y se rechaza", {
+  # p_background ES el rango del exceso, asi que `p <= alpha` y
+  # `exceso >= q95(todos los excesos)` seleccionan el MISMO conjunto: el alpha
+  # superior, con senal o sin ella. Medido: 25 de 511 en ruido puro y 25 de
+  # 511 con senal de amplitud 6.
+  sp <- data.frame(chr = "1", period = 100 / seq_len(50),
+                   power = runif(50), excess = runif(50, 1, 20),
+                   p_background = runif(50))
+  e <- tryCatch(mark_over_background(sp, excess_null = runif(5000, 1, 10)),
+                error = function(e) e)
+  inherits(e, "error") && grepl("LISTA", conditionMessage(e), fixed = TRUE) })
+
+check("sin nulo y sin umbral explicito aborta", {
+  sp <- data.frame(chr = "1", period = 100 / seq_len(50),
+                   excess = runif(50, 1, 20), p_background = runif(50))
+  inherits(tryCatch(mark_over_background(sp), error = function(e) e), "error") })
+
+check("el umbral familiar controla la tasa y detecta senal", {
+  # Umbral = q95 del MAXIMO por realizacion, la logica de maxT. Con el
+  # cuantil por frecuencia era 5.2 y con el familiar 16.8: esa diferencia es
+  # la correccion por multiplicidad que el rango no puede dar.
+  set.seed(41); N <- 512L
+  t <- sort(sample.int(N, round(N * 0.26))); tm <- gls_prepare(t, N)
+  rn <- function() { x <- cumsum(stats::rnorm(N)); x - mean(x) }
+  en <- lapply(seq_len(30), function(i) {
+    sp <- gls_spectrum(rn()[t], tm); sp$chr <- "1"
+    peaks_over_background(sp)$excess
+  })
+  run <- function(amp, R = 30) mean(vapply(seq_len(R), function(i) {
+    y <- rn() + amp * cos(2 * pi * seq_len(N) / 32)
+    sp <- gls_spectrum(y[t], tm); sp$chr <- "1"
+    b <- suppressMessages(
+      mark_over_background(peaks_over_background(sp), excess_null = en))
+    any(b$over_background, na.rm = TRUE)
+  }, logical(1)))
+  run(0) < 0.25 && run(12) > 0.6 })
+
+check("nada se elimina, solo se marca", {
+  # Saber que una escala NO destaca es tan informativo como lo contrario, y
+  # borrarla haria imposible reconstruir el espectro completo.
+  set.seed(42); N <- 256L
+  t <- sort(sample.int(N, 80L)); tm <- gls_prepare(t, N)
+  sp <- gls_spectrum(stats::rnorm(80), tm); sp$chr <- "1"
+  b <- peaks_over_background(sp)
+  m <- suppressMessages(mark_over_background(b, min_excess = 5))
+  nrow(m) == nrow(b) && "over_background" %in% names(m) &&
+    is.logical(m$over_background) })
+
+# --- PDM y GLS ponderado -------------------------------------------------------
+
+check("theta del PDM es 0 en el periodo verdadero, sin ruido", {
+  # La implementacion es correcta y esto lo fija: onda cuadrada, cobertura
+  # completa, sin ruido -> theta exactamente 0 en el periodo real.
+  N <- 512L
+  tm <- gls_prepare(seq_len(N), N)
+  y <- 2 * (((seq_len(N)) %% 64) < 32) - 1
+  p <- pdm_spectrum(y, tm)
+  k <- which.min(abs(p$period - 64))
+  p$theta[k] < 1e-6 && abs(p$period[which.min(p$theta)] - 64) < 1 })
+
+check("el PDM NO le gana al GLS, y eso es el resultado", {
+  # Medido en cuatro regimenes -- onda cuadrada y sinusoide, ruido gaussiano y
+  # de colas pesadas -- y el GLS gana en los cuatro: con onda cuadrada y sd
+  # 2.5, 97% contra 52%. El GLS es el estimador de maxima verosimilitud bajo
+  # ruido gaussiano, y agrupar en 10 bins de fase tira la informacion de donde
+  # exactamente cae cada punto. Con una sola realizacion por muestra y
+  # cobertura del 26-40%, ese precio supera la ganancia de no suponer forma.
+  #
+  # Fijado como test para que la afirmacion sea verificable: si algun dia el
+  # PDM gana, algo cambio y hay que volver a mirarlo.
+  set.seed(51); N <- 512L
+  t <- sort(sample.int(N, round(N * 0.4))); tm <- gls_prepare(t, N)
+  sq <- function(P) 2 * (((seq_len(N)) %% P) < P / 2) - 1
+  R <- 25
+  wins <- vapply(seq_len(R), function(i) {
+    y <- sq(64) + stats::rnorm(N, 0, 2.5)
+    g <- gls_spectrum(y[t], tm)
+    p <- pdm_spectrum(y[t], tm)
+    k <- which.min(abs(g$period - 64))
+    ok <- is.finite(p$theta)
+    c(rank(-g$power)[k] == 1,
+      rank(-p$pdm_strength[ok])[which(ok) == k] == 1)
+  }, logical(2))
+  mean(wins[1, ]) > mean(wins[2, ]) })
+
+check("los pesos suman n, asi que la escala de la potencia no cambia", {
+  set.seed(52); N <- 256L
+  t <- sort(sample.int(N, 100L)); tm <- gls_prepare(t, N)
+  y <- cos(2 * pi * t / 32)
+  a <- gls_weighted(y, tm, rep(1, 100))
+  b <- gls_spectrum(y, tm)
+  # con pesos uniformes debe coincidir con el GLS sin pesos
+  max(abs(a$power - b$power)) < 1e-8 })
+
+check("el GLS ponderado gana con ruido heterocedastico", {
+  # 76% contra 62% con la senal en el limite de deteccion. Con senal fuerte
+  # los dos aciertan y el peso no cambia nada, asi que la prueba tiene que
+  # hacerse en el limite -- medirlo con senal fuerte fue lo que oculto el
+  # efecto en el primer intento.
+  set.seed(53); N <- 512L
+  t <- sort(sample.int(N, round(N * 0.4))); tm <- gls_prepare(t, N)
+  n <- length(t)
+  cnt <- round(exp(stats::rnorm(n, 4, 2)))
+  w <- counts_to_weights(cnt, unit = "log")
+  R <- 60
+  wins <- vapply(seq_len(R), function(i) {
+    y <- 0.15 * cos(2 * pi * t / 64) + stats::rnorm(n, 0, 1 / sqrt(w))
+    g <- gls_spectrum(y, tm); gw <- gls_weighted(y, tm, w)
+    k <- which.min(abs(g$period - 64))
+    c(rank(-g$power)[k] == 1, rank(-gw$power)[k] == 1)
+  }, logical(2))
+  mean(wins[2, ]) >= mean(wins[1, ]) })
+
+check("los pesos de conteos bajan con la sobredispersion", {
+  # Bajo Poisson puro el peso en escala log seria mu; con binomial negativa el
+  # termino mu^2/theta domina en los genes muy expresados, asi que ponderar
+  # por mu puro les daria demasiada importancia.
+  w <- counts_to_weights(c(1, 10, 100, 1000, 10000), unit = "log", theta = 10)
+  all(diff(w) > 0) && w[5] / w[4] < 2 })
+
+check("gls_weighted rechaza pesos invalidos", {
+  set.seed(54); N <- 128L
+  t <- sort(sample.int(N, 50L)); tm <- gls_prepare(t, N); y <- stats::rnorm(50)
+  bad <- function(w) inherits(tryCatch(gls_weighted(y, tm, w),
+                                       error = function(e) e), "error")
+  bad(rep(1, 10)) && bad(rep(0, 50)) && bad(c(-1, rep(1, 49))) })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
