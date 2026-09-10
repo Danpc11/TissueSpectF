@@ -856,6 +856,42 @@ fixes that, and only then can chromosomes be averaged into one curve.
 `k_max` does not apply to the period representations — it caps cycles per
 chromosome, which would empty every short-period bin on the long chromosomes.
 
+### The base-pair axis, bin by bin
+
+`--grid-axis bp --bin-size 100000 --bin-aggregate mean --bin-min-coverage 0.5`
+
+`N` is the **chromosome length** in bins, from `GRCH38_CHROM_LENGTHS`, not the
+last annotated gene: ending the axis at the last gene shifts frequencies,
+periods and phase, and makes two gene universes give different `N` for the same
+chromosome. A chromosome with no declared length falls back to the last gene
+with a warning.
+
+`--bin-min-coverage` is the fraction of a bin's **annotated** genes a sample
+must measure for that bin to count as measured **in that sample**. Without it
+the same bin means different things across cohorts: the position is shared but
+the value is not, because one cohort may measure three of its genes and another
+one, and that difference tracks platform and depth rather than biology. A bin
+below the threshold is `NA` for that sample only, and `gls_observed()` drops it
+from that signal's fit. `bin_coverage.tsv` records every (bin, sample) cell with
+its measured and annotated counts — without it there is no way to know later
+why a bin was excluded in one sample.
+
+It is a **pre-specification**: fixed before any result is seen.
+
+A query is aggregated the same way before scoring, using the parameters stored
+in the reference rather than the current config — a reference built with one
+set and a query aggregated with another would not be comparable.
+
+### `--estimator multitaper`
+
+The periodogram's variance does not fall as data accumulate: measured cv on
+pure noise at 26% coverage is 0.943. Multitaper drops it to 0.448, a 2.11x
+reduction near the ceiling of sqrt(5). Costs 9x in time (maxT goes from 50
+minutes to about 7.5 hours) and merges components closer than 2*NW/N.
+
+The default is still `periodogram`: of the nine validations that would justify
+switching, three exist.
+
 Run the sweep before trusting any single number:
 
 ```bash
