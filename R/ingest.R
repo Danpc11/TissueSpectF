@@ -4,6 +4,8 @@
 #
 #   samples.tsv      sample_id, dataset_id, condition, fibrosis_stage, cohort, ...
 #   genes.tsv        gene_id, gene_name, chr, start, gene_order
+#   bin_coverage.tsv  solo con --grid-axis bp: cobertura por (bin, muestra),
+#                     con los genes medidos y anotados de cada celda
 #   counts.tsv       gene_id + one integer column per sample
 #   expression.tsv   gene_id + one asinh(TPM) column per sample
 #   label_audit.tsv  every input sample, resolved or not, with the rule that fired
@@ -499,20 +501,73 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
       if (!how %in% c("mean", "sum")) {
         tsf_abort("bin_aggregate must be 'mean' or 'sum', got '", how, "'")
       }
+      min_cov <- project$bin_min_coverage %||% 0.5
+      if (!is.finite(min_cov) || min_cov < 0 || min_cov > 1) {
+        tsf_abort("bin_min_coverage must be in [0, 1], got ", min_cov)
+      }
+
       key <- paste(genes_out$chr, genes_out$grid_index, sep = "|")
-      fun <- if (identical(how, "sum")) colSums else colMeans
       idx <- split(seq_len(nrow(expr_mat)), key)
-      # na.rm is deliberately FALSE: a bin whose only gene is unmeasured stays
-      # NA and gls_observed() drops the position. Averaging over the measured
-      # genes of a bin would turn a partly-unobserved region into a confident
-      # value.
-      agg <- t(vapply(idx, function(i)
-        fun(expr_mat[i, , drop = FALSE]), numeric(ncol(expr_mat))))
-      colnames(agg) <- colnames(expr_mat)
+
+      # GENES ANOTADOS POR BIN, del universo completo y ANTES del filtro de
+      # expresion.
+      #
+      # Sin esto el mismo bin no significa lo mismo entre cohortes. La posicion
+      # es comun --chr1:10.0-10.1 Mb es el mismo intervalo en todas-- pero su
+      # VALOR no: si el bin tiene tres genes anotados y una cohorte mide los
+      # tres mientras otra mide uno, los dos numeros no son comparables, y la
+      # diferencia sigue a la plataforma, la profundidad y la deteccion, no a
+      # la biologia.
+      #
+      # `n_genes_in_bin` contaba solo los genes que pasaron el filtro de
+      # expresion, asi que la informacion para detectarlo se perdia antes de
+      # llegar aqui.
+      annot_key <- paste(grid$chr, grid$grid_index, sep = "|")
+      n_annot_all <- table(annot_key)
+
+      # COBERTURA POR BIN Y POR MUESTRA, no por bin.
+      #
+      # Cuantos de los genes anotados del bin tienen un valor usable EN ESA
+      # MUESTRA. Es una matriz, no un vector: una muestra de baja profundidad
+      # mide menos genes del mismo bin, y esa es justamente la heterogeneidad
+      # que hay que declarar en vez de promediar.
+      n_annot <- as.integer(n_annot_all[names(idx)])
+      n_annot[is.na(n_annot)] <- vapply(idx, length, integer(1))[is.na(n_annot)]
+
+      ns <- ncol(expr_mat)
+      agg <- matrix(NA_real_, nrow = length(idx), ncol = ns,
+                    dimnames = list(names(idx), colnames(expr_mat)))
+      meas <- matrix(0L, nrow = length(idx), ncol = ns,
+                     dimnames = dimnames(agg))
+      for (i in seq_along(idx)) {
+        blk <- expr_mat[idx[[i]], , drop = FALSE]
+        okm <- is.finite(blk)
+        meas[i, ] <- colSums(okm)
+        # na.rm = TRUE aqui es correcto y era FALSE antes: con la cobertura por
+        # bin declarada explicitamente, promediar los genes medidos ya no
+        # esconde nada -- el bin se descarta abajo si midio demasiados pocos.
+        v <- if (identical(how, "sum")) colSums(blk, na.rm = TRUE)
+             else colMeans(blk, na.rm = TRUE)
+        v[meas[i, ] == 0L] <- NA_real_
+        agg[i, ] <- v
+      }
+
+      bin_cov <- sweep(meas, 1L, pmax(n_annot, 1L), "/")
+
+      # UN BIN CON POCA COBERTURA EN UNA MUESTRA SE DECLARA NO MEDIDO EN ESA
+      # MUESTRA, no en todas. Queda NA, y gls_observed() lo saca del ajuste de
+      # esa senal y de su cobertura reportada -- la maquinaria de T_c(y) ya
+      # existe justo para esto.
+      drop <- bin_cov < min_cov
+      n_drop <- sum(drop, na.rm = TRUE)
+      agg[drop] <- NA_real_
 
       first <- vapply(idx, function(i) i[1], integer(1))
       genes_bin <- genes_out[first, , drop = FALSE]
-      genes_bin$n_genes_in_bin <- vapply(idx, length, integer(1))
+      genes_bin$n_genes_annotated <- n_annot
+      genes_bin$n_genes_expressed <- vapply(idx, length, integer(1))
+      genes_bin$bin_coverage_median <- apply(bin_cov, 1L, stats::median,
+                                             na.rm = TRUE)
       # The bin, not one of its genes, is the axis position now. Keeping a
       # single gene_id would let a downstream table claim the bin IS that gene.
       genes_bin$gene_id <- paste0("bin_", genes_bin$chr, "_", genes_bin$grid_index)
@@ -525,10 +580,31 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
       expr_mat <- agg[ord, , drop = FALSE]
       rownames(expr_mat) <- genes_out$gene_id
 
-      tsf_log("Binned ", sum(genes_out$n_genes_in_bin), " gene(s) into ",
-              nrow(genes_out), " occupied bin(s) by ", how,
-              " (median ", stats::median(genes_out$n_genes_in_bin),
-              " gene(s) per bin, max ", max(genes_out$n_genes_in_bin), ")")
+      tsf_log("Binned ", sum(genes_out$n_genes_expressed), " expressed gene(s) ",
+              "into ", nrow(genes_out), " occupied bin(s) by ", how,
+              " (median ", stats::median(genes_out$n_genes_annotated),
+              " annotated gene(s) per bin, max ",
+              max(genes_out$n_genes_annotated), ")")
+      tsf_log("  bin coverage = measured/annotated per (bin, sample): median ",
+              round(100 * stats::median(bin_cov, na.rm = TRUE), 1), "%, ",
+              "range ", round(100 * min(bin_cov, na.rm = TRUE), 1), "-",
+              round(100 * max(bin_cov, na.rm = TRUE), 1), "%")
+      tsf_log("  ", n_drop, " of ", length(bin_cov), " (bin, sample) cell(s) ",
+              "below bin_min_coverage = ", min_cov,
+              " and set unmeasured; a bin can be measured in one sample and ",
+              "not in another, which is the heterogeneity being declared ",
+              "instead of averaged over")
+
+      # La matriz completa de cobertura por bin y muestra, para auditoria: sin
+      # ella no se puede saber despues por que un bin quedo fuera en una
+      # muestra concreta.
+      bin_cov_out <- data.frame(bin_id = rep(genes_out$gene_id, ns),
+                                sample = rep(colnames(bin_cov), each = nrow(bin_cov)),
+                                coverage = as.numeric(bin_cov[ord, , drop = FALSE]),
+                                measured = as.integer(meas[ord, , drop = FALSE]),
+                                annotated = rep(genes_out$n_genes_annotated, ns),
+                                stringsAsFactors = FALSE)
+      attr(genes_out, "bin_coverage") <- bin_cov_out
     }
   }
 
@@ -564,6 +640,16 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
 
   write_tsv_tsf(samples, file.path(out_dir, "samples.tsv"))
   write_tsv_tsf(genes_out, file.path(out_dir, "genes.tsv"))
+
+  # La cobertura por (bin, muestra) va a su propio archivo: es una matriz y no
+  # cabe en genes.tsv, que tiene una fila por posicion del eje. Sin ella no se
+  # puede saber despues por que un bin quedo fuera en una muestra concreta, y
+  # esa trazabilidad es el punto de declarar la cobertura en vez de promediarla.
+  bc <- attr(genes_out, "bin_coverage")
+  if (!is.null(bc)) {
+    write_tsv_tsf(bc, file.path(out_dir, "bin_coverage.tsv"))
+    tsf_log("  wrote bin_coverage.tsv (", nrow(bc), " bin x sample cells)")
+  }
   write_tsv_tsf(data.frame(gene_id = rownames(count_mat), count_mat[, sample_cols, drop = FALSE],
                             check.names = FALSE),
                  file.path(out_dir, "counts.tsv"))
