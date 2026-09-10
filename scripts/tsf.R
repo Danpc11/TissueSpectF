@@ -74,6 +74,10 @@ Parameters (override config/project.R):
                         gene density varies with the chromatin state itself
   --bin-size <n>        bin width in bp for --grid-axis bp (default 100000)
   --bin-aggregate <s>   mean | sum   how genes in one bin combine
+  --gene-mask <file>    genes ALL cohorts must use (a gene_id column). Without
+                        it the expression filter is per-cohort and the same bin
+                        is built from different genes in each. Generate with
+                        scripts/shared_gene_mask.R
   --bin-min-coverage <x>  fraction of a bin's ANNOTATED genes a sample must
                         measure for the bin to count as measured IN THAT
                         SAMPLE (default 0.5). Without it the same bin means
@@ -163,6 +167,7 @@ OPTION_ALIASES <- c(
   binsize = "bin_size", bin_size = "bin_size",
   binaggregate = "bin_aggregate", bin_aggregate = "bin_aggregate",
   binmincoverage = "bin_min_coverage", bin_min_coverage = "bin_min_coverage",
+  genemask = "gene_mask_file", gene_mask = "gene_mask_file",
   estimator = "estimator", mtnw = "mt_nw", mt_nw = "mt_nw",
   mtk = "mt_k", mt_k = "mt_k",
   maxtb = "maxt_b", maxt_b = "maxt_b", b = "maxt_b",
@@ -269,6 +274,7 @@ apply_cli_overrides <- function(project, opt) {
   set("bin_size", opt$bin_size, as.numeric)
   set("bin_aggregate", opt$bin_aggregate)
   set("bin_min_coverage", opt$bin_min_coverage, as.numeric)
+  set("gene_mask_file", opt$gene_mask_file)
   set("estimator", opt$estimator)
   set("mt_nw", opt$mt_nw, as.numeric)
   set("mt_k", opt$mt_k, as.integer)
