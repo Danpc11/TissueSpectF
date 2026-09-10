@@ -60,7 +60,7 @@ import numpy as np
 import pandas as pd
 
 
-def coupling(M, n_null=2000, seed=42):
+def coupling(M, n_null=2000, seed=42, return_null=False):
     """Acoplamiento medio entre columnas de M (muestras x cromosomas)."""
     ok = np.isfinite(M).all(axis=1)
     M = M[ok]
@@ -125,9 +125,15 @@ def coupling(M, n_null=2000, seed=42):
     null = np.array([v for v in null if np.isfinite(v)])
     if not len(null):
         return {"n": M.shape[0], "obs": obs, "null": np.nan, "p": np.nan}
-    return {"n": M.shape[0], "obs": obs, "null": float(np.median(null)),
-            "null_q95": float(np.quantile(null, 0.95)),
-            "p": (1 + int((null >= obs).sum())) / (len(null) + 1)}
+    out = {"n": M.shape[0], "obs": obs, "null": float(np.median(null)),
+           "null_q95": float(np.quantile(null, 0.95)),
+           "p": (1 + int((null >= obs).sum())) / (len(null) + 1)}
+    # Los sorteos se devuelven para el maxT ENTRE BANDAS: con ~20 bandas
+    # probadas, reportar cualquiera con p <= 0.05 tiene una tasa familiar muy
+    # por encima de 0.05.
+    if return_null:
+        out["null_draws"] = null
+    return out
 
 
 def self_test():
@@ -248,6 +254,10 @@ def main():
     q["b"] = np.clip(np.digitize(q.period_mb, br) - 1, 0, len(mid) - 1)
 
     rows = []
+    # Los estadisticos nulos de cada banda se guardan para el maxT de abajo:
+    # probar ~20 bandas y reportar cualquiera con p <= 0.05 da una tasa
+    # familiar muy por encima de 0.05, asi que el p por banda no basta.
+    null_by_band = {}
     print(f"\n{'período (Mb)':>13} {'chr':>4} {'muestras':>9} "
           f"{'|r| obs':>8} {'|r| nulo':>9} {'p':>8}")
     for b, g in q.groupby("b"):
@@ -260,12 +270,58 @@ def main():
         m = m.dropna(axis=1, how="all").dropna()
         if m.shape[1] < 3 or m.shape[0] < 8:
             continue
-        r = coupling(m.to_numpy(), n_null=a.n_null, seed=42 + int(b))
+        r = coupling(m.to_numpy(), n_null=a.n_null, seed=42 + int(b),
+                     return_null=True)
+        null_by_band[int(b)] = r.pop("null_draws")
         r.update(period_mb=round(float(mid[b]), 2), n_chr=m.shape[1])
         rows.append(r)
         star = " *" if (np.isfinite(r["p"]) and r["p"] <= 0.05) else ""
         print(f"{mid[b]:13.2f} {m.shape[1]:4d} {r['n']:9d} "
               f"{r['obs']:8.3f} {r['null']:9.3f} {r['p']:8.4f}{star}")
+
+    # --- multiplicidad entre bandas -----------------------------------------
+    if rows:
+        df = pd.DataFrame(rows)
+        ok = df.p.notna()
+        if ok.any():
+            # BH entre bandas. Necesario y no suficiente: BH controla la FDR
+            # bajo dependencia limitada, y las bandas vecinas comparten
+            # frecuencias, asi que estan correlacionadas.
+            pv = df.loc[ok, "p"].to_numpy()
+            order = np.argsort(pv)
+            n = len(pv)
+            q = np.empty(n)
+            run = 1.0
+            for i in range(n - 1, -1, -1):
+                run = min(run, pv[order[i]] * n / (i + 1))
+                q[order[i]] = run
+            df.loc[ok, "q_bh"] = q
+
+            # maxT entre bandas: por cada sorteo se toma el MAXIMO estadistico
+            # sobre las bandas, y el observado de cada banda se compara contra
+            # esa distribucion. Es robusto a la correlacion entre bandas, que
+            # es exactamente lo que BH no maneja bien aqui.
+            bands = [b for b in null_by_band if len(null_by_band[b])]
+            if len(bands) >= 2:
+                L = min(len(null_by_band[b]) for b in bands)
+                M = np.column_stack([null_by_band[b][:L] for b in bands])
+                gmax = M.max(axis=1)
+                df["p_maxt"] = np.nan
+                for i, b in enumerate(df.mb_band.to_numpy()):
+                    if int(b) not in null_by_band:
+                        continue
+                    o = df.obs.to_numpy()[i]
+                    if np.isfinite(o):
+                        df.iat[i, df.columns.get_loc("p_maxt")] = (
+                            1 + int((gmax >= o).sum())) / (len(gmax) + 1)
+                print(f"\nmaxT entre {len(bands)} bandas, {L} sorteos:")
+                sig = df[df.p_maxt <= 0.05]
+                if len(sig):
+                    for _, r in sig.iterrows():
+                        print(f"  {r.period_mb:8.2f} Mb  p_maxt = {r.p_maxt:.4f}")
+                else:
+                    print("  ninguna banda pasa el maxT entre bandas")
+        rows = df.to_dict("records")
 
     if rows and a.out:
         pd.DataFrame(rows).to_csv(a.out, sep="\t", index=False)
