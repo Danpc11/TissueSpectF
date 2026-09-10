@@ -311,22 +311,26 @@ query_grid_index <- function(grid, present_ids, min_observed = 8L,
   }
   if (!length(chrom_idx)) return(NULL)
   list(chrom_idx = chrom_idx, genes = g, key = key[observed],
-       # Cobertura contra la SUMA DE LOS N, no contra las filas de la malla.
+       # DOS COBERTURAS, y cada una responde una pregunta distinta.
        #
-       # Con eje bp la malla de bins solo contiene los bins OCUPADOS por algun
-       # gen, asi que nrow(grid) es mucho menor que sum(N) y la cobertura salia
-       # 100% cuando eran 20 posiciones de 258. Ese numero alimenta el umbral
-       # de rechazo por banda, asi que una consulta al 8% recibia el umbral de
-       # cobertura casi completa.
+       # `coverage` es la fraccion de las POSICIONES DE LA REFERENCIA que la
+       # consulta trae, y es la que elige el umbral de rechazo. Tiene que usar
+       # el mismo denominador que la calibracion --que divide por grid_n, las
+       # posiciones de la referencia-- porque el umbral responde "dada esta
+       # fraccion de la referencia, cuanta similitud hace falta". Una version
+       # anterior la calculaba contra sum(grid_N), los bins fisicos del
+       # cromosoma, y entonces una consulta con TODOS los bins anotados salia
+       # al 20-60% y recibia el umbral de otra banda, o se rechazaba por
+       # <50% teniendo la referencia completa.
        #
-       # sum(N) por cromosoma es la definicion correcta en los dos ejes: en el
-       # de gen coincide con nrow(grid) porque cada gen es una posicion.
-       coverage = {
-         Ns <- vapply(split(grid$grid_N, as.character(grid$chr)),
-                      function(v) as.numeric(v[1]), numeric(1))
-         tot <- sum(Ns, na.rm = TRUE)
-         if (is.finite(tot) && tot > 0) nrow(g) / tot else nrow(g) / nrow(grid)
-       }, id_type = id_type)
+       # `genomic_coverage` es la fraccion del CROMOSOMA observada, contra
+       # sum(N). Es la cantidad honesta para decir cuanto del genoma cubren los
+       # datos, y en el eje bp es mucho menor porque la malla de bins solo trae
+       # los ocupados. Se reporta y no se usa para umbrales: mezclar las dos
+       # fue exactamente el error.
+       coverage = reference_coverage(nrow(g), grid),
+       genomic_coverage = genomic_coverage(nrow(g), grid),
+       id_type = id_type)
 }
 
 #' Collapse duplicate identifiers explicitly.
@@ -511,6 +515,18 @@ bin_query <- function(cl, ref) {
   n_annot <- as.integer(table(bin))
   names(n_annot) <- names(table(bin))
 
+  # La mascara compartida, si la referencia la trae. Se aplica ANTES de
+  # agregar, que es donde ingest aplica su filtro.
+  gene_mask <- NULL
+  if (!is.null(ref$gene_mask)) {
+    gene_mask <- key %in% as.character(ref$gene_mask) |
+      g$gene_id %in% as.character(ref$gene_mask)
+    if (!any(gene_mask)) {
+      tsf_abort("bin_query: la mascara de genes de la referencia no interseca ",
+                "la malla. Los ids no coinciden: re-construi la referencia.")
+    }
+  }
+
   gl <- if ("gene_length" %in% names(g)) g$gene_length else NULL
   if (is.null(gl) && identical(ref$params$expression_unit, "asinh(TPM)")) {
     tsf_warn("bin_query: la referencia se construyo en asinh(TPM) pero la ",
@@ -523,7 +539,8 @@ bin_query <- function(cl, ref) {
     raw, gene_length = gl, unit = cl$unit %||% "counts",
     bin_key = bin, bin_aggregate = ref$params$bin_aggregate %||% "mean",
     bin_annotated = n_annot,
-    bin_min_coverage = ref$params$bin_min_coverage %||% 0.5)
+    bin_min_coverage = ref$params$bin_min_coverage %||% 0.5,
+    mask = gene_mask)
 
   keep <- is.finite(out)
   if (!any(keep)) {
