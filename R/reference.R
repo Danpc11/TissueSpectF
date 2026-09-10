@@ -343,9 +343,47 @@ mask_grid_genes <- function(chrom_idx, target_coverage,
 }
 
 #' Recompute a sample's fingerprint from a masked grid.
-fingerprint_masked <- function(y, masked_idx, k_max, features) {
+#' @param renormalise re-normalizar tras enmascarar, como haria una consulta.
+#'   La calibracion quitaba posiciones DESPUES de normalizar, y una consulta
+#'   real normaliza con los conteos que tiene: no es la misma perturbacion. Al
+#'   26% de cobertura la media en escala asinh difiere en 1.53 --que es
+#'   log(1/0.26)-- asi que el umbral se calibraba con una perturbacion y se
+#'   aplicaba a otra.
+#' @param unit la unidad de `y`, para saber si hay algo que re-normalizar
+#'
+#'   `renormalise` es FALSE por defecto y la calibracion lo pide explicitamente.
+#'   Re-normalizar exige que `y` sea asinh de una cantidad positiva: sinh() de
+#'   valores negativos --datos sinteticos, residuos, cualquier cosa que no sea
+#'   TPM-- da una suma sin sentido y devuelve NA. Un default TRUE rompia a
+#'   cualquier llamador que no pasara expresion normalizada.
+fingerprint_masked <- function(y, masked_idx, k_max, features,
+                               renormalise = FALSE, unit = "asinh(TPM)") {
   if (!length(masked_idx)) return(NULL)
   terms <- fingerprint_terms(masked_idx)
+  if (isTRUE(renormalise)) {
+    # `ci$rows` indexa el vector `y` que se le pasa, y ese vector puede ser mas
+    # corto que el maximo de rows si el llamador ya lo restringio -- un test
+    # existente lo hace con rows = 1:200 y y de longitud 100. Se dimensiona el
+    # indicador al maximo de los dos y se recorta despues, en vez de suponer.
+    if (any(y < 0, na.rm = TRUE)) {
+      tsf_abort("fingerprint_masked(renormalise = TRUE) necesita `y` en ",
+                "asinh de una cantidad positiva; hay ", sum(y < 0, na.rm = TRUE),
+                " valor(es) negativo(s). sinh() de un negativo da una suma sin ",
+                "sentido y el resultado seria NA.")
+    }
+    rows <- unlist(lapply(masked_idx, function(ci) ci$rows), use.names = FALSE)
+    rows <- rows[is.finite(rows) & rows >= 1]
+    if (length(rows) && max(rows) <= length(y)) {
+      keep <- rep(FALSE, length(y))
+      keep[rows] <- TRUE
+      y <- renormalise_after_mask(y, keep, unit = unit)
+      # renormalise_after_mask deja NA fuera de la mascara; los indices ya
+      # restringen a las conservadas, asi que gls_observed() no ve NA.
+    }
+    # Si rows excede length(y) el llamador ya restringio el vector y no hay
+    # nada que re-normalizar: hacerlo sobre un vector parcial escalaria dos
+    # veces.
+  }
   fingerprint_vector(y, masked_idx, terms, k_max = k_max, features = features)
 }
 
@@ -441,7 +479,10 @@ calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features
             gene_cov <- if (is.finite(grid_n) && grid_n > 0)
               min(n_kept / grid_n, 1) else NA_real_
             fp <- fingerprint_masked(y, masked, ref_params$k_max,
-                                     ref_params$features)
+                                     ref_params$features,
+                                     renormalise = TRUE,
+                                     unit = ref_params$expression_unit %||%
+                                       "asinh(TPM)")
             if (is.null(fp)) next
             avail <- intersect(names(fp), model$features)
             if (length(avail) < 3) next
