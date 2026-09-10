@@ -165,13 +165,3 @@ condition_significance <- function(dataset, cond, chrom_idx, maxt_cfg,
   out$branch <- branch
   out[order(out$q_condition, out$p_condition), ]
 }
-
-#' Peaks a condition-level test calls significant.
-select_condition_peaks <- function(cs, q_threshold = 0.05, use = c("condition", "stouffer")) {
-  use <- match.arg(use)
-  qcol <- if (use == "condition") "q_condition" else "q_stouffer"
-  if (is.null(cs) || !qcol %in% colnames(cs)) return(NULL)
-  hit <- cs[!is.na(cs[[qcol]]) & cs[[qcol]] <= q_threshold, , drop = FALSE]
-  if (!nrow(hit)) return(NULL)
-  hit[order(hit[[qcol]], -hit$power), ]
-}
