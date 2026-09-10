@@ -74,6 +74,10 @@ Parameters (override config/project.R):
                         gene density varies with the chromatin state itself
   --bin-size <n>        bin width in bp for --grid-axis bp (default 100000)
   --bin-aggregate <s>   mean | sum   how genes in one bin combine
+  --bin-min-coverage <x>  fraction of a bin's ANNOTATED genes a sample must
+                        measure for the bin to count as measured IN THAT
+                        SAMPLE (default 0.5). Without it the same bin means
+                        different things in different cohorts
   --estimator <s>       periodogram | multitaper. The periodogram is
                         inconsistent: measured cv ~0.94 on pure noise against
                         ~0.45 for multitaper, a 2.1x reduction. Costs
@@ -158,6 +162,7 @@ OPTION_ALIASES <- c(
   gridaxis = "grid_axis", grid_axis = "grid_axis",
   binsize = "bin_size", bin_size = "bin_size",
   binaggregate = "bin_aggregate", bin_aggregate = "bin_aggregate",
+  binmincoverage = "bin_min_coverage", bin_min_coverage = "bin_min_coverage",
   estimator = "estimator", mtnw = "mt_nw", mt_nw = "mt_nw",
   mtk = "mt_k", mt_k = "mt_k",
   maxtb = "maxt_b", maxt_b = "maxt_b", b = "maxt_b",
@@ -263,6 +268,7 @@ apply_cli_overrides <- function(project, opt) {
   set("grid_axis", opt$grid_axis)
   set("bin_size", opt$bin_size, as.numeric)
   set("bin_aggregate", opt$bin_aggregate)
+  set("bin_min_coverage", opt$bin_min_coverage, as.numeric)
   set("estimator", opt$estimator)
   set("mt_nw", opt$mt_nw, as.numeric)
   set("mt_k", opt$mt_k, as.integer)
