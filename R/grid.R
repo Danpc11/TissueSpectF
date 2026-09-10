@@ -87,10 +87,34 @@ normalise_chrom_names <- function(x) {
 #'   resolution; 250 kb is near-complete coverage with less resolution. Run
 #'   both: a band that appears at one width and not the other is a property of
 #'   the binning.
+#' Longitudes de los cromosomas de GRCh38, en pares de base.
+#'
+#' Hacen falta porque `max(start)` de los genes anotados NO es la longitud del
+#' cromosoma: termina en el último gen del universo seleccionado. Usar eso como
+#' N desplaza frecuencias, periodos, fase y cobertura, y el sesgo es peor en los
+#' acrocéntricos --13, 14, 15, 21, 22-- donde el brazo corto es heterocromatina
+#' sin genes codificantes.
+#'
+#' Y cambia con el universo génico: con `^protein-coding$` el último gen cae en
+#' un sitio y con lncRNA incluidos en otro, así que dos corridas del mismo
+#' cromosoma tendrían N distintos y sus espectros no serían comparables.
+GRCH38_CHROM_LENGTHS <- c(
+  "1" = 248956422, "2" = 242193529, "3" = 198295559, "4" = 190214555,
+  "5" = 181538259, "6" = 170805979, "7" = 159345973, "8" = 145138636,
+  "9" = 138394717, "10" = 133797422, "11" = 135086622, "12" = 133275309,
+  "13" = 114364328, "14" = 107043718, "15" = 101991189, "16" = 90338345,
+  "17" = 83257441, "18" = 80373285, "19" = 58617616, "20" = 64444167,
+  "21" = 46709983, "22" = 50818468, "X" = 156040895, "Y" = 57227415,
+  "MT" = 16569, "M" = 16569)
+
+#' @param chrom_lengths longitudes en pb, con nombres de cromosoma. Por defecto
+#'   GRCh38. Un cromosoma ausente de la tabla cae al último gen anotado con una
+#'   advertencia, en vez de fallar -- un ensamblado no humano debe poder correr.
 build_reference_grid <- function(annot, chrom_levels, biotypes = NULL,
                                  min_genes_per_chr = 8L,
                                  axis = c("gene", "bp"),
-                                 bin_size = 100000L) {
+                                 bin_size = 100000L,
+                                 chrom_lengths = GRCH38_CHROM_LENGTHS) {
   axis <- match.arg(axis)
   g <- annot[annot$chr %in% chrom_levels & !is.na(annot$start), , drop = FALSE]
 
@@ -112,6 +136,23 @@ build_reference_grid <- function(annot, chrom_levels, biotypes = NULL,
   g <- g[!duplicated(g$gene_id), ]
 
   if (identical(axis, "gene")) {
+    # ADVERTENCIA INEQUIVOCA, no una nota en la documentacion.
+    #
+    # El default sigue siendo "gene" para que un arbol de resultados existente
+    # siga significando lo que decia, pero eso deja un hueco entre la facilidad
+    # de uso y la recomendacion cientifica: una corrida estandar produce
+    # periodos que alguien puede interpretar despues como distancias.
+    #
+    # La densidad genica varia mas de diez veces a lo largo de un cromosoma Y
+    # varia CON el estado de cromatina que un resultado espectral querria
+    # explicar, asi que el factor rango->Mb no es constante y un periodo en
+    # genes no nombra una distancia.
+    tsf_warn("Eje de RANGO DE GEN: un periodo en genes NO es una distancia ",
+             "genomica y no se puede comparar con TADs, LADs, dominios de ",
+             "replicacion ni citobandas. La densidad genica varia mas de 10x ",
+             "por cromosoma y covaria con el estado de cromatina, asi que el ",
+             "factor rango->Mb no es constante. Para interpretacion biologica: ",
+             "--grid-axis bp --bin-size 100000")
     g$grid_index <- stats::ave(seq_len(nrow(g)), g$chr, FUN = seq_along)
     n_by_chr <- table(g$chr)
     g$grid_N <- as.integer(n_by_chr[g$chr])
@@ -125,8 +166,26 @@ build_reference_grid <- function(annot, chrom_levels, biotypes = NULL,
     # shrink to the span of the observed genes and a gene desert at either end
     # would silently disappear from the grid.
     g$grid_index <- as.integer(floor(g$start / bin_size)) + 1L
-    span <- tapply(g$start, g$chr, max)
-    g$grid_N <- as.integer(floor(span[g$chr] / bin_size)) + 1L
+
+    # N es la LONGITUD DEL CROMOSOMA en bins, no el último gen anotado.
+    # max(start) termina el eje donde acaba el universo génico seleccionado, y
+    # eso desplaza frecuencias, periodos y fase -- y hace que dos universos
+    # distintos den N distintos para el mismo cromosoma.
+    chrs <- unique(as.character(g$chr))
+    have <- chrs[chrs %in% names(chrom_lengths)]
+    miss <- setdiff(chrs, have)
+    L <- stats::setNames(rep(NA_real_, length(chrs)), chrs)
+    L[have] <- as.numeric(chrom_lengths[have])
+    if (length(miss)) {
+      fallback <- tapply(g$start, as.character(g$chr), max)
+      L[miss] <- as.numeric(fallback[miss])
+      tsf_warn("Sin longitud declarada para: ", paste(miss, collapse = ", "),
+               ". Se usa el último gen anotado, que subestima el cromosoma y ",
+               "desplaza los periodos. Pasá `chrom_lengths` para el ensamblado ",
+               "correcto.")
+    }
+    g$grid_N <- as.integer(ceiling(L[as.character(g$chr)] / bin_size))
+    g$chrom_length <- as.numeric(L[as.character(g$chr)])
 
     per_chr <- tapply(g$grid_index, g$chr, function(x) length(unique(x)))
     cov <- per_chr / tapply(g$grid_N, g$chr, function(x) x[1])
