@@ -409,9 +409,12 @@ fingerprint_query <- function(values, ids, ref, unit = "counts") {
   #
   # El selfcheck no lo veia porque corre sobre el eje de rango de gen, donde
   # cada gen ES una posicion y el problema no existe.
+  prepared <- FALSE
   if (isTRUE(ref$params$grid_axis == "bp")) {
+    cl$unit <- unit
     cl <- bin_query(cl, ref)
     if (is.null(cl)) return(NULL)
+    prepared <- isTRUE(cl$already_prepared)
   }
 
   qi <- query_grid_index(ref$grid, cl$ids)
@@ -425,7 +428,10 @@ fingerprint_query <- function(values, ids, ref, unit = "counts") {
     if (is.null(qi)) return(NULL)
     v <- cl$values[match(qi$key, cl$ids)]
   }
-  y <- query_signal(v, unit)
+  # `prepared` evita transformar dos veces: bin_query() ya normalizo y aplico
+  # asinh en el orden de ingest, y volver a pasar por query_signal() daria
+  # asinh(asinh(TPM)).
+  y <- if (prepared) v else query_signal(v, unit)
 
   terms <- fingerprint_terms(qi$chrom_idx)
   fp <- fingerprint_vector(y, qi$chrom_idx, terms,
@@ -471,47 +477,69 @@ bin_query <- function(cl, ref) {
               paste(setdiff(need, names(g)), collapse = ", "),
               ". Re-corre ingest con --grid-axis bp.")
   }
-  how <- ref$params$bin_aggregate %||% "mean"
-  min_cov <- ref$params$bin_min_coverage %||% 0.5
-
   # Que id usa la consulta, con la misma deteccion que query_grid_index()
   by_ens <- sum(g$gene_id %in% cl$ids)
   by_ent <- if ("entrez_id" %in% names(g))
     sum(as.character(g$entrez_id) %in% cl$ids) else 0L
   key <- if (by_ent > by_ens) as.character(g$entrez_id) else g$gene_id
 
-  val <- cl$values[match(key, cl$ids)]
+  # CONTEOS CRUDOS, no valores ya transformados. La normalizacion, el asinh y
+  # la agregacion los hace prepare_axis_values() en el orden de ingest.
+  #
+  # Antes bin_query() agregaba valores crudos y query_signal() normalizaba
+  # despues, o sea:
+  #
+  #   consulta: counts -> agregar -> CPM -> asinh
+  #   ingest:   counts -> TPM -> asinh -> agregar
+  #
+  # Y no conmutan: con un bin de dos genes a 1000 y 1 TPM, ingest da 4.241 y la
+  # consulta 6.909, un 63% de diferencia. Ademas ingest usa TPM con longitud de
+  # gen y la consulta usaba CPM sin ella.
+  # TODOS los genes de la malla, no solo los que la consulta trajo. Un gen
+  # ausente entra como NA y cuenta en el denominador del bin pero no en el
+  # numerador -- que es justamente lo que bin_min_coverage tiene que ver.
+  #
+  # Con `raw` limitado a los genes presentes, split() agrupaba solo esos y el
+  # denominador se recalculaba sobre ellos: la cobertura salia 1 y no se
+  # descartaba ningun bin. Medido: 0 de 16 descartados con umbral 0.9 y un solo
+  # gen por bin.
+  raw <- cl$values[match(key, cl$ids)]   # NA donde la consulta no trae el gen
   bin <- paste(g$chr, g$grid_index, sep = "|")
 
-  # Denominador: los genes ANOTADOS del bin, no los que la consulta trajo. Es
-  # la misma definicion que ingest usa, y sin ella la cobertura del bin saldria
-  # 1 siempre.
-  n_annot <- as.integer(table(bin)[unique(bin)])
-  names(n_annot) <- unique(bin)
-  ok <- is.finite(val)
-  n_meas <- vapply(split(ok, bin), sum, integer(1))
-  agg <- vapply(split(val, bin), function(v) {
-    v <- v[is.finite(v)]
-    if (!length(v)) NA_real_
-    else if (identical(how, "sum")) sum(v) else mean(v)
-  }, numeric(1))
+  # Denominador: los genes ANOTADOS del bin. `table(bin)` sobre la malla
+  # completa los cuenta todos, presentes o no.
+  n_annot <- as.integer(table(bin))
+  names(n_annot) <- names(table(bin))
 
-  bins <- names(agg)
-  cov <- n_meas[bins] / pmax(n_annot[bins], 1L)
-  drop <- !is.finite(cov) | cov < min_cov
-  agg[drop] <- NA_real_
+  gl <- if ("gene_length" %in% names(g)) g$gene_length else NULL
+  if (is.null(gl) && identical(ref$params$expression_unit, "asinh(TPM)")) {
+    tsf_warn("bin_query: la referencia se construyo en asinh(TPM) pero la ",
+             "malla no trae gene_length, asi que la consulta sale en ",
+             "asinh(CPM). Dos genes con el mismo conteo y longitudes distintas ",
+             "recibiran valores iguales en la consulta y distintos en la ",
+             "referencia.")
+  }
+  out <- prepare_axis_values(
+    raw, gene_length = gl, unit = cl$unit %||% "counts",
+    bin_key = bin, bin_aggregate = ref$params$bin_aggregate %||% "mean",
+    bin_annotated = n_annot,
+    bin_min_coverage = ref$params$bin_min_coverage %||% 0.5)
 
-  keep <- is.finite(agg)
+  keep <- is.finite(out)
   if (!any(keep)) {
-    tsf_warn("bin_query: ningun bin alcanza bin_min_coverage = ", min_cov,
-             " (", sum(drop), " de ", length(bins), " descartados)")
+    tsf_warn("bin_query: ningun bin alcanza bin_min_coverage = ",
+             ref$params$bin_min_coverage %||% 0.5, " (",
+             attr(out, "n_dropped"), " descartados de ", length(out), ")")
     return(NULL)
   }
-  parts <- do.call(rbind, strsplit(bins[keep], "|", fixed = TRUE))
-  list(values = unname(agg[keep]),
+  parts <- do.call(rbind, strsplit(names(out)[keep], "|", fixed = TRUE))
+  list(values = unname(out[keep]),
        ids = paste0("bin_", parts[, 1], "_", parts[, 2]),
        collapsed = cl$collapsed %||% 0L,
-       n_bins_dropped = sum(drop))
+       n_bins_dropped = attr(out, "n_dropped"),
+       # Ya vienen transformados: query_signal() no debe volver a hacerlo.
+       already_prepared = TRUE,
+       unit = attr(out, "unit"))
 }
 
 #' Which reference features a query can actually contribute.
