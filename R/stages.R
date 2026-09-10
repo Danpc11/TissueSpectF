@@ -893,6 +893,28 @@ stage_reference <- function(project, opt) {
     })
     names(sets) <- ids_kept
     sets <- Filter(Negate(is.null), sets)
+
+    # TODAS las cohortes tienen que tener el archivo, no solo las que coinciden.
+    #
+    # Con Filter() las que faltan desaparecian de la comprobacion y la
+    # referencia seguia como si las cinco estuvieran armonizadas cuando solo
+    # dos lo estaban -- y las huellas de las otras tres entraban igual al
+    # entrenamiento, agregadas con sus propios conjuntos de genes.
+    missing_sets <- setdiff(ids_kept, names(sets))
+    if (length(missing_sets)) {
+      tsf_abort("Falta retained_genes.tsv para: ",
+                paste(missing_sets, collapse = ", "),
+                ". Con eje bp no se puede comprobar que esas cohortes ",
+                "agregaran los bins con los mismos genes, y sus huellas ",
+                "entrarian al entrenamiento de todos modos. Re-ingesta TODAS ",
+                "las cohortes con la misma mascara:\n",
+                "  Rscript scripts/shared_gene_mask.R --interim-dir ",
+                project$interim_dir, " --datasets ",
+                paste(ids_kept, collapse = ","), "\n",
+                "  ./tsf ingest ... --grid-axis bp --gene-mask ",
+                file.path(project$interim_dir, "shared_gene_mask.tsv"),
+                " --force")
+    }
     if (length(sets) >= 2L) {
       inter <- Reduce(intersect, sets)
       un <- Reduce(union, sets)
@@ -914,11 +936,8 @@ stage_reference <- function(project, opt) {
               length(inter), " position(s). Cohorts and queries share the set.")
     } else if (length(sets) == 1L) {
       gene_mask <- sets[[1]]
-    } else {
-      tsf_warn("Sin retained_genes.tsv: no se puede comprobar que las cohortes ",
-               "usaran los mismos genes. Re-ingesta con este codigo para que se ",
-               "escriba.")
     }
+    # No hay tercer ramal: si faltara algun archivo ya se aborto arriba.
   }
 
   prov <- grids[[1]]$provenance
