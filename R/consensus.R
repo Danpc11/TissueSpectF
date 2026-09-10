@@ -719,10 +719,3 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
   hit <- hit[order(-hit$consensus_score_ci_lower), ]
   utils::head(hit, max_components)
 }
-
-#' Feature names of a signature, in the fingerprint's naming scheme.
-signature_features <- function(sig, features = "amplitude") {
-  if (is.null(sig) || !nrow(sig)) return(character(0))
-  nm <- paste0("chr", sig$chr, "_k", sig$k)
-  if (identical(features, "amplitude")) nm else c(paste0(nm, "_c"), paste0(nm, "_s"))
-}
