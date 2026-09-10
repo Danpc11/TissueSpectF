@@ -94,7 +94,7 @@ prevalence_from_rank <- function(power_norm, sample_id, chr, quantile_cut = 0.95
 #' @param spectra_samples the spectra stage output for this condition
 #' @param maxt optional per-sample maxT table; when present, prevalence is the
 #'   fraction of samples in which the frequency is significant
-consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 200L,
+consensus_spectrum <- function(spectra_samples, maxt = NULL, n_boot = 500L,
                                alpha = 0.05, seed = 42L, quantile_cut = 0.95,
                                n_cores = 1L) {
   d <- spectra_samples
@@ -381,7 +381,7 @@ null_matrix_draw <- function(prepared, picked_samples) {
 #'
 #' So: compute over everything, then restrict WHICH frequencies compete. Both
 #' the pointwise null and the per-draw maximum are taken over `retained_keys`.
-null_consensus_distribution <- function(spectra_all, n_samples, n_null = 200L,
+null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
                                         seed = 42L, quantile_cut = 0.95,
                                         q_global = 0.95, blocks = NULL,
                                         n_cores = 1L,
