@@ -1648,17 +1648,53 @@ check("la consulta agregada no produce posiciones repetidas", {
   ci <- qi$chrom_idx[["20"]]
   !any(duplicated(ci$t)) && length(ci$t) == length(b$ids) })
 
-check("la cobertura de la consulta se mide contra N, no contra las filas", {
-  # Con eje bp la malla de bins solo trae los OCUPADOS, asi que
-  # nrow(grid) << sum(N) y la cobertura salia 100% cuando eran 20 de 258. Ese
-  # numero alimenta el umbral de rechazo por banda.
+check("la cobertura del umbral usa el denominador de la calibracion", {
+  # DOS COBERTURAS y una sola elige el umbral.
+  #
+  # La calibracion divide por grid_n, las posiciones de la REFERENCIA. Una
+  # version anterior hacia que la consulta dividiera por sum(grid_N), los bins
+  # fisicos del cromosoma, y entonces una consulta con TODOS los bins anotados
+  # salia al 6-60% y recibia el umbral de otra banda, o se rechazaba por <50%
+  # teniendo la referencia completa.
   r <- bp_ref()
-  cl <- list(values = stats::rnorm(nrow(r$gene_grid)),
-             ids = r$gene_grid$gene_id, collapsed = 0L)
-  b <- bin_query(cl, r)
-  qi <- query_grid_index(r$grid, b$ids, min_observed = 5L)
-  abs(qi$coverage - length(b$ids) / r$grid$grid_N[1]) < 1e-9 &&
-    qi$coverage < 0.2 })
+  qi <- query_grid_index(r$grid, r$grid$gene_id, min_observed = 5L)
+  # trae toda la referencia -> coverage 1, y la fraccion del cromosoma mucho
+  # menor porque la malla de bins solo tiene los ocupados
+  abs(qi$coverage - 1) < 1e-9 &&
+    is.finite(qi$genomic_coverage) && qi$genomic_coverage < 0.5 })
+
+check("genomic_coverage se reporta pero no elige umbral", {
+  # Mezclar las dos fue exactamente el error, asi que viajan separadas.
+  src <- paste(readLines("R/fingerprint.R", warn = FALSE), collapse = " ")
+  # UNA sola definicion, en reference_coverage(), usada por la calibracion y
+  # por la consulta. Habia tres denominadores distintos.
+  grepl("coverage = reference_coverage(nrow(g), grid)", src, fixed = TRUE) &&
+    grepl("genomic_coverage = genomic_coverage(", src, fixed = TRUE) &&
+    grepl("reference_coverage",
+          paste(readLines("R/reference.R", warn = FALSE), collapse = " "),
+          fixed = TRUE) })
+
+check("reference_coverage es la unica definicion y esta acotada a [0,1]", {
+  g <- data.frame(gene_id = paste0("b", 1:20), chr = "1",
+                  grid_index = 1:20, grid_N = 100L,
+                  stringsAsFactors = FALSE)
+  abs(reference_coverage(20, g) - 1) < 1e-9 &&
+    abs(reference_coverage(10, g) - 0.5) < 1e-9 &&
+    reference_coverage(999, g) == 1 &&
+    abs(genomic_coverage(20, g) - 0.2) < 1e-9 })
+
+check("la consulta aplica la mascara compartida de la referencia", {
+  # filter_expressed() usa rowMeans sobre las muestras de una cohorte, asi que
+  # una consulta de una muestra no puede evaluarlo. La referencia guarda la
+  # interseccion y la consulta la aplica.
+  r <- bp_ref()
+  r$gene_mask <- r$gene_grid$gene_id[seq_len(10)]
+  cl <- list(values = abs(stats::rnorm(nrow(r$gene_grid))) * 100,
+             ids = r$gene_grid$gene_id, collapsed = 0L, unit = "counts")
+  b <- suppressWarnings(bin_query(cl, r))
+  r2 <- r; r2$gene_mask <- NULL
+  b2 <- bin_query(cl, r2)
+  !is.null(b2) && (is.null(b) || length(b$ids) < length(b2$ids)) })
 
 check("la consulta aplica bin_min_coverage", {
   # Un bin cuya cobertura cae bajo el umbral se descarta, igual que en ingest.
@@ -1744,6 +1780,136 @@ check("una unidad desconocida aborta en vez de pasar de largo", {
   e <- tryCatch(prepare_axis_values(1:5, unit = "rpkm"),
                 error = function(e) e)
   inherits(e, "error") && grepl("desconocida", conditionMessage(e)) })
+
+# --- LA PRUEBA QUE FALTABA: eje bp de punta a punta ---------------------------
+#
+# La misma muestra por las dos rutas, exigiendo huellas numericamente iguales.
+# Es la prueba que habria atrapado los cuatro fallos de este eje sin que nadie
+# los buscara: posiciones repetidas, cobertura con tres denominadores, orden de
+# normalizacion invertido, y la mascara por cohorte.
+#
+# Ninguno se veia con el selfcheck, que corre sobre el eje de rango de gen.
+
+bp_end_to_end <- function(n_genes = 80, n_samples = 6, bin = 250000,
+                          min_cov = 0.5) {
+  set.seed(91)
+  annot <- data.frame(
+    gene_id = paste0("G", seq_len(n_genes)), chr = "20",
+    start = sort(round(stats::runif(n_genes, 1e6, 8e6))),
+    gene_type = "protein-coding", stringsAsFactors = FALSE)
+  grid <- suppressWarnings(suppressMessages(
+    build_reference_grid(annot, "20", "^protein-coding$", axis = "bp",
+                         bin_size = bin, min_genes_per_chr = 8L)))
+  gene_len <- round(stats::runif(nrow(grid), 800, 6000))
+  counts <- matrix(stats::rpois(nrow(grid) * n_samples, 120),
+                   nrow(grid), n_samples,
+                   dimnames = list(grid$gene_id,
+                                   paste0("S", seq_len(n_samples))))
+  bin_key <- paste(grid$chr, grid$grid_index, sep = "|")
+  n_annot <- as.integer(table(bin_key))
+  names(n_annot) <- names(table(bin_key))
+  list(annot = annot, grid = grid, gene_len = gene_len, counts = counts,
+       bin_key = bin_key, n_annot = n_annot, bin = bin, min_cov = min_cov)
+}
+
+check("el orden es normalizar, transformar, AGREGAR -- anclado a mano", {
+  # LA EQUIVALENCIA ENTRE RUTAS NO BASTA.
+  #
+  # Las dos rutas llaman a la misma funcion, asi que un cambio de orden las
+  # afecta igual y siguen coincidiendo. Verificado inyectando el bug original
+  # --agregar antes de transformar-- y los tres tests INTEGRAL seguian pasando.
+  #
+  # Hace falta anclar el VALOR ESPERADO, calculado a mano fuera de la funcion.
+  cnt <- c(1000, 1)          # dos genes en un bin
+  gl <- c(1000, 1000)        # misma longitud: TPM proporcional al conteo
+  rpk <- cnt / (gl / 1000)
+  tpm <- rpk / sum(rpk) * 1e6
+  esperado <- mean(asinh(tpm))          # transformar y LUEGO promediar
+  al_reves <- asinh(mean(tpm))          # el bug: promediar y luego transformar
+  o <- prepare_axis_values(cnt, gene_length = gl, unit = "counts",
+                           bin_key = c("b1", "b1"),
+                           bin_annotated = c(b1 = 2L))
+  abs(as.numeric(o[["b1"]]) - esperado) < 1e-9 &&
+    abs(esperado - al_reves) > 1 })
+
+check("la unidad es TPM cuando hay longitudes, no CPM", {
+  # Segundo desfase del original: ingest usaba TPM con longitud de gen y la
+  # consulta CPM sin ella, asi que dos genes con el mismo conteo y longitudes
+  # distintas recibian valores distintos en la referencia e iguales en la
+  # consulta.
+  cnt <- c(100, 100)
+  gl <- c(500, 5000)         # 10x de diferencia en longitud
+  o <- prepare_axis_values(cnt, gene_length = gl, unit = "counts")
+  # con TPM el gen corto pesa 10x mas; con CPM serian iguales
+  identical(attr(o, "unit"), "asinh(TPM)") && o[1] > o[2] })
+
+check("INTEGRAL bp: ingest y la consulta dan el MISMO valor por bin", {
+  d <- bp_end_to_end()
+  # ruta ingest: matriz completa
+  ing <- prepare_axis_values(
+    d$counts, gene_length = d$gene_len, unit = "counts",
+    bin_key = d$bin_key, bin_aggregate = "mean",
+    bin_annotated = d$n_annot, bin_min_coverage = d$min_cov)
+  # ruta consulta: la MISMA muestra, sola
+  qry <- prepare_axis_values(
+    d$counts[, 1], gene_length = d$gene_len, unit = "counts",
+    bin_key = d$bin_key, bin_aggregate = "mean",
+    bin_annotated = d$n_annot, bin_min_coverage = d$min_cov)
+  isTRUE(all.equal(as.numeric(ing[, 1]), as.numeric(qry),
+                   tolerance = 1e-12)) })
+
+check("INTEGRAL bp: la huella espectral es identica por las dos rutas", {
+  d <- bp_end_to_end()
+  bgrid <- bin_grid_from_genes(d$grid, d$bin)
+  ref <- list(grid = bgrid, gene_grid = d$grid, gene_mask = NULL,
+              params = list(grid_axis = "bp", bin_aggregate = "mean",
+                            bin_min_coverage = d$min_cov, k_max = 64L,
+                            features = "amplitude",
+                            expression_unit = "asinh(TPM)"))
+  # --- ruta ingest ---
+  ing <- prepare_axis_values(
+    d$counts, gene_length = d$gene_len, unit = "counts",
+    bin_key = d$bin_key, bin_aggregate = "mean",
+    bin_annotated = d$n_annot, bin_min_coverage = d$min_cov)
+  keep <- is.finite(ing[, 1])
+  ids_i <- sub("^([^|]+)[|](.*)$", "bin_\\1_\\2", rownames(ing)[keep])
+  qi_i <- query_grid_index(bgrid, ids_i, min_observed = 5L)
+  v_i <- as.numeric(ing[keep, 1])[match(qi_i$key, ids_i)]
+  fp_i <- fingerprint_vector(v_i, qi_i$chrom_idx,
+                             fingerprint_terms(qi_i$chrom_idx), k_max = 64L)
+
+  # --- ruta consulta, desde CONTEOS CRUDOS ---
+  # la malla lleva gene_length para que la consulta use TPM y no CPM
+  ref$gene_grid$gene_length <- d$gene_len
+  cl <- list(values = as.numeric(d$counts[, 1]), ids = d$grid$gene_id,
+             collapsed = 0L, unit = "counts")
+  bq <- bin_query(cl, ref)
+  qi_q <- query_grid_index(bgrid, bq$ids, min_observed = 5L)
+  v_q <- bq$values[match(qi_q$key, bq$ids)]
+  fp_q <- fingerprint_vector(v_q, qi_q$chrom_idx,
+                             fingerprint_terms(qi_q$chrom_idx), k_max = 64L)
+
+  !is.null(fp_i) && !is.null(fp_q) &&
+    identical(names(fp_i), names(fp_q)) &&
+    isTRUE(all.equal(unname(fp_i), unname(fp_q), tolerance = 1e-10)) })
+
+check("INTEGRAL bp: la cobertura coincide entre las dos rutas", {
+  d <- bp_end_to_end()
+  bgrid <- bin_grid_from_genes(d$grid, d$bin)
+  ing <- prepare_axis_values(
+    d$counts, gene_length = d$gene_len, unit = "counts",
+    bin_key = d$bin_key, bin_aggregate = "mean",
+    bin_annotated = d$n_annot, bin_min_coverage = d$min_cov)
+  n_i <- sum(is.finite(ing[, 1]))
+  ref <- list(grid = bgrid, gene_grid = d$grid, gene_mask = NULL,
+              params = list(grid_axis = "bp", bin_aggregate = "mean",
+                            bin_min_coverage = d$min_cov))
+  ref$gene_grid$gene_length <- d$gene_len
+  bq <- bin_query(list(values = as.numeric(d$counts[, 1]),
+                       ids = d$grid$gene_id, collapsed = 0L,
+                       unit = "counts"), ref)
+  qi <- query_grid_index(bgrid, bq$ids, min_observed = 5L)
+  abs(qi$coverage - reference_coverage(n_i, bgrid)) < 1e-9 })
 
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
