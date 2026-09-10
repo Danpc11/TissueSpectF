@@ -727,7 +727,11 @@ apply_rejection <- function(res, calibration, coverage = NA_real_,
 
 #' Build the reference: fingerprints, validation, and a model fitted on all data.
 #' @param target see validate_across_datasets(); "class_id" is the composite key.
+#' @param gene_grid la malla de GENES cuando el eje es bp. La de bins no dice
+#'   cuantos genes anotados tiene cada bin, y sin ese denominador la cobertura
+#'   por bin de una consulta seria 1 siempre.
 build_reference <- function(fps, target = "class_id", n_features = 500L,
+                           gene_grid = NULL,
                             grid = NULL, params = list(), n_masks = 10L,
                             datasets = NULL, max_queries_per_mask = 25L,
                             threshold_policy = "pooled") {
@@ -753,6 +757,9 @@ build_reference <- function(fps, target = "class_id", n_features = 500L,
   if (is.null(grid)) tsf_abort("build_reference needs the grid it was built on")
   list(model = model, labels = lab, target = target,
        feature_space = common, validation = validation,
+       # La malla de GENES, ademas de la de bins: fingerprint_query() la
+       # necesita para reproducir la cobertura por bin de la consulta.
+       gene_grid = gene_grid,
        grid = grid[, intersect(c("gene_id", "entrez_id", "chr", "start",
                                  "grid_index", "grid_N"), colnames(grid))],
        params = utils::modifyList(
