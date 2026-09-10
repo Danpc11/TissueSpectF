@@ -59,7 +59,41 @@ def period_grid(n_bins, lo=10.0, hi=500.0):
     return np.exp(np.linspace(np.log(lo), np.log(hi), n_bins + 1))
 
 
-def load_tensor(results_dir, datasets, n_bins):
+def load_labels(interim_dir, datasets, label_column="class_id"):
+    """Etiquetas desde samples.tsv, la MISMA tabla que usa la referencia en R.
+
+    Antes las condiciones se derivaban del nombre del archivo
+    --`spectra_samples_F4.tsv` -> "F4"-- mientras `./tsf reference` usa
+    `class_id`, que es `tissue::state::condition`. Las dos rutas etiquetaban
+    distinto la misma muestra, y eso solo pasa desapercibido mientras hay un
+    solo tejido: en cuanto entren GTEx o cáncer, `Controles` de hígado y un
+    control de riñón son la misma cadena bajo `condition` y clases distintas
+    bajo `class_id`.
+
+    Devuelve None si no encuentra las tablas, y el llamador cae al nombre de
+    archivo con una advertencia -- explícita, no silenciosa.
+    """
+    if not interim_dir:
+        return None
+    out = {}
+    for ds in datasets:
+        f = os.path.join(interim_dir, ds, "samples.tsv")
+        if not os.path.exists(f):
+            return None
+        t = pd.read_csv(f, sep="\t", dtype=str)
+        for c in ("sample_id", label_column):
+            if c not in t.columns:
+                raise SystemExit(
+                    f"{f} no tiene la columna '{c}'. Presentes: "
+                    f"{', '.join(t.columns)}")
+        keep = t["keep"].str.upper() == "TRUE" if "keep" in t.columns else None
+        if keep is not None:
+            t = t[keep]
+        out.update(dict(zip(t["sample_id"], t[label_column])))
+    return out or None
+
+
+def load_tensor(results_dir, datasets, n_bins, labels=None):
     """(samples, chromosomes, bins), plus labels and cohort ids."""
     frames = []
     for ds in datasets:
@@ -112,7 +146,18 @@ def load_tensor(results_dir, datasets, n_bins):
     # cannot be quantified without re-running. See impute_within_fold().
     meta = sp[["sample", "condition", "dataset"]].drop_duplicates("sample")
     meta = meta.set_index("sample").loc[samples].reset_index()
-    return X, meta["condition"].values, meta["dataset"].values, chroms
+    y = meta["condition"].values
+    if labels is not None:
+        mapped = np.array([labels.get(s, None) for s in samples], dtype=object)
+        miss = int(sum(v is None for v in mapped))
+        if miss:
+            raise SystemExit(
+                f"{miss} de {len(samples)} muestra(s) no estan en samples.tsv. "
+                "Las dos rutas tienen que compartir exactamente la misma tabla; "
+                "completar los huecos con el nombre del archivo volveria a "
+                "mezclar dos esquemas de etiqueta.")
+        y = mapped.astype(str)
+    return X, y, meta["dataset"].values, chroms
 
 
 def impute_within_fold(Xtr, Xte):
@@ -236,11 +281,23 @@ def main():
     ap.add_argument("--datasets", required=True)
     ap.add_argument("--n-bins", type=int, default=200)
     ap.add_argument("--models", default="all")
+    ap.add_argument("--interim-dir",
+                    help="para leer samples.tsv y usar class_id, la misma "
+                         "etiqueta que ./tsf reference")
+    ap.add_argument("--label-column", default="class_id")
     ap.add_argument("--out", default=None)
     a = ap.parse_args()
 
-    X, y, cohorts, chroms = load_tensor(
-        a.results_dir, a.datasets.split(","), a.n_bins)
+    ds = a.datasets.split(",")
+    labels = load_labels(a.interim_dir, ds, a.label_column)
+    if labels is None:
+        print("AVISO: sin --interim-dir las etiquetas salen del NOMBRE DEL "
+              "ARCHIVO, no de class_id. ./tsf reference usa class_id "
+              "(tissue::state::condition), asi que los resultados no son "
+              "comparables entre las dos rutas. Con un solo tejido coincide; "
+              "con GTEx o cancer, no.")
+    X, y, cohorts, chroms = load_tensor(a.results_dir, ds, a.n_bins,
+                                        labels=labels)
     print(f"tensor: {X.shape[0]} samples x {X.shape[1]} chromosomes "
           f"x {X.shape[2]} period bins")
     print(f"classes: {dict(zip(*np.unique(y, return_counts=True)))}")
