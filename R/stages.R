@@ -849,6 +849,42 @@ stage_reference <- function(project, opt) {
                            names(fps))
   canonical_grid <- assert_compatible_grids(grids)
   is_bp <- identical(project$grid_axis %||% "gene", "bp")
+
+  # LA MASCARA COMPARTIDA: los genes que TODAS las cohortes midieron.
+  #
+  # ingest aplica filter_expressed() por cohorte, con rowMeans sobre SUS
+  # muestras, asi que una consulta de una sola muestra no puede evaluar ese
+  # criterio -- y dos cohortes calculan el mismo bin a partir de conjuntos
+  # distintos de genes. La interseccion hace que un bin se calcule con los
+  # mismos genes en todas partes, al precio de perder los que alguna cohorte
+  # no midio.
+  #
+  # Solo con eje bp: en el eje de gen cada gen es su propia posicion, y una
+  # posicion que una cohorte no midio queda no observada por el mecanismo de
+  # T_c(y) sin necesidad de mascara.
+  gene_mask <- NULL
+  if (is_bp) {
+    obs <- lapply(kept_datasets, function(id) {
+      gtab <- read_tsv_tsf(file.path(project$interim_dir, id, "genes.tsv"),
+                           required = FALSE)
+      if (is.null(gtab) || !"gene_id" %in% names(gtab)) NULL
+      else as.character(gtab$gene_id)
+    })
+    obs <- Filter(Negate(is.null), obs)
+    if (length(obs) >= 2L) {
+      gene_mask <- Reduce(intersect, obs)
+      un <- length(Reduce(union, obs))
+      tsf_log("Shared gene mask: ", length(gene_mask), " of ", un,
+              " position(s) measured by all ", length(obs), " cohort(s) (",
+              round(100 * length(gene_mask) / max(un, 1)), "%). A query uses ",
+              "this set instead of recomputing the per-cohort expression ",
+              "filter, which one sample cannot evaluate.")
+    } else {
+      tsf_warn("Shared gene mask: fewer than two cohorts with genes.tsv; ",
+               "queries will not apply a mask and may aggregate bins from a ",
+               "different gene set than the reference did.")
+    }
+  }
   prov <- grids[[1]]$provenance
   ref <- build_reference(fps, target = project$fingerprint$target %||% "condition",
                          n_features = project$fingerprint$n_features %||% 500L,
@@ -865,6 +901,7 @@ stage_reference <- function(project, opt) {
                              canonical_grid, project$bin_size %||% 100000L)
                            else canonical_grid,
                          gene_grid = if (is_bp) canonical_grid else NULL,
+                         gene_mask = gene_mask,
                          params = list(
                            k_max = project$fingerprint$k_max %||% 64L,
                            features = project$fingerprint$features %||% "amplitude",
