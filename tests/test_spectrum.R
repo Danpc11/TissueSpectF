@@ -1608,6 +1608,81 @@ check("gls_weighted rechaza pesos invalidos", {
                                        error = function(e) e), "error")
   bad(rep(1, 10)) && bad(rep(0, 50)) && bad(c(-1, rep(1, 49))) })
 
+# --- la consulta tiene que vivir en el eje de la referencia --------------------
+#
+# Con --grid-axis bp la referencia se construye sobre BINS. La consulta mapeaba
+# cada gen a su grid_index sin reproducir la agregacion, y como varios genes
+# comparten grid_index el resultado eran POSICIONES REPETIDAS en el ajuste GLS:
+# 40 de 60 en el caso medido. El selfcheck no lo veia porque corre sobre el eje
+# de rango de gen, donde cada gen ES una posicion.
+
+bp_ref <- function(n = 60, bin = 250000) {
+  set.seed(77)
+  a <- data.frame(gene_id = paste0("G", seq_len(n)), chr = "20",
+                  start = sort(round(stats::runif(n, 1e6, 6e6))),
+                  gene_type = "protein-coding", stringsAsFactors = FALSE)
+  g <- suppressWarnings(suppressMessages(
+    build_reference_grid(a, "20", "^protein-coding$", axis = "bp",
+                         bin_size = bin, min_genes_per_chr = 8L)))
+  list(gene_grid = g, grid = bin_grid_from_genes(g, bin),
+       params = list(grid_axis = "bp", bin_aggregate = "mean",
+                     bin_min_coverage = 0.5, k_max = 64L,
+                     features = "amplitude"))
+}
+
+check("la malla de bins se DERIVA de la de genes, no se lee por cohorte", {
+  # genes.tsv es por cohorte y trae solo los bins que esa cohorte ocupo, asi
+  # que dos cohortes darian mallas distintas y la referencia dependeria de
+  # cual se leyo primero.
+  r <- bp_ref()
+  nrow(r$grid) == length(unique(r$gene_grid$grid_index)) &&
+    r$grid$grid_N[1] == r$gene_grid$grid_N[1] &&
+    all(startsWith(r$grid$gene_id, "bin_")) })
+
+check("la consulta agregada no produce posiciones repetidas", {
+  r <- bp_ref()
+  cl <- list(values = stats::rnorm(nrow(r$gene_grid)),
+             ids = r$gene_grid$gene_id, collapsed = 0L)
+  b <- bin_query(cl, r)
+  qi <- query_grid_index(r$grid, b$ids, min_observed = 5L)
+  ci <- qi$chrom_idx[["20"]]
+  !any(duplicated(ci$t)) && length(ci$t) == length(b$ids) })
+
+check("la cobertura de la consulta se mide contra N, no contra las filas", {
+  # Con eje bp la malla de bins solo trae los OCUPADOS, asi que
+  # nrow(grid) << sum(N) y la cobertura salia 100% cuando eran 20 de 258. Ese
+  # numero alimenta el umbral de rechazo por banda.
+  r <- bp_ref()
+  cl <- list(values = stats::rnorm(nrow(r$gene_grid)),
+             ids = r$gene_grid$gene_id, collapsed = 0L)
+  b <- bin_query(cl, r)
+  qi <- query_grid_index(r$grid, b$ids, min_observed = 5L)
+  abs(qi$coverage - length(b$ids) / r$grid$grid_N[1]) < 1e-9 &&
+    qi$coverage < 0.2 })
+
+check("la consulta aplica bin_min_coverage", {
+  # Un bin cuya cobertura cae bajo el umbral se descarta, igual que en ingest.
+  r <- bp_ref()
+  # solo el primer gen de cada bin llega: los bins de 2+ genes caen a 0.5 o menos
+  first <- !duplicated(paste(r$gene_grid$chr, r$gene_grid$grid_index))
+  cl <- list(values = stats::rnorm(sum(first)),
+             ids = r$gene_grid$gene_id[first], collapsed = 0L)
+  r2 <- r; r2$params$bin_min_coverage <- 0.9
+  b <- bin_query(cl, r2)
+  is.null(b) || b$n_bins_dropped > 0 })
+
+check("sin gene_grid la consulta aborta en vez de inventar la cobertura", {
+  # Sin la malla de genes no hay denominador y la cobertura por bin saldria 1
+  # siempre: un numero equivocado que parece bueno.
+  r <- bp_ref(); r$gene_grid <- NULL
+  cl <- list(values = 1:3, ids = c("G1", "G2", "G3"), collapsed = 0L)
+  inherits(tryCatch(bin_query(cl, r), error = function(e) e), "error") })
+
+check("el eje de gen no pasa por bin_query", {
+  # `grid_axis` viaja en ref$params, y si no es "bp" la consulta va directa.
+  src <- paste(readLines("R/fingerprint.R", warn = FALSE), collapse = " ")
+  grepl('if (isTRUE(ref$params$grid_axis == "bp"))', src, fixed = TRUE) })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
