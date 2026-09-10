@@ -74,7 +74,8 @@ stage_spectra <- function(project, opt) {
     inp <- tsf_stage_inputs(project, id)
     tsf_log(id, ": spectra over ", length(inp$chrom_idx), " chromosome(s)")
     for (cond in tsf_conditions(inp$conditions, opt)) {
-      spec <- compute_condition_spectra(inp$dataset, cond, inp$chrom_idx)
+      spec <- compute_condition_spectra(inp$dataset, cond, inp$chrom_idx,
+                                        estimator = estimator_spec(project))
       if (is.null(spec)) next
       is_summary <- spec$sample %in% c("avg_signal", "median_signal")
       write_tsv_tsf(spec[is_summary, ], p_spectra_condition(inp$paths, cond))
@@ -102,7 +103,8 @@ stage_maxt <- function(project, opt) {
         next
       }
       t0 <- Sys.time()
-      res <- maxt_condition(inp$dataset, cond, inp$chrom_idx, project$maxt, n_cores)
+      res <- maxt_condition(inp$dataset, cond, inp$chrom_idx, project$maxt, n_cores,
+                            estimator = estimator_spec(project))
       if (is.null(res)) { tsf_warn("  ", cond, ": no maxT result"); next }
       write_tsv_tsf(res, out_path)
       write_tsv_tsf(data.frame(condition = cond,
