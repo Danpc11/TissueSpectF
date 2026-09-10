@@ -74,6 +74,12 @@ Parameters (override config/project.R):
                         gene density varies with the chromatin state itself
   --bin-size <n>        bin width in bp for --grid-axis bp (default 100000)
   --bin-aggregate <s>   mean | sum   how genes in one bin combine
+  --estimator <s>       periodogram | multitaper. The periodogram is
+                        inconsistent: measured cv ~0.94 on pure noise against
+                        ~0.45 for multitaper, a 2.1x reduction. Costs
+                        resolution: components closer than 2*NW/N merge
+  --mt-nw <x>           time-bandwidth product for multitaper (default 3)
+  --mt-k <n>            tapers to average (default 5)
   --maxt-b <n>          permutations, per-sample maxT
   --condition-b <n>     permutations, condition-level test
   --stable-frac <f>     consistency threshold
@@ -152,6 +158,8 @@ OPTION_ALIASES <- c(
   gridaxis = "grid_axis", grid_axis = "grid_axis",
   binsize = "bin_size", bin_size = "bin_size",
   binaggregate = "bin_aggregate", bin_aggregate = "bin_aggregate",
+  estimator = "estimator", mtnw = "mt_nw", mt_nw = "mt_nw",
+  mtk = "mt_k", mt_k = "mt_k",
   maxtb = "maxt_b", maxt_b = "maxt_b", b = "maxt_b",
   conditionb = "condition_b", condition_b = "condition_b",
   stablefrac = "stable_frac", stable_frac = "stable_frac",
@@ -255,6 +263,9 @@ apply_cli_overrides <- function(project, opt) {
   set("grid_axis", opt$grid_axis)
   set("bin_size", opt$bin_size, as.numeric)
   set("bin_aggregate", opt$bin_aggregate)
+  set("estimator", opt$estimator)
+  set("mt_nw", opt$mt_nw, as.numeric)
+  set("mt_k", opt$mt_k, as.integer)
   set("annotation_file", opt$annotation)
   set("annotation_format", opt$annotation_format)
   # Restricting the chromosomes is what makes an exploratory run possible on a
