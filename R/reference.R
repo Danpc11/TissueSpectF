@@ -212,7 +212,12 @@ validate_across_datasets <- function(fps,
     calibrate_coverage_bands(datasets, fps, lab, ids, target, n_features,
                              ref_params = ref_params, n_masks = n_masks,
                              max_queries_per_mask = max_queries_per_mask,
-                             grid_size = grid_size)
+                             # nrow(grid) explicito: es el denominador de
+                             # reference_coverage(), asi que la calibracion y
+                             # la consulta miden lo mismo. Antes llegaba NULL
+                             # y la cobertura salia 1.
+                             grid_size = grid_size %||%
+                               (if (!is.null(grid)) nrow(grid) else NULL))
   }
   calib$bands <- summarise_bands(band_pred, policy = threshold_policy)
   calib$bands_by_class <- attr(calib$bands, "per_class")
@@ -396,8 +401,15 @@ calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features
 
     n_observed_dataset <- sum(vapply(ds$chrom_idx, function(ci) length(ci$t),
                                      integer(1)))
-    grid_n <- grid_size %||% n_observed_dataset
-    baseline_cov <- n_observed_dataset / grid_n
+    # LA MISMA definicion que la consulta, via reference_coverage().
+    #
+    # Antes era `n_observed / (grid_size %||% n_observed)` y grid_size nunca se
+    # pasaba, asi que daba 1 por construccion: el log decia "covers X% of the
+    # reference grid" y siempre calculaba 100%. Y el umbral que sale de estas
+    # bandas se aplicaba luego a consultas medidas con otro denominador.
+    grid_n <- grid_size %||% NA_integer_
+    baseline_cov <- if (is.finite(grid_n) && grid_n > 0)
+      min(n_observed_dataset / grid_n, 1) else NA_real_
     tsf_log("  ", held, ": covers ", round(100 * baseline_cov, 1),
             "% of the reference grid before any masking")
 
@@ -424,7 +436,10 @@ calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features
             # own denominator would systematically place samples in a band that
             # is easier than the one a real query of that size would fall in.
             mask_retention <- n_kept / n_observed_dataset
-            gene_cov <- n_kept / grid_n
+            # Mismo denominador que la consulta: las posiciones de la
+            # referencia.
+            gene_cov <- if (is.finite(grid_n) && grid_n > 0)
+              min(n_kept / grid_n, 1) else NA_real_
             fp <- fingerprint_masked(y, masked, ref_params$k_max,
                                      ref_params$features)
             if (is.null(fp)) next
@@ -727,11 +742,14 @@ apply_rejection <- function(res, calibration, coverage = NA_real_,
 
 #' Build the reference: fingerprints, validation, and a model fitted on all data.
 #' @param target see validate_across_datasets(); "class_id" is the composite key.
+#' @param gene_mask ids de gen que TODAS las cohortes midieron. Una consulta
+#'   aplica esta mascara en vez de recalcular filter_expressed(), que depende
+#'   de las muestras de una cohorte y no es reproducible con una sola muestra.
 #' @param gene_grid la malla de GENES cuando el eje es bp. La de bins no dice
 #'   cuantos genes anotados tiene cada bin, y sin ese denominador la cobertura
 #'   por bin de una consulta seria 1 siempre.
 build_reference <- function(fps, target = "class_id", n_features = 500L,
-                           gene_grid = NULL,
+                           gene_grid = NULL, gene_mask = NULL,
                             grid = NULL, params = list(), n_masks = 10L,
                             datasets = NULL, max_queries_per_mask = 25L,
                             threshold_policy = "pooled") {
@@ -760,6 +778,18 @@ build_reference <- function(fps, target = "class_id", n_features = 500L,
        # La malla de GENES, ademas de la de bins: fingerprint_query() la
        # necesita para reproducir la cobertura por bin de la consulta.
        gene_grid = gene_grid,
+       # MASCARA DE GENES COMPARTIDA, la interseccion de las cohortes.
+       #
+       # ingest aplica filter_expressed() POR COHORTE antes de agregar, con
+       # rowMeans sobre las muestras de esa cohorte. Una consulta de una sola
+       # muestra no puede evaluar ese criterio, y dos cohortes calculan el mismo
+       # bin a partir de conjuntos de genes distintos.
+       #
+       # La interseccion es la eleccion conservadora: un bin se calcula con los
+       # mismos genes en todas partes. Lo que cuesta es potencia -- un gen que
+       # una cohorte no midio sale de todas -- y eso va declarado en vez de
+       # dejar que cada ruta use su propio conjunto.
+       gene_mask = gene_mask,
        grid = grid[, intersect(c("gene_id", "entrez_id", "chr", "start",
                                  "grid_index", "grid_N"), colnames(grid))],
        params = utils::modifyList(
