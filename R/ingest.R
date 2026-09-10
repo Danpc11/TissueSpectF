@@ -210,38 +210,18 @@ read_gene_annotation <- function(path, chrom_levels) {
   out
 }
 
-#' DEPRECATED: rank among filtered genes. Kept only for reading old outputs.
-#' The spectral axis is now the annotation grid; see build_reference_grid().
-add_gene_order <- function(genes, chrom_levels, min_genes_per_chr = 8L) {
-  genes <- genes[genes$chr %in% chrom_levels, ]
-  genes <- genes[order(match(genes$chr, chrom_levels), genes$start, genes$gene_id), ]
-  genes$gene_order <- stats::ave(seq_len(nrow(genes)), genes$chr, FUN = seq_along)
-  keep_chr <- names(which(table(genes$chr) >= min_genes_per_chr))
-  dropped <- setdiff(unique(genes$chr), keep_chr)
-  if (length(dropped)) {
-    tsf_warn("Chromosomes with < ", min_genes_per_chr, " genes dropped: ",
-              paste(dropped, collapse = ", "))
-  }
-  genes[genes$chr %in% keep_chr, ]
-}
 
-#' TPM followed by asinh, matching the original transform.
+#' TPM (o CPM sin longitudes) seguido de asinh.
+#'
+#' Delega en prepare_axis_values(), la MISMA funcion que usa una consulta. El
+#' orden --normalizar, transformar, enmascarar, agregar-- esta fijado en un
+#' solo sitio: si cambia, cambia para las dos rutas o no cambia para ninguna.
+#'
+#' Antes las dos rutas hacian las mismas operaciones en orden distinto y no
+#' conmutan: con un bin de dos genes a 1000 y 1 TPM, ingest daba 4.241 y la
+#' consulta 6.909.
 counts_to_expression <- function(count_mat, gene_length = NULL) {
-  count_mat[is.na(count_mat)] <- 0
-  if (is.null(gene_length)) {
-    # No length available: CPM is the honest fallback, and it is recorded in the
-    # manifest so nobody assumes TPM downstream.
-    scaled <- t(t(count_mat) / pmax(colSums(count_mat), 1)) * 1e6
-    attr(scaled, "unit") <- "CPM"
-  } else {
-    rpk <- count_mat / (gene_length / 1000)
-    scaled <- t(t(rpk) / pmax(colSums(rpk, na.rm = TRUE), 1)) * 1e6
-    attr(scaled, "unit") <- "TPM"
-  }
-  unit <- attr(scaled, "unit")
-  out <- asinh(scaled)
-  attr(out, "unit") <- paste0("asinh(", unit, ")")
-  out
+  prepare_axis_values(count_mat, gene_length = gene_length, unit = "counts")
 }
 
 #' Keep genes expressed in a reasonable fraction of samples.
