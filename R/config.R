@@ -88,9 +88,12 @@ validate_dataset_config <- function(cfg, dataset_id) {
   cfg
 }
 
-tsf_source_all <- function(dir = "R") {
-  files <- sort(list.files(dir, pattern = "\\.R$", full.names = TRUE))
-  # utils_io first: everything else uses its helpers.
-  files <- c(files[grepl("utils_io\\.R$", files)], files[!grepl("utils_io\\.R$", files)])
-  invisible(lapply(files, source))
-}
+# tsf_source_all() se elimino: era un cargador RIVAL de tsf_load_all().
+#
+# Ordenaba alfabeticamente con utils_io.R al frente, sin el orden explicito de
+# tsf_module_order() ni el guardrail que rechaza archivos con shebang o con
+# commandArgs() de nivel superior. Ese guardrail existe porque un script en R/
+# se ejecutaba al cargarse y borraba el arbol de resultados.
+#
+# Nadie lo llamaba, pero un cargador que ignora el orden y los guardrails es
+# peor que codigo muerto: es una trampa esperando a que alguien lo use.
