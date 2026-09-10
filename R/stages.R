@@ -862,29 +862,58 @@ stage_reference <- function(project, opt) {
   # Solo con eje bp: en el eje de gen cada gen es su propia posicion, y una
   # posicion que una cohorte no midio queda no observada por el mecanismo de
   # T_c(y) sin necesidad de mascara.
+  # LOS CONJUNTOS DE GENES DE LAS COHORTES TIENEN QUE COINCIDIR.
+  #
+  # No se calcula aqui una interseccion para aplicarsela solo a las consultas:
+  # eso seria PEOR que no hacer nada, porque el entrenamiento uso el conjunto
+  # de cada cohorte y la consulta usaria la interseccion -- tres
+  # representaciones en vez de dos.
+  #
+  # La mascara tiene que aplicarse en INGEST, con --gene-mask, para que las
+  # cohortes agreguen los bins con los mismos genes. Aqui solo se comprueba que
+  # se hizo, y se aborta si no.
+  #
+  # Y se lee de retained_genes.tsv, no de genes.tsv: con eje bp genes.tsv
+  # guarda `bin_<chr>_<index>` como gene_id, asi que la mascara saldria con ids
+  # de bin y no intersecaria ningun gen -- 0 de 15 en el caso medido.
   gene_mask <- NULL
   if (is_bp) {
-    obs <- lapply(kept_datasets, function(id) {
-      gtab <- read_tsv_tsf(file.path(project$interim_dir, id, "genes.tsv"),
-                           required = FALSE)
-      if (is.null(gtab) || !"gene_id" %in% names(gtab)) NULL
-      else as.character(gtab$gene_id)
+    sets <- lapply(kept_datasets, function(id) {
+      f <- file.path(project$interim_dir, id, "retained_genes.tsv")
+      t <- read_tsv_tsf(f, required = FALSE)
+      if (is.null(t) || !"gene_id" %in% names(t)) NULL
+      else unique(as.character(t$gene_id))
     })
-    obs <- Filter(Negate(is.null), obs)
-    if (length(obs) >= 2L) {
-      gene_mask <- Reduce(intersect, obs)
-      un <- length(Reduce(union, obs))
-      tsf_log("Shared gene mask: ", length(gene_mask), " of ", un,
-              " position(s) measured by all ", length(obs), " cohort(s) (",
-              round(100 * length(gene_mask) / max(un, 1)), "%). A query uses ",
-              "this set instead of recomputing the per-cohort expression ",
-              "filter, which one sample cannot evaluate.")
+    names(sets) <- kept_datasets
+    sets <- Filter(Negate(is.null), sets)
+    if (length(sets) >= 2L) {
+      inter <- Reduce(intersect, sets)
+      un <- Reduce(union, sets)
+      if (length(inter) != length(un)) {
+        tsf_abort("Las cohortes retuvieron conjuntos de genes DISTINTOS: ",
+                  length(inter), " compartidos de ", length(un),
+                  " en la union. Con eje bp eso significa que el mismo bin se ",
+                  "calculo con genes distintos en cada cohorte, y sus espectros ",
+                  "no son comparables. Genera la mascara y RE-INGESTA:\n",
+                  "  Rscript scripts/shared_gene_mask.R --interim-dir ",
+                  project$interim_dir, " --datasets ",
+                  paste(kept_datasets, collapse = ","), "\n",
+                  "  ./tsf ingest ... --grid-axis bp --gene-mask ",
+                  file.path(project$interim_dir, "shared_gene_mask.tsv"),
+                  " --force")
+      }
+      gene_mask <- inter
+      tsf_log("Gene sets identical across ", length(sets), " cohort(s): ",
+              length(inter), " position(s). Cohorts and queries share the set.")
+    } else if (length(sets) == 1L) {
+      gene_mask <- sets[[1]]
     } else {
-      tsf_warn("Shared gene mask: fewer than two cohorts with genes.tsv; ",
-               "queries will not apply a mask and may aggregate bins from a ",
-               "different gene set than the reference did.")
+      tsf_warn("Sin retained_genes.tsv: no se puede comprobar que las cohortes ",
+               "usaran los mismos genes. Re-ingesta con este codigo para que se ",
+               "escriba.")
     }
   }
+
   prov <- grids[[1]]$provenance
   ref <- build_reference(fps, target = project$fingerprint$target %||% "condition",
                          n_features = project$fingerprint$n_features %||% 500L,
