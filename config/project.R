@@ -148,6 +148,14 @@ list(
   # medir todos los genes del bin y descarta la mayoria de los bins densos.
   bin_min_coverage = as.numeric(Sys.getenv("TSF_BIN_MIN_COVERAGE", "0.5")),
 
+  # Archivo con los genes que TODAS las cohortes deben usar, una columna
+  # gene_id. Sin el, filter_expressed() decide por cohorte y el mismo bin se
+  # calcula con genes distintos en cada una.
+  #
+  # Se genera con scripts/shared_gene_mask.R a partir de los
+  # retained_genes.tsv de una primera pasada de ingest.
+  gene_mask_file = Sys.getenv("TSF_GENE_MASK", ""),
+
   # Estimador espectral. El periodograma es inconsistente: su varianza no cae
   # al acumular datos, y sobre ruido puro su coeficiente de variacion es ~1,
   # medido. El multitaper promedia K periodogramas bajo tapers ortogonales y lo
