@@ -524,6 +524,22 @@ check("--seed reaches maxt$seed", {
       "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
   grepl("maxt$seed = 99", out, fixed = TRUE) })
 
+check("el estimador llega a spectra y a maxt, no solo al config", {
+  # Una bandera aceptada que no llega a ningun sitio es peor que no tenerla:
+  # el log dice `override: estimator = multitaper` y el resultado sale del
+  # periodograma.
+  src <- paste(readLines("R/stages.R", warn = FALSE), collapse = " ")
+  grepl("compute_condition_spectra(inp$dataset, cond, inp$chrom_idx,", src, fixed = TRUE) &&
+    grepl("estimator = estimator_spec(project)", src, fixed = TRUE) &&
+    length(gregexpr("estimator_spec(project)", src, fixed = TRUE)[[1]]) >= 2 })
+
+check("el nulo de maxt usa el mismo estimador que el observado", {
+  # Observado por multitaper y nulo por periodograma no es una prueba de
+  # permutacion de nada.
+  src <- paste(readLines("R/maxt.R", warn = FALSE), collapse = " ")
+  grepl("obs <- tsf_spectrum(y, terms, estimator)", src, fixed = TRUE) &&
+    grepl("null_power <- tsf_spectrum(sample(y), terms, estimator)", src, fixed = TRUE) })
+
 check("bin aggregation leaves one row per grid position", {
   # On the gene axis each gene is its own rank. On a bp axis several genes fall
   # in one bin, and a repeated grid_index would make the estimator place two
