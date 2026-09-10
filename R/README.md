@@ -1,4 +1,4 @@
-# R/experimental/
+# R - módulos experimentales
 
 Módulos **no cargados por el core** y que **ninguna etapa del pipeline llama**.
 Se cargan a mano:
