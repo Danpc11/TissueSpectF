@@ -194,6 +194,14 @@ def main():
     ap.add_argument("--expr")
     ap.add_argument("--grid")
     ap.add_argument("--labels")
+    # NOMBRES EXPLÍCITOS, no la primera y la última columna.
+    #
+    # samples.tsv tiene 17 columnas y termina en `keep`, no en `condition`:
+    # sample_id, dataset_id, tissue, vocabulary, state, class_id, condition,
+    # fibrosis_stage, ..., keep, filtered_out. Tomar `columns[-1]` residualiza
+    # por TRUE/FALSE y el análisis por condición sale mal sin avisar.
+    ap.add_argument("--sample-column", default="sample_id")
+    ap.add_argument("--condition-column", default="condition")
     ap.add_argument("--chr", default="20")
     ap.add_argument("--period-mb", type=float, default=2.92)
     ap.add_argument("--phase-mb", type=float, default=2.57)
@@ -229,8 +237,14 @@ def main():
     Xr = X
     if a.labels:
         lab0 = pd.read_csv(a.labels, sep="\t")
+        for c in (a.sample_column, a.condition_column):
+            if c not in lab0.columns:
+                sys.exit(f"--labels no tiene la columna '{c}'. Presentes: "
+                         f"{', '.join(lab0.columns)}. Usá --sample-column y "
+                         f"--condition-column; adivinar la primera y la última "
+                         f"residualiza por la columna equivocada sin avisar.")
         cols0 = pd.read_csv(a.expr, sep="\t", index_col=0, nrows=0).columns
-        m0 = dict(zip(lab0[lab0.columns[0]], lab0[lab0.columns[-1]]))
+        m0 = dict(zip(lab0[a.sample_column], lab0[a.condition_column]))
         cnd = np.array([m0.get(c, "NA") for c in cols0])
         if len(set(cnd) - {"NA"}) >= 2:
             Xr = residualise_by_condition(X, cnd)
@@ -257,9 +271,7 @@ def main():
     if a.labels:
         lab = pd.read_csv(a.labels, sep="\t")
         cols = pd.read_csv(a.expr, sep="\t", index_col=0, nrows=0).columns
-        key = lab.columns[0]
-        cond_col = lab.columns[-1]
-        m = dict(zip(lab[key], lab[cond_col]))
+        m = dict(zip(lab[a.sample_column], lab[a.condition_column]))
         cond = np.array([m.get(c, "NA") for c in cols])
         print("\nby condition:")
         for c in sorted(set(cond) - {"NA"}):
