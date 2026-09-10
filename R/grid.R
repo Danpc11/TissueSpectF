@@ -386,16 +386,3 @@ spectral_window <- function(t, N) {
              coverage = terms$n / N,
              stringsAsFactors = FALSE)
 }
-
-#' Flag peaks sitting on a strong window feature.
-#'
-#' `window_rank` is the rank of that frequency in the window spectrum: rank 1
-#' means the sampling pattern itself is strongest exactly there, which is the
-#' worst case for interpreting the peak as biological.
-annotate_window <- function(peaks, terms) {
-  wp <- terms$window_power
-  peaks$window_power <- wp[match(peaks$k, terms$k)]
-  peaks$window_rank <- rank(-wp)[match(peaks$k, terms$k)]
-  peaks$window_pct <- 100 * peaks$window_rank / length(wp)
-  peaks
-}
