@@ -133,6 +133,21 @@ list(
   # remove.
   bin_aggregate = Sys.getenv("TSF_BIN_AGGREGATE", "mean"),
 
+  # Fraccion minima de los genes ANOTADOS de un bin que una muestra tiene que
+  # medir para que el bin cuente como medido EN ESA MUESTRA.
+  #
+  # Sin este umbral, el mismo bin no significa lo mismo entre cohortes: la
+  # posicion es comun pero su valor no, porque una cohorte puede medir tres de
+  # sus genes y otra uno, y esa diferencia sigue a la plataforma y a la
+  # profundidad. Un bin por debajo del umbral queda NA para esa muestra y
+  # gls_observed() lo saca de su ajuste.
+  #
+  # Es una PREESPECIFICACION: se fija antes de ver resultados. 0.5 es
+  # deliberadamente laxo -- la mediana de genes anotados por bin a 250 kb es 2,
+  # asi que exigir 0.5 significa "al menos uno de dos". Subirlo a 1.0 exige
+  # medir todos los genes del bin y descarta la mayoria de los bins densos.
+  bin_min_coverage = as.numeric(Sys.getenv("TSF_BIN_MIN_COVERAGE", "0.5")),
+
   # Estimador espectral. El periodograma es inconsistente: su varianza no cae
   # al acumular datos, y sobre ruido puro su coeficiente de variacion es ~1,
   # medido. El multitaper promedia K periodogramas bajo tapers ortogonales y lo
