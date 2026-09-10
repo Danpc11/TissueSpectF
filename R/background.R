@@ -97,7 +97,19 @@ spectral_background <- function(period, power, span = 0.5, iters = 4L) {
 #'   periodograma tiene 2; el multitaper con K tapers tiene aproximadamente
 #'   2K, y de ahí sale su menor varianza. Poner 2 con multitaper daría
 #'   p-valores demasiado grandes: el test sería válido pero ciego.
-#' @return `sp` con background, excess, p_background y q_background
+#' @return `sp` con `background`, `excess` y `background_rank_fraction`.
+#'
+#' EL NOMBRE IMPORTA. Antes se llamaba `p_background`, y no es un p-valor: es
+#' el rango del exceso entre las m frecuencias del mismo espectro, dividido
+#' por m+1. Su mínimo corresponde SIEMPRE al máximo del cromosoma, incluso en
+#' ruido puro, así que filtrar `<= 0.05` selecciona el 5% superior de
+#' cualquier espectro con señal o sin ella -- medido: 25 de 511 en ruido 1/f y
+#' las mismas 25 con una señal de amplitud 6.
+#'
+#' Un nombre que empieza por `p_` invita a ese filtro. La ruta válida es
+#' comparar el exceso observado contra la distribución del MÁXIMO exceso bajo
+#' realizaciones nulas, que es lo que hace mark_over_background() con
+#' `excess_null`, y ese sí es un control tipo maxT.
 peaks_over_background <- function(sp, span = 0.5, dof = 2L) {
   sp$background <- spectral_background(sp$period, sp$power, span = span)
   sp$excess <- sp$power / sp$background
@@ -125,7 +137,7 @@ peaks_over_background <- function(sp, span = 0.5, dof = 2L) {
   #
   # `dof` ya no entra en el p-valor: se conserva en la salida porque describe
   # el estimador y sirve para interpretar la magnitud del exceso.
-  sp$p_background <- NA_real_
+  sp$background_rank_fraction <- NA_real_
   if (sum(ok) >= 24L) {
     e <- sp$excess[ok]
     # (1 + #{e_j >= e_i}) / (n + 1): la misma forma que un p de permutacion, y
@@ -133,7 +145,7 @@ peaks_over_background <- function(sp, span = 0.5, dof = 2L) {
     # que BH sobre ellas alcanza q = 0.05 solo si varias empatan en el piso --
     # exactamente la restriccion que el resto del pipeline ya reporta.
     r <- rank(-e, ties.method = "min")
-    sp$p_background[ok] <- r / (length(e) + 1)
+    sp$background_rank_fraction[ok] <- r / (length(e) + 1)
   }
   # NO SE APLICA BH SOBRE p_background.
   #
@@ -147,8 +159,14 @@ peaks_over_background <- function(sp, span = 0.5, dof = 2L) {
   #
   # `p_background` se reporta tal cual y es el valor a usar. `q_background` se
   # conserva sólo para no romper lo que ya lo lee, y vale lo mismo.
-  sp$q_background <- sp$p_background
+  sp$background_rank_fraction_q <- sp$background_rank_fraction
   sp$dof <- dof
+  # Retrocompatibilidad: se conserva el nombre viejo como alias exacto para no
+  # romper lo que ya lo lee, pero la columna a usar es
+  # `background_rank_fraction` y el filtro valido esta en
+  # mark_over_background().
+  sp$p_background <- sp$background_rank_fraction
+  sp$q_background <- sp$background_rank_fraction
   sp
 }
 
@@ -241,8 +259,8 @@ pooled_background_null <- function(specs, min_samples = 8L) {
 #' devolveria una frecuencia por cromosoma por construccion.
 mark_over_background <- function(sp, alpha = 0.05, min_excess = NULL,
                                  excess_null = NULL, verbose = FALSE) {
-  if (!"p_background" %in% names(sp)) {
-    tsf_abort("mark_over_background: falta p_background; corre ",
+  if (!"background_rank_fraction" %in% names(sp)) {
+    tsf_abort("mark_over_background: falta background_rank_fraction; corre ",
               "peaks_over_background() primero")
   }
 
@@ -307,8 +325,8 @@ mark_over_background <- function(sp, alpha = 0.05, min_excess = NULL,
               "espectro, con senal o sin ella.")
   }
 
-  # Solo el exceso: anadir `p_background <= alpha` no filtra nada mas, porque
-  # el p es el rango del mismo exceso.
+  # Solo el exceso: anadir `background_rank_fraction <= alpha` no filtra nada
+  # mas, porque esa fraccion es el rango del mismo exceso.
   sp$over_background <- is.finite(sp$excess) & sp$excess >= min_excess
   attr(sp, "min_excess") <- min_excess
   sp
