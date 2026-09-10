@@ -1,531 +1,251 @@
-#!/usr/bin/env Rscript
-# tsf -- one entry point for the whole pipeline.
+# Project-level paths and constants.
 #
-#   ./tsf run                        ingest -> spectra -> maxt -> stability
-#                                    -> peaks -> compare
-#   ./tsf run --from=stability       resume from a stage
-#   ./tsf maxt GSE135251 --cond=F3   one stage, one dataset, one condition
-#   ./tsf status                     what exists on disk
-#   ./tsf selfcheck                  end-to-end correctness on synthetic data
+# PATHS
+# -----
+# The defaults are relative to the repository, so a fresh clone runs without
+# editing this file. No path here names a particular machine: a default that
+# points at one person's scratch directory makes `./tsf check` fail for
+# everyone else, and makes a config fingerprint record a location rather than a
+# choice.
 #
-# Run from the repository root.
+# Resolution order, highest first:
+#
+#   1. the command line       --geo-dir / --interim-dir / --results-dir
+#   2. the environment        TSF_GEO_DIR / TSF_INTERIM_DIR / TSF_RESULTS_DIR
+#   3. <repo>/data, <repo>/interim, <repo>/results   (below)
+#
+# The repository is located by TSF_ROOT when set, and otherwise by the working
+# directory -- `./tsf` changes into the repository before doing anything, so
+# that is the repository for every invocation through the CLI. Set TSF_ROOT
+# when calling a script directly from somewhere else, or when the outputs
+# belong on a different filesystem from the code:
+#
+#   TSF_ROOT=/scratch/$USER/TissueSpectF ./tsf run
+#   TSF_RESULTS_DIR=/scratch/$USER/results ./tsf run
+#
+# All three directories are in .gitignore. They hold downloads and derived
+# output, never inputs that need versioning.
 
-if (!dir.exists("R") || !dir.exists("config")) {
-  stop("Run tsf from the repository root (the directory holding R/ and config/).",
-       call. = FALSE)
+# A path with no default. `.tsf_required()` returns NULL unless the value came
+# from the command line or the environment, and the stage that needs it aborts
+# naming the flag.
+#
+# The reason is provenance, not purity. A default that silently supplies a path
+# means a run's output location is decided by a file nobody read, and six weeks
+# later there is no way to tell from the command which tree a result came from.
+# Requiring the flag makes the invocation the record: what is in the shell
+# history, or in the job script, is the whole truth about where a result went.
+#
+# It also removes the failure mode that cost a consensus run: `make clean` can
+# no longer inherit a default that happens to point at live data.
+#
+#   ./tsf run --geo-dir data --interim-dir interim --results-dir run_2026_09_02
+#
+# Or, for a shell that will issue several commands against one tree:
+#
+#   export TSF_RESULTS_DIR=run_2026_09_02
+#
+# Nothing here decides anything on its own.
+.tsf_required <- function(var) {
+  v <- Sys.getenv(var, unset = "")
+  if (nzchar(v)) v else NULL
 }
-suppressPackageStartupMessages({
-  source(file.path("R", "utils_io.R"))
-  tsf_load_all("R")
-})
 
-USAGE <- "
-tsf -- TissueSpectF pipeline
+list(
+  # Raw GEO downloads: count tables, series matrices, NCBI annotation.
+  geo_dir     = .tsf_required("TSF_GEO_DIR"),
 
-Usage:
-  ./tsf <command> [<dataset>...] [options]
+  # Common format written by the ingest stage.
+  interim_dir = .tsf_required("TSF_INTERIM_DIR"),
 
-Commands:
-  fetch       download the GEO inputs the configs declare
-  check       verify the GEO inputs are where the configs expect them
-  ingest      GEO -> common format (labels, expression, genes)
-  spectra     FFT per chromosome, per sample and per condition
-  maxt        per-sample permutation test              [the slow stage]
-  condition   condition-level test on the summary signal  [~1/n the cost]
-  consensus   characteristic spectrum of each condition (power, prevalence, PLV)
-  differential  power per frequency compared BETWEEN conditions
-  clean       CLEAN decomposition: components by EBIC, no threshold
-  stability   stable peaks per condition + peak tables
-  peaks       gene-level reconstruction of every stable peak
-  compare     constant signature, transitions, cross-dataset replication
-  window      spectral window: what the gap pattern alone can produce
-  reference   build the fingerprint library + out-of-cohort validation
-  match       identify one expression profile against the reference
-  app         open the local desktop app in a browser (needs shiny)
-  bundle      package the app + reference into a folder anyone can run
+  # Downstream spectral results.
+  results_dir = .tsf_required("TSF_RESULTS_DIR"),
 
-TissueSpect-AE (the learned layer; see ml/ and requirements-ml.txt):
-  ae-prepare  export per-sample spectra + manifest for the model
-  run         all of the above, in order
-  status      what each dataset has on disk
-  selfcheck   run the full pipeline on synthetic data with a known peak
+  # --- annotation ------------------------------------------------------------
+  # Two formats are supported and they name the biotype field differently:
+  #
+  #   ncbi   GeneType   "protein-coding"   (hyphen)
+  #   gtf    gene_type  "protein_coding"   (underscore)
+  #
+  # gene_universe is a regular expression matched against that field, so a
+  # pattern written for one source matches nothing in the other. Ingest aborts
+  # with the right pattern rather than building an empty or accidental grid.
+  #
+  # GENCODE:
+  #   annotation_file   = "gencode.v50.basic.annotation.gtf.gz"
+  #   annotation_format = "gtf"
+  #   gene_universe     = "^protein_coding$"
+  #   annotation_release = "GENCODE v50 basic"
+  annotation_file   = "Human.GRCh38.p13.annot.tsv.gz",
+  annotation_format = Sys.getenv("TSF_ANNOTATION_FORMAT", "ncbi"),
 
-Options take `--key value` or `--key=value`; names are case-insensitive and
-`-` and `_` are interchangeable (--results-dir = --RESULTS_DIR).
+  # Exonic union length, which is what TPM needs. "span" (end - start) is not a
+  # transcript length and inflates long genes; it exists only for annotations
+  # with no exon features.
+  gene_length_mode  = "exonic",
+  strip_gene_version = TRUE,
 
-Scope:
-  --from <stage>        start at this stage            (run only)
-  --to <stage>          stop after this stage          (run only)
-  --cond F2,F3          restrict to these conditions
-  --branch median       one branch (default: both)
-  --force               recompute even if output exists
-  --dry-run             print the plan, do nothing
+  # A GENCODE GTF carries Ensembl ids and symbols but no Entrez ids, and three
+  # of these cohorts publish counts keyed on Entrez. The NCBI annotation table
+  # already in the data directory carries both side by side, so it doubles as
+  # the mapping. Set to NULL when the annotation already has what the counts use.
+  id_map = list(file = "Human.GRCh38.p13.annot.tsv.gz",
+                ensembl_column = "EnsemblGeneID",
+                entrez_column  = "GeneID"),
 
-Paths:
-  --config <file>       config file to read   (default: config/project.R)
-  --geo-dir <dir>       raw GEO downloads
-  --interim-dir <dir>   the common format
-  --results-dir <dir>   everything downstream
+  # Provenance of the annotation. Recorded in every output and checked before
+  # two datasets are allowed into the same reference: a feature named chrX_k7
+  # means a different thing under a different build or gene universe.
+  species            = "Homo sapiens",
+  genome_build       = "GRCh38.p13",
+  annotation_release = "NCBI",
 
-Parameters (override config/project.R):
-  --gene-universe <re>  biotypes on the grid, e.g. '^protein-coding$'
-  --grid-axis <s>       gene | bp   the spectral axis. bp makes a period a
-                        physical distance; on the gene axis it is not, because
-                        gene density varies with the chromatin state itself
-  --bin-size <n>        bin width in bp for --grid-axis bp (default 100000)
-  --bin-aggregate <s>   mean | sum   how genes in one bin combine
-  --estimator <s>       periodogram | multitaper. The periodogram is
-                        inconsistent: measured cv ~0.94 on pure noise against
-                        ~0.45 for multitaper, a 2.1x reduction. Costs
-                        resolution: components closer than 2*NW/N merge
-  --mt-nw <x>           time-bandwidth product for multitaper (default 3)
-  --mt-k <n>            tapers to average (default 5)
-  --maxt-b <n>          permutations, per-sample maxT
-  --condition-b <n>     permutations, condition-level test
-  --stable-frac <f>     consistency threshold
-  --primary-scheme <s>  full | all
-  --criterion <s>       condition | consistency
-  --ebic-gamma <f>      CLEAN selection penalty
-  --min-period <s>      off | auto | <genes>   technical floor, before the null
-  --period-margin <f>   margin on the auto floor            (default 2)
-  --margin-mode <s>     add | mult                          (default add)
-  --min-period-biological <g>  flat floor in genes          (default 0)
-  --n-null <n>          permutation draws for the consensus null
-  --n-contrast <n>      label permutations for the condition contrast
-  --period-bins         differential: collapse to ~40 common period bands.
-                        Multiplicity is the binding constraint and m is the
-                        only lever, so this is a power decision.
-  --stage-order <a,b>   ordered levels for the differential trend test
-  --n-boot <n>          bootstrap resamples of the consensus score
-  --n-masks <n>         masks per coverage band in the reference calibration
-  --cores <n>           local worker processes (or set N_WORKERS; default <= 8)
-  --k-max <n>           frequencies per chromosome in a fingerprint
-  --n-features <n>      features the centroid model selects (train only)
-  --features <s>        fingerprint representation:
-                          amplitude            (chr,k) log1p amplitude [default]
-                          amplitude_phase      the above, plus phase
-                          period_bins          (chr, period) on a common grid
-                          period_bins_genomic  one curve over period, 40 numbers
-                          band_ratios          ratios between period bands,
-                                               invariant to global scale
-                          expression_baseline  the CONTROL: raw expression,
-                                               same validation, no transform
-  --target <s>          class_id | condition | tissue   (reference only)
-                        class_id is the composite tissue::state::condition key
-                        and the default; condition is the RAW label, before the
-                        vocabulary map, and will not reflect a merged class
+  # Which annotated genes define the spectral axis. Regular expression matched
+  # against the annotation's gene_type. The grid is what makes N comparable
+  # across datasets, so changing this changes what "period in genes" means --
+  # run both and report both rather than picking one silently.
+  # Anchor the pattern: the NCBI annotation writes biotypes as "protein-coding"
+  # and "ncRNA" (hyphen, mixed case), so an unanchored "PROTEIN_CODING|NCRNA"
+  # silently matches ncRNA only and builds a grid with no coding genes at all.
+  #   "^protein-coding$"            coding only  (default)
+  #   "^(protein-coding|ncRNA)$"    coding + non-coding
+  #   NULL                          every annotated gene
+  gene_universe = Sys.getenv("TSF_GENE_UNIVERSE", "^protein-coding$"),
 
-Matching:
-  --query <file>        counts TSV to identify
-  --reference <file>    reference .rds to match against
-  --input-unit <u>      counts (default) | cpm | tpm | logged
-  --out <dir>           where to write the bundle    (bundle only)
+  # THE SPECTRAL AXIS: "gene" for consecutive gene ranks, "bp" for fixed
+  # base-pair bins. See build_reference_grid() for why the rank axis cannot
+  # support a physical interpretation -- gene density varies more than tenfold
+  # along a chromosome and varies WITH the chromatin state a spectral result
+  # would want to explain, so a period in genes does not name a distance.
+  #
+  # Kept at "gene" as the default so an existing results tree still means what
+  # it said. Every analysis intended for biological interpretation should use
+  # "bp": 100 kb for TAD-scale resolution, 250 kb for near-complete coverage.
+  # Run both -- a band that appears at one width and not the other is a
+  # property of the binning, not of the genome.
+  grid_axis = Sys.getenv("TSF_GRID_AXIS", "gene"),
+  bin_size  = as.numeric(Sys.getenv("TSF_BIN_SIZE", "100000")),
 
-Other:
-  --log <file>          append all output to this file
-  --help                this message
+  # What a bin's value means when several genes fall in it. Two different
+  # questions: "mean" is the region's average activity and is robust to how
+  # many genes it holds; "sum" is total transcriptional output and grows with
+  # gene density -- which on this axis is the confounder the axis exists to
+  # remove.
+  bin_aggregate = Sys.getenv("TSF_BIN_AGGREGATE", "mean"),
 
-Datasets are POSITIONAL, not a flag: `./tsf window GSE135251`, not
-`--datasets GSE135251`. With none given, every dataset in the configs is used.
+  # Estimador espectral. El periodograma es inconsistente: su varianza no cae
+  # al acumular datos, y sobre ruido puro su coeficiente de variacion es ~1,
+  # medido. El multitaper promedia K periodogramas bajo tapers ortogonales y lo
+  # baja a ~0.45, una reduccion de 2.1x cerca del maximo teorico de sqrt(K).
+  #
+  # Cuesta resolucion: promediar con banda NW mezcla componentes mas cercanas
+  # que 2*NW/N. Es el intercambio correcto aqui, porque este proyecto nunca
+  # tuvo un problema de resolucion y siempre tuvo uno de varianza.
+  estimator = Sys.getenv("TSF_ESTIMATOR", "periodogram"),  # o "multitaper"
+  mt_nw     = as.numeric(Sys.getenv("TSF_MT_NW", "3")),
+  mt_k      = as.integer(Sys.getenv("TSF_MT_K", "5")),
 
-Precedence: command line > environment (TSF_*) > config/project.R.
-"
+  # Genes are ordered by start position within a chromosome; a chromosome with
+  # fewer than this many genes cannot support a meaningful spectrum.
+  min_genes_per_chr = 8L,
 
-# The stage list is built from stage_names rather than typed out. The typed
-# version had already drifted -- it omitted `consensus` -- and a help text that
-# lies about which stages exist is worse than no help text.
-USAGE <- paste0(USAGE, "\nStages, in order: ",
-                paste(stage_names, collapse = ", "), ".\n")
+  # Expression filter applied before the FFT stage.
+  min_tpm      = 1,
+  min_fraction = 0.2,
 
-# Options accept both `--key value` and `--key=value`, and key names are
-# matched case-insensitively with `-` and `_` interchangeable, so --results-dir,
-# --results_dir and --RESULTS_DIR are the same flag. Every path and tuning
-# parameter that used to require an environment variable is a flag; the
-# environment variables still work, and the precedence is
-#
-#     command line  >  environment  >  config/project.R
-#
-# so a flag never has to fight a stale export.
+  chrom_levels = c(as.character(1:22), "X", "Y"),
 
-OPTION_ALIASES <- c(
-  config = "config", conf = "config",
-  from = "from", to = "to", cond = "cond", condition = "cond",
-  branch = "branch", log = "log", query = "query", reference = "reference",
-  geodir = "geo_dir", geo_dir = "geo_dir",
-  interimdir = "interim_dir", interim_dir = "interim_dir",
-  resultsdir = "results_dir", results_dir = "results_dir",
-  geneuniverse = "gene_universe", gene_universe = "gene_universe",
-  gridaxis = "grid_axis", grid_axis = "grid_axis",
-  binsize = "bin_size", bin_size = "bin_size",
-  binaggregate = "bin_aggregate", bin_aggregate = "bin_aggregate",
-  estimator = "estimator", mtnw = "mt_nw", mt_nw = "mt_nw",
-  mtk = "mt_k", mt_k = "mt_k",
-  maxtb = "maxt_b", maxt_b = "maxt_b", b = "maxt_b",
-  conditionb = "condition_b", condition_b = "condition_b",
-  stablefrac = "stable_frac", stable_frac = "stable_frac",
-  primaryscheme = "primary_scheme", primary_scheme = "primary_scheme",
-  criterion = "criterion", ebicgamma = "ebic_gamma", ebic_gamma = "ebic_gamma",
-  kmax = "k_max", k_max = "k_max", target = "target",
-  cores = "cores",
-  inputunit = "input_unit", input_unit = "input_unit", unit = "input_unit",
-  out = "out", outputdir = "out", output_dir = "out",
-  seed = "seed", features = "features",
-  nfeatures = "n_features", n_features = "n_features",
-  chromosomes = "chromosomes", chrom = "chromosomes",
-  annotation = "annotation", annotationformat = "annotation_format",
-  annotation_format = "annotation_format",
-  minperiod = "min_period", min_period = "min_period",
-  periodmargin = "period_margin", period_margin = "period_margin",
-  marginmode = "margin_mode", margin_mode = "margin_mode",
-  minperiodbiological = "min_period_biological",
-  min_period_biological = "min_period_biological",
-  nnull = "n_null", n_null = "n_null",
-  ncontrast = "n_contrast", n_contrast = "n_contrast",
-  stageorder = "stage_order", stage_order = "stage_order",
-  nboot = "n_boot", n_boot = "n_boot",
-  nmasks = "n_masks", n_masks = "n_masks"
+  # Consensus spectrum: how strong, how common and how phase-aligned each
+  # frequency is across the samples of a condition. See R/consensus.R for why
+  # this is not the spectrum of the mean profile.
+  consensus = list(
+    n_boot         = 500L,
+    quantile_cut   = 0.95,   # "stands out" cut when no maxT is available
+    min_prevalence = 0.5,
+    plv_q          = 0.05,   # BH-adjusted Rayleigh p for phase alignment
+    # Draws of n random samples, ignoring condition, whose best consensus score
+    # forms the null a component must beat to be called confirmed.
+    # Cost is one consensus spectrum per draw, cached per sample size, so
+    # conditions of equal size share a null.
+    n_null         = 50L,
+    null_q         = 0.05,   # family-wise p against the permuted null
+    # Column of samples.tsv identifying non-independent samples (subject, batch,
+    # tumour-normal pair). When set, the null draws whole blocks. NULL treats
+    # samples as independent, which is only right when they are.
+    permutation_block = NULL,
+    max_components = 50L
+  ),
+
+  # CLEAN decomposition: greedy deflation with an extended-BIC stopping rule.
+  # No number of components is chosen -- EBIC decides per chromosome. gamma
+  # scales the cost of searching the frequency grid; 1 is strict and is what
+  # keeps pure noise from yielding components. Lower it only as a declared
+  # sensitivity analysis.
+  clean = list(
+    ebic_gamma     = as.numeric(Sys.getenv("TSF_EBIC_GAMMA", "1")),
+    penalty_factor = 1,
+    max_components = 20L,
+    per_sample     = FALSE   # TRUE gives one fingerprint per sample (slower)
+  ),
+
+  # Fingerprints for the matcher. These are NOT the significant peaks: matching
+  # does not require any component to be individually significant, and filtering
+  # by q first would discard what makes classes separable.
+  fingerprint = list(
+    k_max      = 64L,          # frequency indices kept per chromosome
+    features   = "amplitude",  # or "amplitude_phase" to keep the phase
+    n_features = 500L,         # features the centroid model selects, on train only
+    # "class_id" is the composite key tissue::state::condition, and is the
+    # default because "condition" holds the RAW label, before the vocabulary's
+    # `conditions` map is applied. A vocabulary merging three healthy groups
+    # into one class had no effect on the reference until this changed.
+    target     = "class_id",   # or "condition" (raw label) or "tissue"
+    # Coverage calibration. Loss is simulated on GENES of the grid and the
+    # fingerprint is recomputed, because that is what a real query loses;
+    # masking spectral features instead would measure an easier, wrong quantity.
+    # Cost is one GLS fingerprint per (sample, level, mode, mask), hence the cap.
+    n_masks              = 10L,
+    max_queries_per_mask = 25L,
+    # Which per-band threshold is applied.
+    #   "pooled"       the quantile over all masks of a band. By construction it
+    #                  rejects about `quantile_correct` of true members.
+    #   "conservative" the 90th percentile of the per-mask thresholds, so an
+    #                  unlucky pattern of missing regions is not judged against
+    #                  a lucky mask.
+    # Both are computed and both rejection rates are reported. The default is
+    # "pooled" because with gene-level masking the conservative threshold was
+    # measured to reject 46-79% of true members, which trades far too much
+    # sensitivity for its extra safety. Switch only with that number in view.
+    threshold_policy     = "pooled"
+  ),
+
+  # What decides which peaks go downstream.
+  #   "condition"       family-wise (maxT), very strict: a component has to
+  #                     dominate its chromosome. Expect single digits.
+  #   "condition_fdr"   pointwise p with BH across frequencies. Answers "which
+  #                     frequencies carry structure" rather than "which is the
+  #                     strongest", and selects far more.
+  #   "consistency" >= stable_frac of samples individually significant
+  # Both are always computed and written; this only picks which one drives
+  # is_stable. See the note at the top of R/condition_test.R.
+  stability_criterion = Sys.getenv("TSF_STABILITY_CRITERION", "condition"),
+
+  # maxT permutation settings (kept here so both datasets provably share them).
+  maxt = list(
+    # TSF_MAXT_B lets a smoke run use a small B; production runs leave it unset.
+    B            = as.integer(Sys.getenv("TSF_MAXT_B", "1000")),
+    seed         = 42L,
+    block_sizes  = c(10L, 20L, 50L),
+    # Which null decides significance. "full" permutes every observed value and
+    # so destroys local autocorrelation as well as long-range structure; "all"
+    # additionally requires the peak to survive the block schemes, i.e. to be
+    # more than local correlation. Use "all" for any claim about periodicity.
+    primary_scheme = Sys.getenv("TSF_PRIMARY_SCHEME", "full"),
+    alpha        = 0.05,
+    stable_frac  = as.numeric(Sys.getenv("TSF_STABLE_FRAC", "0.9")),
+    # Permutations for the condition-level test. It runs once per condition
+    # instead of once per sample, so a larger B is affordable and gives a
+    # smaller attainable p-value (the floor is 1/(B+1)).
+    condition_B  = as.integer(Sys.getenv("TSF_CONDITION_B", "2000"))
+  )
 )
-
-FLAG_ALIASES <- c(
-  periodbins = "period_bins", period_bins = "period_bins",
-  force = "force", dryrun = "dry_run", dry_run = "dry_run",
-                  help = "help", h = "help", persample = "per_sample",
-                  per_sample = "per_sample")
-
-normalise_key <- function(k) tolower(gsub("-", "_", k))
-
-parse_cli <- function(args) {
-  opts <- list(); positional <- character(0); i <- 1L
-  while (i <= length(args)) {
-    a <- args[i]
-    if (!startsWith(a, "-")) { positional <- c(positional, a); i <- i + 1L; next }
-
-    key <- normalise_key(sub("^--?", "", sub("=.*$", "", a)))
-    inline <- if (grepl("=", a, fixed = TRUE)) sub("^[^=]*=", "", a) else NULL
-
-    if (key %in% names(FLAG_ALIASES) && is.null(inline)) {
-      opts[[FLAG_ALIASES[[key]]]] <- TRUE; i <- i + 1L; next
-    }
-    if (!key %in% names(OPTION_ALIASES)) {
-      cat(USAGE)
-      if (key %in% c("datasets", "dataset", "data-sets")) {
-        tsf_abort("Unknown option: ", a, ". Datasets are positional: ",
-                  "`./tsf <command> GSE135251`, with no flag.")
-      }
-      tsf_abort("Unknown option: ", a)
-    }
-    value <- inline
-    if (is.null(value)) {
-      if (i + 1L > length(args) || startsWith(args[i + 1L], "--")) {
-        cat(USAGE); tsf_abort("Option --", key, " needs a value")
-      }
-      value <- args[i + 1L]; i <- i + 1L
-    }
-    opts[[OPTION_ALIASES[[key]]]] <- value
-    i <- i + 1L
-  }
-
-  # R's `$` does partial matching on lists, so opt$cond would silently resolve to
-  # opt$condition_b when no exact "cond" element exists. Every option name is
-  # therefore pre-created as an explicit NULL entry, which makes `$` exact.
-  all_names <- unique(c(unname(OPTION_ALIASES), unname(FLAG_ALIASES)))
-  full <- stats::setNames(vector("list", length(all_names)), all_names)
-  full[names(opts)] <- opts
-  opts <- full
-
-  branch <- opts$branch
-  c(list(
-    command  = if (length(positional)) positional[1] else "help",
-    datasets = if (length(positional) > 1) positional[-1] else character(0),
-    branches = if (is.null(branch)) c("average", "median") else branch,
-    force    = isTRUE(opts$force),
-    dry_run  = isTRUE(opts$dry_run),
-    help     = isTRUE(opts$help)
-  ), opts[setdiff(names(opts), c("force", "dry_run", "help"))])
-}
-
-#' Apply command-line overrides to the loaded project config.
-apply_cli_overrides <- function(project, opt) {
-  set <- function(path, value, cast = identity) {
-    if (is.null(value)) return(invisible(NULL))
-    v <- cast(value)
-    if (length(path) == 1L) project[[path]] <<- v
-    else project[[path[1]]][[path[2]]] <<- v
-    tsf_log("override: ", paste(path, collapse = "$"), " = ", value)
-  }
-  set("geo_dir", opt$geo_dir)
-  set("interim_dir", opt$interim_dir)
-  set("results_dir", opt$results_dir)
-  set("gene_universe", opt$gene_universe)
-  # The spectral axis. Threaded here rather than left to the config so the two
-  # bin widths can be run from one command line without editing a file between
-  # them -- and so the invocation records which axis produced a result.
-  set("grid_axis", opt$grid_axis)
-  set("bin_size", opt$bin_size, as.numeric)
-  set("bin_aggregate", opt$bin_aggregate)
-  set("estimator", opt$estimator)
-  set("mt_nw", opt$mt_nw, as.numeric)
-  set("mt_k", opt$mt_k, as.integer)
-  set("annotation_file", opt$annotation)
-  set("annotation_format", opt$annotation_format)
-  # Restricting the chromosomes is what makes an exploratory run possible on a
-  # small machine: cost scales with how many there are, and one chromosome
-  # exercises every stage. It is a scope switch, never a result -- a signature
-  # computed on part of the genome is a rehearsal.
-  if (!is.null(opt$chromosomes)) {
-    chrs <- trimws(strsplit(opt$chromosomes, ",")[[1]])
-    unknown <- setdiff(chrs, project$chrom_levels)
-    if (length(unknown)) {
-      tsf_abort("Unknown chromosome(s): ", paste(unknown, collapse = ", "),
-                ". Available: ", paste(project$chrom_levels, collapse = ", "))
-    }
-    project$chrom_levels <- chrs
-    tsf_warn("PARTIAL GENOME: ", length(chrs), " chromosome(s) (",
-             paste(chrs, collapse = ", "), "). Fine for a rehearsal; any ",
-             "signature from this run is not a result.")
-  }
-  set("stability_criterion", opt$criterion)
-  set(c("maxt", "B"), opt$maxt_b, as.integer)
-  set(c("maxt", "condition_B"), opt$condition_b, as.integer)
-  set(c("maxt", "stable_frac"), opt$stable_frac, as.numeric)
-  set(c("maxt", "primary_scheme"), opt$primary_scheme)
-  set(c("clean", "ebic_gamma"), opt$ebic_gamma, as.numeric)
-  set(c("consensus", "n_null"), opt$n_null, as.integer)
-  set(c("consensus", "n_contrast"), opt$n_contrast, as.integer)
-  # Period floors reach consensus, where they shrink the tested family before
-  # the null runs. They are pre-specifications, so they belong on the command
-  # line or in a config -- never adjusted after seeing which components survive.
-  set(c("consensus", "min_period"), opt$min_period, as.character)
-  set(c("consensus", "period_margin"), opt$period_margin, as.numeric)
-  set(c("consensus", "margin_mode"), opt$margin_mode, as.character)
-  set(c("consensus", "min_period_biological"),
-      opt$min_period_biological, as.numeric)
-  set(c("consensus", "n_boot"), opt$n_boot, as.integer)
-  # --seed was in OPTION_ALIASES and wired to nothing: accepted without
-  # complaint, then silently discarded. Every permutation and every bootstrap in
-  # the pipeline derives from maxt$seed, so a run that passed --seed believing
-  # it had changed the draws got the default 42 and identical results -- the
-  # worst kind of failure, because it looks like the seed does not matter.
-  set(c("maxt", "seed"), opt$seed, as.integer)
-  set(c("fingerprint", "n_masks"), opt$n_masks, as.integer)
-  set(c("clean", "per_sample"), opt$per_sample, isTRUE)
-  set(c("fingerprint", "k_max"), opt$k_max, as.integer)
-  set(c("fingerprint", "features"), opt$features, as.character)
-  # Needed as a flag, not just a config value: a representation sweep has to
-  # hold the selected-feature count identical across runs, and changing it for
-  # one representation invalidates the comparison.
-  set(c("fingerprint", "n_features"), opt$n_features, as.integer)
-  set(c("fingerprint", "target"), opt$target)
-  project
-}
-
-opt <- parse_cli(commandArgs(trailingOnly = TRUE))
-if (opt$help || opt$command %in% c("help", "--help")) { cat(USAGE); quit(status = 0L) }
-
-known <- c(stage_names, "check", "run", "status", "selfcheck", "window",
-           "fetch", "reference", "match", "app", "bundle", "ae-prepare")
-if (!opt$command %in% known) {
-  cat(USAGE)
-  tsf_abort("Unknown command: ", opt$command)
-}
-if (!all(opt$branches %in% c("average", "median"))) {
-  tsf_abort("--branch must be average or median")
-}
-
-if (!is.null(opt$log)) {
-  ensure_dir(dirname(opt$log))
-  con <- file(opt$log, open = "at")
-  sink(con, split = TRUE); sink(con, type = "message")
-  on.exit({ sink(type = "message"); sink(); close(con) }, add = TRUE)
-}
-
-# Which config file to read. A run tree usually differs from its neighbours in
-# more than one setting -- a gene universe, a period floor, an output directory
-# -- and repeating those as flags on every command is how a stage ends up run
-# with one set of parameters and its successor with another. A config file makes
-# the whole set one name, and a name that can be committed: for a thesis, the
-# file IS the record of how a result was produced.
-#
-#   ./tsf window GSE135251 --config config/gencode_v2.R
-#
-# Still overridable per invocation: command line > environment > this file.
-config_path <- opt$config %||% "config/project.R"
-if (!file.exists(config_path)) {
-  tsf_abort("No such config file: ", config_path,
-            "\n  Copy config/project.R and edit it, or drop --config to use ",
-            "the default.")
-}
-if (!identical(config_path, "config/project.R")) {
-  tsf_log("config: ", config_path)
-}
-project <- apply_cli_overrides(load_project_config(config_path), opt)
-
-# Paths have no defaults, so they are checked here -- once, by name -- rather
-# than letting a NULL surface as an unrelated file.path() error inside a stage.
-#
-# PER COMMAND, not in bulk. An earlier version demanded all three from every
-# command, which broke `./tsf fetch --geo-dir data` (fetch downloads; it has
-# nothing to do with interim or results) and the CI step that dry-runs each
-# stage. Demanding a path a command never touches is not strictness, it is a
-# false requirement, and it trains people to set variables to satisfy a check
-# instead of to say something true.
-PATH_SPECS <- list(
-  geo_dir     = list(flag = "--geo-dir",     env = "TSF_GEO_DIR"),
-  interim_dir = list(flag = "--interim-dir", env = "TSF_INTERIM_DIR"),
-  results_dir = list(flag = "--results-dir", env = "TSF_RESULTS_DIR"))
-
-# What each command actually reads or writes. Anything absent from this list
-# needs all three, which is the safe default for a stage.
-COMMAND_PATHS <- list(
-  selfcheck = character(0),                 # builds its own synthetic tree
-  fetch     = "geo_dir",                    # downloads, nothing downstream
-  ingest    = c("geo_dir", "interim_dir"),  # GEO in, common format out
-  match     = "results_dir",                # reads a reference, writes nothing
-  app       = "results_dir",
-  bundle    = "results_dir",
-  status    = c("interim_dir", "results_dir"))
-
-needed <- COMMAND_PATHS[[opt$command]]
-if (is.null(needed)) needed <- names(PATH_SPECS)
-
-missing <- Filter(function(k) {
-  v <- project[[k]]
-  is.null(v) || !nzchar(as.character(v))
-}, needed)
-
-if (length(missing)) {
-  lines <- vapply(missing, function(k) {
-    paste0("    ", PATH_SPECS[[k]]$flag, " <dir>   (or export ",
-           PATH_SPECS[[k]]$env, ")")
-  }, character(1))
-  tsf_abort("`", opt$command, "` needs ", length(missing),
-            " path(s) that are not set:\n", paste(lines, collapse = "\n"),
-            "\n  config/project.R names no paths on purpose, so a run's",
-            " locations are visible in the command that produced it.")
-}
-
-# --- commands that are not stages -------------------------------------------
-if (opt$command == "check") {
-  source("scripts/00_check_inputs.R")
-  quit(status = 0L)
-}
-
-if (opt$command == "status") {
-  st <- pipeline_status(project, opt)
-  tsf_log("results_dir: ", project$results_dir %||% "(not set)")
-  print(st, row.names = FALSE)
-  quit(status = 0L)
-}
-
-if (opt$command == "ae-prepare") {
-  source("scripts/prepare_ae_data.R")
-  prepare_ae_data(project, opt)
-  quit(status = 0L)
-}
-
-if (opt$command == "bundle") {
-  bundle_app(project, opt$out %||% "TissueSpectF-app", opt$reference)
-  quit(status = 0L)
-}
-
-if (opt$command == "app") {
-  if (!requireNamespace("shiny", quietly = TRUE)) {
-    tsf_abort("The app needs shiny. Install it once with:\n",
-              "  Rscript -e 'install.packages(\"shiny\")'\n",
-              "Everything else in TissueSpectF works without it.")
-  }
-  # Hand the resolved path to the app, so --results-dir / --reference on the
-  # command line reach it. The app must not re-read config/project.R: doing so
-  # made it look on the cluster default while the CLI pointed elsewhere.
-  ref_path <- opt$reference %||%
-    file.path(project$results_dir, "reference", "reference.rds")
-  Sys.setenv(TSF_APP_REFERENCE = normalizePath(ref_path, mustWork = FALSE))
-  if (!file.exists(ref_path)) {
-    tsf_warn("No reference at ", ref_path,
-             " -- the app will say so. Build one with ./tsf reference")
-  } else {
-    tsf_log("Reference: ", ref_path)
-  }
-  tsf_log("Starting the app. It runs locally; nothing leaves this machine.")
-  shiny::runApp("app", launch.browser = TRUE)
-  quit(status = 0L)
-}
-
-if (opt$command == "match") {
-  source("scripts/match_query.R")
-  quit(status = run_match(project, opt))
-}
-
-if (opt$command == "selfcheck") {
-  source("scripts/selfcheck.R")
-  quit(status = run_selfcheck())
-}
-
-# --- stage selection ---------------------------------------------------------
-plan <- if (opt$command == "run") {
-  from <- if (is.null(opt$from)) stage_names[1] else opt$from
-  to   <- if (is.null(opt$to)) stage_names[length(stage_names)] else opt$to
-  for (s in c(from, to)) if (!s %in% stage_names) {
-    tsf_abort("Unknown stage '", s, "'. Stages: ", paste(stage_names, collapse = ", "))
-  }
-  i <- match(from, stage_names); j <- match(to, stage_names)
-  if (i > j) tsf_abort("--from comes after --to")
-  stage_names[i:j]
-} else {
-  opt$command
-}
-
-datasets <- stage_datasets(opt)
-# The resolved output tree, on every run and not only under `status`. Writing to
-# the wrong tree is silent by nature: the stage succeeds, the files land
-# somewhere else, and the next stage reports missing inputs for reasons that
-# look unrelated. One line here makes that visible before the work starts.
-# Announced on every run, because writing to the wrong tree is silent by
-# nature. Guarded, because commands like `fetch` legitimately have no results
-# tree and must not fail on a log line.
-if (!is.null(project$results_dir) && nzchar(project$results_dir)) {
-  tsf_log("results_dir: ",
-          normalizePath(project$results_dir, mustWork = FALSE))
-}
-tsf_log("datasets: ", paste(datasets, collapse = ", "))
-tsf_log("stages:   ", paste(plan, collapse = " -> "))
-if (!is.null(opt$cond))   tsf_log("conditions: ", opt$cond)
-if (!identical(opt$branches, c("average", "median")))
-  tsf_log("branch: ", paste(opt$branches, collapse = ", "))
-
-if (opt$dry_run) {
-  tsf_log("dry run: nothing was executed")
-  quit(status = 0L)
-}
-
-# --- run ---------------------------------------------------------------------
-started <- Sys.time()
-summary_rows <- list()
-
-for (stage in plan) {
-  tsf_log(strrep("-", 62))
-  tsf_log("stage: ", stage)
-  t0 <- Sys.time()
-  result <- tryCatch(stage_functions[[stage]](project, opt),
-                     error = function(e) structure(conditionMessage(e), class = "tsf_error"))
-  mins <- round(as.numeric(difftime(Sys.time(), t0, units = "mins")), 2)
-
-  if (inherits(result, "tsf_error")) {
-    summary_rows[[stage]] <- data.frame(stage = stage, minutes = mins,
-                                        result = paste("FAILED:", result),
-                                        stringsAsFactors = FALSE)
-    tsf_warn("stage '", stage, "' failed: ", result)
-    print(do.call(rbind, summary_rows), row.names = FALSE)
-    tsf_abort("Pipeline stopped at '", stage, "'.")
-  }
-  summary_rows[[stage]] <- data.frame(stage = stage, minutes = mins,
-                                      result = as.character(result),
-                                      stringsAsFactors = FALSE)
-  tsf_log("stage '", stage, "' done in ", mins, " min: ", result)
-}
-
-tsf_log(strrep("=", 62))
-print(do.call(rbind, summary_rows), row.names = FALSE)
-tsf_log("total: ", round(as.numeric(difftime(Sys.time(), started, units = "mins")), 2),
-        " min | results in ",
-        project$results_dir %||% "(no results tree for this command)")
