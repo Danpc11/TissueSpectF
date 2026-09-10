@@ -363,6 +363,42 @@ Every place this arises now computes the attainable floor and says so:
 "Not reachable" and "not present" are different findings, and the logs
 distinguish them.
 
+### 5.5b bis The periodogram is an inconsistent estimator
+
+Its variance does not fall as data accumulate: with one realisation per
+(sample, chromosome) the estimate at each frequency carries roughly 100%
+relative error however many genes the chromosome holds. Measured on pure noise
+at 26% coverage, the median coefficient of variation over frequencies is
+**0.943** — the theoretical 1.0 for a chi-square with two degrees of freedom.
+
+That noise floor, not a lack of signal, is why a peak struggles to beat a
+permutation null: the observed value is as noisy as the draws it is compared
+against.
+
+Thomson's multitaper averages $K$ periodograms computed under orthogonal
+tapers, which drops the variance roughly as $1/K$ while the time-bandwidth
+product controls bias and leakage. It assumes uniform sampling, which this grid
+is not, so the DPSS are evaluated at the **observed positions** and each taper
+becomes a weight per position. Measured, same noise and coverage: cv **0.448**,
+a reduction of 2.11 against the theoretical ceiling of $\sqrt{5} = 2.24$.
+
+It costs resolution. Averaging $K$ tapers with bandwidth $NW$ smooths over
+about $2NW/N$ in frequency, so components closer than that merge. With $NW = 3$
+and $N = 2000$ that is three frequency bins: acceptable for "is there power
+near this scale", wrong for "is the period 30.1 or 30.4".
+
+`power_sd`, the spread across tapers, comes with it — a frequency whose power
+depends on which taper was used is not a peak, and a single periodogram cannot
+report that at all.
+
+**The default is still the periodogram.** Nine validations would be needed
+before switching the primary analysis: amplitude and phase bias, period
+recovery, resolution between close peaks, family-wise error, power across
+coverages, maxT calibration, behaviour under red noise, and equivalence with a
+recognised implementation. Three exist. The estimator must also be the same in
+the observed spectrum and in every null draw, or the p-value compares
+quantities from different estimators.
+
 ### 5.5c The pointwise BH floor is a diagnostic, not a bound
 
 BH takes $q_i = \min_{j \ge i} m\,p_j / j$. At rank 1 with no ties that is
@@ -871,6 +907,20 @@ chromosomes of that is most of the feature space. Indexing by period on a common
 log grid removes the mismatch, and only then can chromosomes be averaged into
 one curve — the characteristic spectrum in the sense §1 asks for, rather than a
 concatenation of twenty-four curves over incompatible axes.
+
+**A query lives on the reference's axis.** With base-pair bins the reference is
+built on bins, so a query has to reproduce the aggregation before it can be
+scored: `bin_aggregate`, the per-bin coverage against the bin's *annotated*
+genes, and `bin_min_coverage`. Mapping each gene to its bin index without
+aggregating puts several values at one grid position — 40 of 60 in the measured
+case — and the estimator then counts that position more than once while the
+floating mean gives it multiple weight. It also reported query coverage of 100%
+where 20 bins of $N = 258$ is 7.75%, and that figure drives the rejection
+threshold. The reference therefore carries two grids: `grid`, the bin grid its features
+live on, and `gene_grid`, the one the query needs to count each bin's annotated
+genes. If `gene_grid` is absent the query aborts rather than compute a per-bin
+coverage that would be 1 by construction -- a wrong number that looks good is
+worse than a failure.
 
 `k_max` does not apply to the period representations. It caps cycles per
 chromosome, so on chr1 it would empty every bin below 32 genes and leave the
