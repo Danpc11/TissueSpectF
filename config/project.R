@@ -182,7 +182,7 @@ list(
   # frequency is across the samples of a condition. See R/consensus.R for why
   # this is not the spectrum of the mean profile.
   consensus = list(
-    n_boot         = 500L,
+    n_boot         = 200L,
     quantile_cut   = 0.95,   # "stands out" cut when no maxT is available
     min_prevalence = 0.5,
     plv_q          = 0.05,   # BH-adjusted Rayleigh p for phase alignment
@@ -190,7 +190,7 @@ list(
     # forms the null a component must beat to be called confirmed.
     # Cost is one consensus spectrum per draw, cached per sample size, so
     # conditions of equal size share a null.
-    n_null         = 50L,
+    n_null         = 500L,
     null_q         = 0.05,   # family-wise p against the permuted null
     # Column of samples.tsv identifying non-independent samples (subject, batch,
     # tumour-normal pair). When set, the null draws whole blocks. NULL treats
