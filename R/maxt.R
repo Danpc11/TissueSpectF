@@ -19,15 +19,22 @@
 
 MIN_PERMUTATION_BLOCKS <- 10L
 
+#' @param estimator list(estimator=, mt_nw=, mt_k=) o NULL. Se usa en el
+#'   observado y en TODOS los sorteos del nulo; mezclarlos invalidaria el p.
 permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
                                  block_sizes = c(10L, 20L, 50L),
-                                 primary_scheme = "full") {
+                                 primary_scheme = "full",
+                                 estimator = NULL) {
   y <- as.numeric(y)
   y[!is.finite(y)] <- 0
   n <- terms$n
   if (n < 8L || stats::sd(y) == 0) return(NULL)
 
-  obs <- gls_spectrum(y, terms)
+  # El estimador tiene que ser el MISMO en el observado y en el nulo. Con
+  # multitaper en las etapas de espectro y periodograma aqui, el observado y su
+  # referencia vendrian de estimadores distintos y el p-valor no compararia lo
+  # que parece.
+  obs <- tsf_spectrum(y, terms, estimator)
   power_observed <- obs$power
 
   # Blocks are intervals of the REFERENCE GRID, not runs of consecutive entries
@@ -103,12 +110,12 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
                      dimnames = list(NULL, scheme_names))
   set.seed(seed)
   for (b in seq_len(B)) {
-    null_power <- gls_spectrum(sample(y), terms)$power
+    null_power <- tsf_spectrum(sample(y), terms, estimator)$power
     null_max[b, "full"] <- max(null_power)
     null_power_mat[b, ] <- null_power
     for (bs in usable) {
       null_max[b, paste0("block", bs)] <-
-        max(gls_spectrum(permute_blocks(y, block_map[[as.character(bs)]]), terms)$power)
+        max(tsf_spectrum(permute_blocks(y, block_map[[as.character(bs)]]), terms, estimator)$power)
     }
   }
 
@@ -193,7 +200,9 @@ permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
 }
 
 #' maxT for every sample of one condition, parallel over chromosomes.
-maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L) {
+#' @param estimator list del estimador; se propaga al observado y al nulo.
+maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L,
+                           estimator = NULL) {
   sig <- condition_signals(dataset, cond)
   if (is.null(sig)) return(NULL)
   chrom_levels <- names(chrom_idx)
@@ -213,7 +222,8 @@ maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L) {
                                   B = maxt_cfg$B,
                                   seed = chr_seed + match(s, sig$samples),
                                   block_sizes = maxt_cfg$block_sizes,
-                                  primary_scheme = maxt_cfg$primary_scheme %||% "full")
+                                  primary_scheme = maxt_cfg$primary_scheme %||% "full",
+                                  estimator = estimator)
       if (is.null(res) || !nrow(res)) next
       res$chr <- chr_now
       res$sample <- s
