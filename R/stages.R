@@ -878,13 +878,20 @@ stage_reference <- function(project, opt) {
   # de bin y no intersecaria ningun gen -- 0 de 15 en el caso medido.
   gene_mask <- NULL
   if (is_bp) {
-    sets <- lapply(kept_datasets, function(id) {
+    # names(kept_datasets), NO kept_datasets: sus valores son
+    # list(dataset=, chrom_idx=), asi que `id` era la lista entera y
+    # file.path() recibia matrices. `datasets = kept_datasets` en
+    # build_reference() si es correcto -- calibrate_coverage_bands() necesita
+    # los chrom_idx -- y esa asimetria es justo lo que lo hacia facil de
+    # confundir.
+    ids_kept <- names(kept_datasets)
+    sets <- lapply(ids_kept, function(id) {
       f <- file.path(project$interim_dir, id, "retained_genes.tsv")
       t <- read_tsv_tsf(f, required = FALSE)
       if (is.null(t) || !"gene_id" %in% names(t)) NULL
       else unique(as.character(t$gene_id))
     })
-    names(sets) <- kept_datasets
+    names(sets) <- ids_kept
     sets <- Filter(Negate(is.null), sets)
     if (length(sets) >= 2L) {
       inter <- Reduce(intersect, sets)
@@ -897,7 +904,7 @@ stage_reference <- function(project, opt) {
                   "no son comparables. Genera la mascara y RE-INGESTA:\n",
                   "  Rscript scripts/shared_gene_mask.R --interim-dir ",
                   project$interim_dir, " --datasets ",
-                  paste(kept_datasets, collapse = ","), "\n",
+                  paste(ids_kept, collapse = ","), "\n",
                   "  ./tsf ingest ... --grid-axis bp --gene-mask ",
                   file.path(project$interim_dir, "shared_gene_mask.tsv"),
                   " --force")
