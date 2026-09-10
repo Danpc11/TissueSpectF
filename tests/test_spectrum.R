@@ -1946,10 +1946,52 @@ check("sin re-normalizar la calibracion medía otra cosa", {
   nuevo <- mean(renormalise_after_mask(y, keep)[keep])
   nuevo - viejo > 1 })
 
-check("la calibracion llama a fingerprint_masked con renormalise", {
+check("la calibracion re-normaliza solo con eje de gen", {
   src <- paste(readLines("R/reference.R", warn = FALSE), collapse = " ")
-  grepl("renormalise = TRUE", src, fixed = TRUE) &&
-    grepl("renormalise_after_mask(y, keep, unit = unit)", src, fixed = TRUE) })
+  grepl("renormalise = !is_bp_axis", src, fixed = TRUE) &&
+    grepl("axis = ref_params$grid_axis", src, fixed = TRUE) })
+
+check("re-normalizar con eje bp aborta en vez de dar un numero mal", {
+  # El valor de un bin es mean(asinh(TPM)) y sinh() de eso es una media
+  # geometrica: con genes a 500, 50 y 5 TPM la media es 185 y sinh(agregado)
+  # da 50.2, un 73% de error; con 1000, 10 y 1 el error es del 93%.
+  y <- asinh(c(100, 200, 300))
+  keep <- c(TRUE, TRUE, FALSE)
+  e <- tryCatch(renormalise_after_mask(y, keep, axis = "bp"),
+                error = function(e) e)
+  inherits(e, "error") && grepl("media geometrica", conditionMessage(e)) })
+
+check("sinh de un agregado no recupera la media del bin", {
+  # La razon del aborto, medida: solo coincide cuando los genes son iguales.
+  iguales <- c(100, 100, 100)
+  dispares <- c(1000, 10, 1)
+  abs(sinh(mean(asinh(iguales))) - mean(iguales)) < 1e-6 &&
+    sinh(mean(asinh(dispares))) < 0.2 * mean(dispares) })
+
+check("con eje bp NO se calibran bandas: se devuelve NULL", {
+  # Un umbral equivocado es peor que ninguno, y con eje bp seria equivocado por
+  # dos razones medidas:
+  #
+  #   mask_grid_genes() opera sobre chrom_idx, cuyas filas en bp son BINS, asi
+  #   que simula perder bins completos. Una consulta real pierde genes DENTRO
+  #   de los bins, y eso es lo que bin_min_coverage decide.
+  #
+  #   Y no se puede re-normalizar: sinh(mean(asinh(v))) es la media
+  #   geometrica, no la suma. Para un bin de 1000/100/10/1 TPM el total es 1111
+  #   y la inversion da 33.2, razon 0.03.
+  #
+  # Las consultas caen en UNCALIBRATED_COVERAGE, que es la respuesta honesta.
+  src <- paste(readLines("R/reference.R", warn = FALSE), collapse = " ")
+  grepl("if (is_bp_axis) {", src, fixed = TRUE) &&
+    grepl("NO se calibran bandas de cobertura", src, fixed = TRUE) &&
+    grepl("UNCALIBRATED_COVERAGE", src, fixed = TRUE) })
+
+check("la inversion de asinh da la media geometrica, no la suma", {
+  # El numero que justifica no calibrar en bp, anclado a mano.
+  v <- c(1000, 100, 10, 1)
+  inv <- sinh(mean(asinh(v)))
+  geo <- exp(mean(log(v)))
+  inv / sum(v) < 0.05 && abs(inv - geo) / geo < 0.15 })
 
 check("renormalise es FALSE por defecto y aborta con valores negativos", {
   # Re-normalizar exige que `y` sea asinh de algo positivo: sinh() de un
