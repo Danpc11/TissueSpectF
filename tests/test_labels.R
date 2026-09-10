@@ -528,6 +528,39 @@ check("--seed reaches maxt$seed", {
       "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
   grepl("maxt$seed = 99", out, fixed = TRUE) })
 
+check("retained_genes.tsv guarda ids REALES, no ids de bin", {
+  # Con eje bp, genes.tsv guarda `bin_<chr>_<index>` como gene_id porque el bin
+  # es la posicion del eje. Leer la mascara de ahi da ids de BIN, y compararlos
+  # contra ids de gen no interseca nunca: 0 de 15 medido, y la consulta
+  # abortaba en la primera referencia real de dos cohortes.
+  src <- paste(readLines("R/ingest.R", warn = FALSE), collapse = " ")
+  grepl("retained_genes.tsv", src, fixed = TRUE) &&
+    grepl("gene_id = genes_out$gene_id", src, fixed = TRUE) &&
+    grepl("ANTES de que el binning los reemplace", src, fixed = TRUE) })
+
+check("la mascara se aplica en INGEST, no solo en la consulta", {
+  # Aplicarla solo a la consulta es PEOR que no aplicarla: el entrenamiento
+  # usaria el conjunto de cada cohorte y la consulta la interseccion, tres
+  # representaciones en vez de dos.
+  src <- paste(readLines("R/ingest.R", warn = FALSE), collapse = " ")
+  grepl("gene_mask_file", src, fixed = TRUE) &&
+    grepl("Todas las cohortes agregan los bins con este mismo conjunto", src,
+          fixed = TRUE) })
+
+check("la referencia ABORTA si las cohortes usaron genes distintos", {
+  # Sin esto el desfase pasa silenciosamente y los espectros de dos cohortes
+  # no son comparables aunque compartan posiciones.
+  src <- paste(readLines("R/stages.R", warn = FALSE), collapse = " ")
+  grepl("retuvieron conjuntos de genes DISTINTOS", src, fixed = TRUE) &&
+    grepl("shared_gene_mask.R", src, fixed = TRUE) &&
+    grepl("retained_genes.tsv", src, fixed = TRUE) })
+
+check("shared_gene_mask.R existe y declara el costo por cohorte", {
+  file.exists("scripts/shared_gene_mask.R") &&
+    grepl("pierde",
+          paste(readLines("scripts/shared_gene_mask.R", warn = FALSE),
+                collapse = " "), fixed = TRUE) })
+
 check("la cobertura por bin cuenta los genes ANOTADOS, no los expresados", {
   # `n_genes_in_bin` contaba solo los que pasaron el filtro de expresion, asi
   # que la informacion para detectar que el mismo bin significa cosas
