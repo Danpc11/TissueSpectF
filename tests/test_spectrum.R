@@ -1,7 +1,9 @@
 #!/usr/bin/env Rscript
 # Numerical tests for the spectral core. Run: Rscript tests/test_spectrum.R
 source("R/utils_io.R"); source("R/config.R"); source("R/labels.R")
-source("R/grid.R"); source("R/multitaper.R"); source("R/pdm.R"); source("R/background.R"); source("R/period_floor.R"); source("R/contrast.R"); source("R/differential.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
+source("R/grid.R"); source("R/multitaper.R")
+# no los carga el core: viven en R/experimental/ porque ninguna etapa los usa
+source("R/experimental/pdm.R"); source("R/experimental/background.R"); source("R/period_floor.R"); source("R/contrast.R"); source("R/differential.R"); source("R/ingest.R"); source("R/spectrum.R"); source("R/maxt.R"); source("R/stability.R")
 source("R/condition_test.R"); source("R/clean.R"); source("R/fingerprint.R"); source("R/reference.R"); source("R/consensus.R"); source("R/peaks_genes.R"); source("R/compare.R")
 
 failures <- 0L
@@ -1455,12 +1457,16 @@ check("y aun asi detecta una senal real", {
   }, logical(1)))
   hit > 0.5 })
 
-check("p_background ya es familiar y no se vuelve a corregir", {
+check("la fraccion de rango no se llama p_ ni se corrige con BH", {
+  # El nombre importa: `p_background` invitaba a filtrar `<= 0.05`, y eso
+  # selecciona el 5% superior de cualquier espectro. Renombrado a
+  # background_rank_fraction, con el viejo conservado como alias exacto.
   # El p se calcula por rango entre las m frecuencias del cromosoma, asi que
   # corregirlo con BH lo multiplica por m y cancela su propio piso.
-  src <- paste(readLines("R/background.R", warn = FALSE), collapse = " ")
-  grepl("sp$q_background <- sp$p_background", src, fixed = TRUE) &&
-    !grepl('p.adjust(sp$p_background', src, fixed = TRUE) })
+  src <- paste(readLines("R/experimental/background.R", warn = FALSE), collapse = " ")
+  grepl("background_rank_fraction", src, fixed = TRUE) &&
+    !grepl("p.adjust(sp$background_rank_fraction", src, fixed = TRUE) &&
+    grepl("no es un p-valor", src, fixed = TRUE) })
 
 check("el fondo es robusto: un pico no eleva su propio fondo", {
   set.seed(34)
@@ -1481,14 +1487,15 @@ check("un umbral por frecuencia es circular y se rechaza", {
   # 511 con senal de amplitud 6.
   sp <- data.frame(chr = "1", period = 100 / seq_len(50),
                    power = runif(50), excess = runif(50, 1, 20),
-                   p_background = runif(50))
+                   background_rank_fraction = runif(50))
   e <- tryCatch(mark_over_background(sp, excess_null = runif(5000, 1, 10)),
                 error = function(e) e)
   inherits(e, "error") && grepl("LISTA", conditionMessage(e), fixed = TRUE) })
 
 check("sin nulo y sin umbral explicito aborta", {
   sp <- data.frame(chr = "1", period = 100 / seq_len(50),
-                   excess = runif(50, 1, 20), p_background = runif(50))
+                   excess = runif(50, 1, 20),
+                   background_rank_fraction = runif(50))
   inherits(tryCatch(mark_over_background(sp), error = function(e) e), "error") })
 
 check("el umbral familiar controla la tasa y detecta senal", {
