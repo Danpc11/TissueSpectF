@@ -151,6 +151,3 @@ draws_for_bh <- function(m, target = 0.05) {
   if (!is.finite(m) || !is.finite(target) || target <= 0) return(NA_integer_)
   as.integer(ceiling(m / target)) - 1L
 }
-
-#' Deprecated name for bh_rank1_diagnostic(), kept so nothing breaks silently.
-reachable_bh_q <- function(m, n_draws) bh_rank1_diagnostic(m, n_draws)
