@@ -528,6 +528,48 @@ check("--seed reaches maxt$seed", {
       "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
   grepl("maxt$seed = 99", out, fixed = TRUE) })
 
+check("se itera sobre los NOMBRES de kept_datasets, no sobre los objetos", {
+  # kept_datasets[[id]] <- list(dataset=, chrom_idx=), asi que
+  # lapply(kept_datasets, ...) pasaba la lista entera y file.path() recibia
+  # matrices. Y `datasets = kept_datasets` en build_reference() SI es correcto,
+  # porque calibrate_coverage_bands() necesita los chrom_idx: esa asimetria es
+  # lo que lo hacia facil de confundir.
+  src <- paste(readLines("R/stages.R", warn = FALSE), collapse = " ")
+  grepl("ids_kept <- names(kept_datasets)", src, fixed = TRUE) &&
+    grepl("sets <- lapply(ids_kept, function(id)", src, fixed = TRUE) &&
+    grepl("names(sets) <- ids_kept", src, fixed = TRUE) &&
+    !grepl("lapply(kept_datasets, function(id)", src, fixed = TRUE) })
+
+check("un id de dataset sirve para construir una ruta; un objeto no", {
+  # La forma del bug, aislada: file.path() con una lista de matrices no da una
+  # ruta utilizable, y el fallo no es obvio porque no aborta -- devuelve un
+  # vector de rutas sin sentido y read_tsv_tsf() responde NULL.
+  kept <- list(GSE1 = list(dataset = list(id = "GSE1"), chrom_idx = list(a = 1)),
+               GSE2 = list(dataset = list(id = "GSE2"), chrom_idx = list(a = 2)))
+  bien <- vapply(names(kept), function(id) file.path("interim", id, "x.tsv"),
+                 character(1))
+  mal <- suppressWarnings(
+    tryCatch(vapply(kept, function(id) file.path("interim", id, "x.tsv"),
+                    character(1)),
+             error = function(e) "error", warning = function(w) "warn"))
+  length(bien) == 2L && all(grepl("^interim/GSE[12]/x[.]tsv$", bien)) &&
+    !identical(unname(mal), unname(bien)) })
+
+check("--mode union se rechaza porque no puede funcionar", {
+  # La mascara solo QUITA genes: en la segunda ingesta cada cohorte conserva
+  # los de la union que ya tenia, los conjuntos siguen difiriendo y
+  # stage_reference() aborta igual. Recomendarlo era un error.
+  src <- paste(readLines("scripts/shared_gene_mask.R", warn = FALSE),
+               collapse = " ")
+  grepl("no esta soportado", src, fixed = TRUE) &&
+    grepl("solo puede quitar genes", src, fixed = TRUE) &&
+    !grepl("considera --mode union", src, fixed = TRUE) })
+
+check("una interseccion vacia aborta en vez de escribir una mascara nula", {
+  src <- paste(readLines("scripts/shared_gene_mask.R", warn = FALSE),
+               collapse = " ")
+  grepl("La interseccion esta vacia", src, fixed = TRUE) })
+
 check("retained_genes.tsv guarda ids REALES, no ids de bin", {
   # Con eje bp, genes.tsv guarda `bin_<chr>_<index>` como gene_id porque el bin
   # es la posicion del eje. Leer la mascara de ahi da ids de BIN, y compararlos
