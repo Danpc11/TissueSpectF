@@ -311,7 +311,22 @@ query_grid_index <- function(grid, present_ids, min_observed = 8L,
   }
   if (!length(chrom_idx)) return(NULL)
   list(chrom_idx = chrom_idx, genes = g, key = key[observed],
-       coverage = nrow(g) / nrow(grid), id_type = id_type)
+       # Cobertura contra la SUMA DE LOS N, no contra las filas de la malla.
+       #
+       # Con eje bp la malla de bins solo contiene los bins OCUPADOS por algun
+       # gen, asi que nrow(grid) es mucho menor que sum(N) y la cobertura salia
+       # 100% cuando eran 20 posiciones de 258. Ese numero alimenta el umbral
+       # de rechazo por banda, asi que una consulta al 8% recibia el umbral de
+       # cobertura casi completa.
+       #
+       # sum(N) por cromosoma es la definicion correcta en los dos ejes: en el
+       # de gen coincide con nrow(grid) porque cada gen es una posicion.
+       coverage = {
+         Ns <- vapply(split(grid$grid_N, as.character(grid$chr)),
+                      function(v) as.numeric(v[1]), numeric(1))
+         tot <- sum(Ns, na.rm = TRUE)
+         if (is.finite(tot) && tot > 0) nrow(g) / tot else nrow(g) / nrow(grid)
+       }, id_type = id_type)
 }
 
 #' Collapse duplicate identifiers explicitly.
@@ -375,6 +390,30 @@ query_signal <- function(v, unit = "counts") {
 #' the two would no longer be on the same scale.
 fingerprint_query <- function(values, ids, ref, unit = "counts") {
   cl <- collapse_duplicate_ids(values, ids, unit)
+
+  # EL EJE DE LA CONSULTA TIENE QUE SER EL DE LA REFERENCIA.
+  #
+  # Con --grid-axis bp la referencia se construyo sobre BINS: varios genes
+  # agregados por bin_aggregate, y un bin descartado en una muestra cuando su
+  # cobertura cae bajo bin_min_coverage. La consulta mapeaba cada gen a su
+  # grid_index sin reproducir nada de eso, y con eje bp varios genes comparten
+  # grid_index, asi que:
+  #
+  #   - el GLS recibia POSICIONES REPETIDAS. Medido: 40 de 60 posiciones
+  #     duplicadas, y la FFT cuenta ese t dos veces mientras la media flotante
+  #     le da doble peso. No es otra representacion, es un ajuste mal planteado.
+  #   - la cobertura reportaba 100% cuando eran 60 posiciones de N = 258, o sea
+  #     23%. Sobreestimaba por cuatro veces, y ese numero alimenta el umbral de
+  #     rechazo por banda de cobertura.
+  #   - ni bin_aggregate ni bin_min_coverage se aplicaban.
+  #
+  # El selfcheck no lo veia porque corre sobre el eje de rango de gen, donde
+  # cada gen ES una posicion y el problema no existe.
+  if (isTRUE(ref$params$grid_axis == "bp")) {
+    cl <- bin_query(cl, ref)
+    if (is.null(cl)) return(NULL)
+  }
+
   qi <- query_grid_index(ref$grid, cl$ids)
   if (is.null(qi)) return(NULL)
 
@@ -398,6 +437,83 @@ fingerprint_query <- function(values, ids, ref, unit = "counts") {
        unit = unit)
 }
 
+#' Agregar una consulta a los bins de la referencia.
+#'
+#' Reproduce exactamente lo que hizo ingest: agrupa por (chr, grid_index) con
+#' `bin_aggregate`, cuenta la cobertura del bin contra sus genes ANOTADOS y
+#' descarta el bin si cae bajo `bin_min_coverage`. Devuelve ids sinteticos
+#' `bin_<chr>_<index>`, que es lo que la malla de bins usa como gene_id.
+#'
+#' Los parametros salen de `ref$params`, no de la configuracion del momento: la
+#' referencia se construyo con unos valores concretos y una consulta agregada
+#' con otros no seria comparable con ella.
+bin_query <- function(cl, ref) {
+  # DOS MALLAS, y hacen falta las dos.
+  #
+  # `bin_query` necesita la de GENES para saber que genes anotados tiene cada
+  # bin --sin eso la cobertura del bin sale 1 siempre-- mientras
+  # `query_grid_index` necesita la de BINS, porque los gene_id de la
+  # referencia son `bin_<chr>_<index>`.
+  #
+  # `ref$gene_grid` es la de genes y `ref$grid` la de bins. Si falta la de
+  # genes se aborta en vez de calcular una cobertura de bin que seria siempre
+  # perfecta: un numero equivocado que parece bueno es peor que un fallo.
+  g <- ref$gene_grid
+  if (is.null(g)) {
+    tsf_abort("bin_query: la referencia no trae `gene_grid`, la malla de genes ",
+              "necesaria para contar los genes anotados de cada bin. Sin ella ",
+              "la cobertura por bin saldria 1 siempre. Re-construi la ",
+              "referencia con --grid-axis bp.")
+  }
+  need <- c("chr", "grid_index", "grid_N")
+  if (!all(need %in% names(g))) {
+    tsf_abort("bin_query: la malla de la referencia no trae ",
+              paste(setdiff(need, names(g)), collapse = ", "),
+              ". Re-corre ingest con --grid-axis bp.")
+  }
+  how <- ref$params$bin_aggregate %||% "mean"
+  min_cov <- ref$params$bin_min_coverage %||% 0.5
+
+  # Que id usa la consulta, con la misma deteccion que query_grid_index()
+  by_ens <- sum(g$gene_id %in% cl$ids)
+  by_ent <- if ("entrez_id" %in% names(g))
+    sum(as.character(g$entrez_id) %in% cl$ids) else 0L
+  key <- if (by_ent > by_ens) as.character(g$entrez_id) else g$gene_id
+
+  val <- cl$values[match(key, cl$ids)]
+  bin <- paste(g$chr, g$grid_index, sep = "|")
+
+  # Denominador: los genes ANOTADOS del bin, no los que la consulta trajo. Es
+  # la misma definicion que ingest usa, y sin ella la cobertura del bin saldria
+  # 1 siempre.
+  n_annot <- as.integer(table(bin)[unique(bin)])
+  names(n_annot) <- unique(bin)
+  ok <- is.finite(val)
+  n_meas <- vapply(split(ok, bin), sum, integer(1))
+  agg <- vapply(split(val, bin), function(v) {
+    v <- v[is.finite(v)]
+    if (!length(v)) NA_real_
+    else if (identical(how, "sum")) sum(v) else mean(v)
+  }, numeric(1))
+
+  bins <- names(agg)
+  cov <- n_meas[bins] / pmax(n_annot[bins], 1L)
+  drop <- !is.finite(cov) | cov < min_cov
+  agg[drop] <- NA_real_
+
+  keep <- is.finite(agg)
+  if (!any(keep)) {
+    tsf_warn("bin_query: ningun bin alcanza bin_min_coverage = ", min_cov,
+             " (", sum(drop), " de ", length(bins), " descartados)")
+    return(NULL)
+  }
+  parts <- do.call(rbind, strsplit(bins[keep], "|", fixed = TRUE))
+  list(values = unname(agg[keep]),
+       ids = paste0("bin_", parts[, 1], "_", parts[, 2]),
+       collapsed = cl$collapsed %||% 0L,
+       n_bins_dropped = sum(drop))
+}
+
 #' Which reference features a query can actually contribute.
 #'
 #' No zero-filling. A frequency the query never observed is ABSENT, not average:
@@ -415,4 +531,33 @@ project_to_reference <- function(fp, ref) {
        feature_coverage = if (length(ref$model$features))
          length(model_shared) / length(ref$model$features) else 0,
        vector = fp[shared])
+}
+
+#' Derivar la malla de BINS de la malla de genes.
+#'
+#' `grid.tsv` es siempre la malla de anotacion con un gen por fila. Con eje bp
+#' la referencia se construye sobre bins, asi que sus gene_id son
+#' `bin_<chr>_<index>` y una consulta nunca casaria con la malla de genes.
+#'
+#' Se DERIVA en vez de leer genes.tsv del dataset: genes.tsv es por cohorte y
+#' contiene solo los bins que esa cohorte ocupo, asi que dos cohortes darian
+#' mallas distintas y la referencia dependeria de cual se leyo primero.
+bin_grid_from_genes <- function(g, bin_size = 100000L) {
+  need <- c("chr", "grid_index", "grid_N")
+  if (!all(need %in% names(g))) {
+    tsf_abort("bin_grid_from_genes: falta ",
+              paste(setdiff(need, names(g)), collapse = ", "))
+  }
+  key <- paste(g$chr, g$grid_index, sep = "|")
+  first <- !duplicated(key)
+  b <- g[first, , drop = FALSE]
+  n <- as.integer(table(key)[key[first]])
+  data.frame(gene_id = paste0("bin_", b$chr, "_", b$grid_index),
+             entrez_id = NA_character_,
+             chr = as.character(b$chr),
+             start = (b$grid_index - 1L) * as.numeric(bin_size),
+             grid_index = b$grid_index,
+             grid_N = b$grid_N,
+             n_genes_annotated = n,
+             stringsAsFactors = FALSE)
 }
