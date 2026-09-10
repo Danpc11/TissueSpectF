@@ -163,3 +163,46 @@ prepare_axis_values <- function(counts, gene_length = NULL, unit = "counts",
   attr(out, "n_dropped") <- sum(drop, na.rm = TRUE)
   out
 }
+
+#' LA definicion de cobertura, unica para calibracion y consulta.
+#'
+#' Habia TRES denominadores distintos en el repo:
+#'
+#'   calibracion  n_observed / (grid_size %||% n_observed)   -> 1 por defecto,
+#'                porque grid_size nunca se pasaba: el log decia "covers X%" y
+#'                calculaba 100% por construccion
+#'   consulta v1  n_observed / sum(grid_N)                    -> los bins
+#'                fisicos del cromosoma
+#'   consulta v2  n_observed / nrow(grid)                     -> las posiciones
+#'                de la referencia
+#'
+#' El umbral de rechazo se elegia con una banda calibrada con un denominador y
+#' se aplicaba a una consulta medida con otro. Una consulta con TODAS las
+#' posiciones de la referencia podia salir al 6% y rechazarse por <50%.
+#'
+#' La definicion es: **fraccion de las posiciones de la referencia que estan
+#' observadas**. Es la cantidad que el umbral necesita --"dada esta fraccion de
+#' la referencia, cuanta similitud hace falta"-- y la unica que significa lo
+#' mismo en los dos ejes.
+#'
+#' La fraccion del CROMOSOMA es otra cantidad, honesta para decir cuanto del
+#' genoma cubren los datos, y `genomic_coverage()` la calcula aparte. No debe
+#' alimentar umbrales.
+#'
+#' @param n_observed posiciones observadas
+#' @param grid la malla de la referencia
+reference_coverage <- function(n_observed, grid) {
+  n <- nrow(grid)
+  if (!is.finite(n) || n <= 0) return(NA_real_)
+  min(max(n_observed / n, 0), 1)
+}
+
+#' Fraccion del cromosoma observada. Se reporta, no elige umbrales.
+genomic_coverage <- function(n_observed, grid) {
+  if (!"grid_N" %in% names(grid)) return(NA_real_)
+  Ns <- vapply(split(grid$grid_N, as.character(grid$chr)),
+               function(v) as.numeric(v[1]), numeric(1))
+  tot <- sum(Ns, na.rm = TRUE)
+  if (!is.finite(tot) || tot <= 0) return(NA_real_)
+  min(max(n_observed / tot, 0), 1)
+}
