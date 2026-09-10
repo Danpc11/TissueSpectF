@@ -1911,6 +1911,68 @@ check("INTEGRAL bp: la cobertura coincide entre las dos rutas", {
   qi <- query_grid_index(bgrid, bq$ids, min_observed = 5L)
   abs(qi$coverage - reference_coverage(n_i, bgrid)) < 1e-9 })
 
+# --- la calibracion tiene que sufrir la MISMA perturbacion que la consulta ----
+
+check("re-normalizar tras enmascarar reproduce una consulta parcial", {
+  # ANCLADO A MANO desde los conteos, no comparando dos rutas: eso ya fallo una
+  # vez, porque si las dos llaman a la misma funcion un cambio de orden las
+  # afecta igual y siguen coincidiendo.
+  set.seed(71); n <- 400
+  cnt <- round(exp(stats::rnorm(n, 4, 2)))
+  gl <- round(stats::runif(n, 500, 5000))
+  rpk <- cnt / (gl / 1000)
+  full <- asinh(rpk / sum(rpk) * 1e6)          # lo que ingest guarda
+  keep <- rep(FALSE, n)
+  keep[sort(sample(n, round(n * 0.3)))] <- TRUE
+
+  # lo que una consulta REAL haria: normalizar solo con lo que tiene
+  rq <- rpk[keep]
+  esperado <- asinh(rq / sum(rq) * 1e6)
+
+  # lo que la calibracion produce ahora
+  obtenido <- renormalise_after_mask(full, keep)[keep]
+
+  isTRUE(all.equal(esperado, obtenido, tolerance = 1e-8)) })
+
+check("sin re-normalizar la calibracion medía otra cosa", {
+  # Fijado para que la magnitud quede registrada: al 26% de cobertura la media
+  # en escala asinh difiere en ~log(1/0.26) = 1.35, y el umbral se calibraba
+  # con una perturbacion y se aplicaba a otra.
+  set.seed(72); n <- 500
+  tpm <- exp(stats::rnorm(n, 4, 2)); tpm <- tpm / sum(tpm) * 1e6
+  y <- asinh(tpm)
+  keep <- rep(FALSE, n); keep[sort(sample(n, round(n * 0.26)))] <- TRUE
+  viejo <- mean(y[keep])
+  nuevo <- mean(renormalise_after_mask(y, keep)[keep])
+  nuevo - viejo > 1 })
+
+check("la calibracion llama a fingerprint_masked con renormalise", {
+  src <- paste(readLines("R/reference.R", warn = FALSE), collapse = " ")
+  grepl("renormalise = TRUE", src, fixed = TRUE) &&
+    grepl("renormalise_after_mask(y, keep, unit = unit)", src, fixed = TRUE) })
+
+check("renormalise es FALSE por defecto y aborta con valores negativos", {
+  # Re-normalizar exige que `y` sea asinh de algo positivo: sinh() de un
+  # negativo da una suma sin sentido y devuelve NA. Un default TRUE rompia a
+  # cualquier llamador con datos sinteticos o residuos, y de hecho rompio un
+  # test existente que pasa rnorm().
+  ci <- list("1" = list(rows = 1:100, t = 1:100, N = 100L, coverage = 1))
+  set.seed(73); y <- stats::rnorm(100)
+  ok_default <- !is.null(fingerprint_masked(y, ci, 20L, "amplitude"))
+  e <- tryCatch(fingerprint_masked(y, ci, 20L, "amplitude",
+                                   renormalise = TRUE),
+                error = function(e) e)
+  ok_default && inherits(e, "error") &&
+    grepl("negativo", conditionMessage(e)) })
+
+check("unit logged no se re-normaliza", {
+  # Sin normalizacion no hay nada que rehacer, y aplicar sinh a datos que no
+  # son asinh(TPM) los destruiria.
+  y <- c(1, 2, 3, 4)
+  keep <- c(TRUE, FALSE, TRUE, TRUE)
+  r <- renormalise_after_mask(y, keep, unit = "logged")
+  identical(r[keep], y[keep]) && is.na(r[2]) })
+
 # --- Wilson ------------------------------------------------------------------
 check("Wilson interval brackets the point estimate", {
   ci <- wilson_ci(9, 10); ci[1] < 90 && ci[2] > 90 && ci[1] >= 0 && ci[2] <= 100 })
