@@ -52,7 +52,7 @@ FINGERPRINT_PERIOD_BREAKS <- exp(seq(log(10), log(500), length.out = 41L))
 #'   carry chromosome-scale trends and are the most reproducible; very high ones
 #'   are the noisiest and the most exposed to the sampling window.
 fingerprint_vector <- function(y, chrom_idx, terms_cache, k_max = 64L,
-                               features = "amplitude") {
+                               features = "amplitude", estimator = NULL) {
   # THE CONTROL, not a fingerprint: the gene expression itself, positioned on
   # the same grid and carried through the same leave-one-cohort-out validation,
   # the same feature selection and the same thresholds.
@@ -87,7 +87,7 @@ fingerprint_vector <- function(y, chrom_idx, terms_cache, k_max = 64L,
     # index the same frequencies and stay comparable to the reference.
     fit <- gls_observed(y[ci$rows], ci$t, ci$N, terms = terms_cache[[chr_now]])
     if (is.null(fit)) next
-    sp <- gls_spectrum(fit$y, fit$terms)
+    sp <- tsf_spectrum(fit$y, fit$terms, estimator)
 
     # k_max caps cycles-per-chromosome, which is the right selection for the
     # (chromosome, k) representations and the wrong one for the period-binned
