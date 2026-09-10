@@ -217,7 +217,8 @@ validate_across_datasets <- function(fps,
                              # la consulta miden lo mismo. Antes llegaba NULL
                              # y la cobertura salia 1.
                              grid_size = grid_size %||%
-                               (if (!is.null(grid)) nrow(grid) else NULL))
+                               (if (!is.null(grid)) nrow(grid) else NULL),
+                             grid_axis = ref_params$grid_axis %||% "gene")
   }
   calib$bands <- summarise_bands(band_pred, policy = threshold_policy)
   calib$bands_by_class <- attr(calib$bands, "per_class")
@@ -357,7 +358,8 @@ mask_grid_genes <- function(chrom_idx, target_coverage,
 #'   TPM-- da una suma sin sentido y devuelve NA. Un default TRUE rompia a
 #'   cualquier llamador que no pasara expresion normalizada.
 fingerprint_masked <- function(y, masked_idx, k_max, features,
-                               renormalise = FALSE, unit = "asinh(TPM)") {
+                               renormalise = FALSE, unit = "asinh(TPM)",
+                               axis = "gene") {
   if (!length(masked_idx)) return(NULL)
   terms <- fingerprint_terms(masked_idx)
   if (isTRUE(renormalise)) {
@@ -376,7 +378,7 @@ fingerprint_masked <- function(y, masked_idx, k_max, features,
     if (length(rows) && max(rows) <= length(y)) {
       keep <- rep(FALSE, length(y))
       keep[rows] <- TRUE
-      y <- renormalise_after_mask(y, keep, unit = unit)
+      y <- renormalise_after_mask(y, keep, unit = unit, axis = axis)
       # renormalise_after_mask deja NA fuera de la mascara; los indices ya
       # restringen a las conservadas, asi que gls_observed() no ve NA.
     }
@@ -410,6 +412,9 @@ coverage_band <- function(coverage) {
 #'
 #' Cost is one GLS fingerprint per (sample, level, mode, mask), so
 #' `max_queries_per_mask` caps how many held-out samples each mask scores.
+# Bandera de un solo aviso: la advertencia de calibracion con eje bp saldria
+# una vez por (muestra, mascara, nivel), o sea miles de veces.
+
 calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features,
                                      ref_params,
                                      coverage_levels = c(0.95, 0.8, 0.6, 0.4),
@@ -417,7 +422,38 @@ calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features
                                                "missing_blocks", "chromosome",
                                                "expression_dropout"),
                                      n_masks = 10L, max_queries_per_mask = 25L,
-                                     seed = 7L, grid_size = NULL) {
+                                     seed = 7L, grid_size = NULL,
+                                     grid_axis = "gene") {
+  is_bp_axis <- identical(grid_axis, "bp")
+
+  # CON EJE bp LAS BANDAS NO SE PUEDEN CALIBRAR FIELMENTE, y un umbral
+  # equivocado es peor que ninguno.
+  #
+  # Dos razones, las dos medidas:
+  #
+  #   La perturbacion no es la misma. mask_grid_genes() opera sobre chrom_idx,
+  #   cuyas filas con eje bp son BINS, asi que simula perder bins completos.
+  #   Una consulta real pierde genes DENTRO de los bins, y eso es lo que
+  #   bin_min_coverage decide. El umbral se calibraria contra una perdida que
+  #   no ocurre.
+  #
+  #   Y la re-normalizacion no es posible. `y` ya viene agregado por bin, y
+  #   sinh() no lo invierte: es la media geometrica, no la suma. Razon medida
+  #   de 0.03 en un bin de cuatro genes.
+  #
+  # El arreglo correcto exige conservar los CONTEOS POR GEN y, por cada
+  # mascara, rehacer la cadena entera: conteos -> quitar genes -> TPM -> asinh
+  # -> mascara comun -> cobertura y agregacion por bin -> espectro. Eso es un
+  # cambio de lo que ingest guarda, no un parche aqui.
+  if (is_bp_axis) {
+    tsf_warn("Eje bp: NO se calibran bandas de cobertura. mask_grid_genes() ",
+             "simula perder bins completos y una consulta real pierde genes ",
+             "dentro de los bins, asi que el umbral se calibraria contra una ",
+             "perdida que no ocurre. Las consultas se reportaran como ",
+             "UNCALIBRATED_COVERAGE en vez de recibir un umbral que no les ",
+             "corresponde.")
+    return(NULL)
+  }
   common <- Reduce(intersect, lapply(fps, function(f) colnames(f$matrix)))
   full_mat <- normalise_fingerprints(
     do.call(rbind, lapply(fps, function(f) f$matrix[, common, drop = FALSE])))
@@ -480,9 +516,10 @@ calibrate_coverage_bands <- function(datasets, fps, lab, ids, target, n_features
               min(n_kept / grid_n, 1) else NA_real_
             fp <- fingerprint_masked(y, masked, ref_params$k_max,
                                      ref_params$features,
-                                     renormalise = TRUE,
+                                     renormalise = !is_bp_axis,
                                      unit = ref_params$expression_unit %||%
-                                       "asinh(TPM)")
+                                       "asinh(TPM)",
+                                     axis = ref_params$grid_axis %||% "gene")
             if (is.null(fp)) next
             avail <- intersect(names(fp), model$features)
             if (length(avail) < 3) next
