@@ -2,8 +2,11 @@
 """run_gene_baseline.py -- the trivial baseline the spectrum has to beat.
 
 Leave-one-cohort-out over the ingested datasets, on GENES, not spectra: the
-top-K most variable genes of the training cohorts, standardised on the
-training fold, multinomial logistic regression. Same folds, same target, same
+top-K most variable genes of the training fold, median-imputed and
+standardised on the training fold, multinomial logistic regression. Feature
+selection and imputation live inside the sklearn pipeline, so in the
+within-cohort cross-validation they are refit per fold and never see the
+validation samples. Same folds, same target, same
 metric as `./tsf reference` (accuracy on the held-out cohort over the classes
 it shares with training, against the training majority class).
 
@@ -27,10 +30,45 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+
+
+class TopVariance(BaseEstimator, TransformerMixin):
+    """Keep the k most variable columns, chosen on the data given to fit().
+
+    Inside the pipeline, so that in cross-validation the selection sees the
+    training fold only. Selecting on the whole cohort first leaks the held-out
+    samples' variance into the choice of features.
+    """
+
+    def __init__(self, k=1000):
+        self.k = k
+
+    def fit(self, X, y=None):
+        var = np.nanvar(X, axis=0)
+        var = np.where(np.isfinite(var), var, -np.inf)
+        self.idx_ = np.argsort(-var)[: min(self.k, X.shape[1])]
+        return self
+
+    def transform(self, X):
+        return X[:, self.idx_]
+
+
+def make_model(top_genes, seed):
+    # Imputation is explicit and per fold: the training-fold MEDIAN of each
+    # gene. Zero is not a neutral fill on the deviation scale -- it means
+    # "equal to the GTEx median", a measurement the sample never made.
+    return make_pipeline(
+        TopVariance(k=top_genes),
+        SimpleImputer(strategy="median"),
+        StandardScaler(),
+        LogisticRegression(max_iter=3000, C=1.0, random_state=seed),
+    )
 
 
 def load(interim: Path, ds: str, target: str):
@@ -46,16 +84,9 @@ def load(interim: Path, ds: str, target: str):
 
 
 def fit_predict(xtr, ytr, xte, top_genes, seed):
-    var = xtr.var(axis=0)
-    keep = var.sort_values(ascending=False).index[:top_genes]
-    model = make_pipeline(
-        StandardScaler(),
-        LogisticRegression(max_iter=2000, C=1.0, random_state=seed),
-    )
-    a = xtr[keep].fillna(0.0).values
-    b = xte[keep].fillna(0.0).values
-    model.fit(a, ytr)
-    return model.predict(b), model, keep
+    model = make_model(top_genes, seed)
+    model.fit(xtr.values, ytr)
+    return model.predict(xte.values), model
 
 
 def main():
@@ -93,7 +124,7 @@ def main():
                              note="fewer than 2 shared classes; skipped"))
             continue
         m_tr = np.isin(ytr, shared); m_te = np.isin(yte, shared)
-        pred, _, _ = fit_predict(xtr[m_tr], ytr[m_tr], xte[genes][m_te], a.top_genes, a.seed)
+        pred, _ = fit_predict(xtr[m_tr], ytr[m_tr], xte[genes][m_te], a.top_genes, a.seed)
         acc = float((pred == yte[m_te]).mean())
         maj = pd.Series(ytr[m_tr]).mode()[0]
         base = float((yte[m_te] == maj).mean())
@@ -106,11 +137,9 @@ def main():
             k = int(min(5, counts.min()))
             skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=a.seed)
             xw = xte[genes][m_te]
-            var = xw.var(axis=0)
-            keep = var.sort_values(ascending=False).index[:a.top_genes]
-            model = make_pipeline(StandardScaler(),
-                                  LogisticRegression(max_iter=2000, C=1.0, random_state=a.seed))
-            pw = cross_val_predict(model, xw[keep].fillna(0.0).values, yte[m_te], cv=skf)
+            # the whole pipeline -- selection, imputation, scaling -- is refit
+            # inside each fold by cross_val_predict
+            pw = cross_val_predict(make_model(a.top_genes, a.seed), xw.values, yte[m_te], cv=skf)
             within = float((pw == yte[m_te]).mean())
 
         rows.append(dict(held_out=held, n_train=int(m_tr.sum()), n_test=int(m_te.sum()),
