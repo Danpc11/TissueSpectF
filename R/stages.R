@@ -974,6 +974,54 @@ stage_reference <- function(project, opt) {
   }
 
   prov <- grids[[1]]$provenance
+
+  # DIFFERENTIAL MODE travels WITH the reference. If the datasets were switched
+  # to deviations (reference_profile_applied.tsv), all of them must have been,
+  # with the same profile, and the profile itself is stored in the .rds so a
+  # query is corrected from the object, not from an environment variable that
+  # can be forgotten. A raw query against a differential library, or the
+  # reverse, is a silent error; fingerprint_query() refuses it.
+  applied <- lapply(names(kept_datasets), function(id)
+    read_reference_profile_applied(file.path(project$interim_dir, id)))
+  names(applied) <- names(kept_datasets)
+  has_prof <- !vapply(applied, is.null, logical(1))
+  reference_profile <- NULL
+  if (any(has_prof)) {
+    if (!all(has_prof)) {
+      tsf_abort("Differential mode is inconsistent: ", paste(names(applied)[has_prof], collapse = ","),
+                " are deviations from a reference profile but ",
+                paste(names(applied)[!has_prof], collapse = ","), " are raw. Run ",
+                "scripts/apply_reference_profile.R on all datasets or --restore on all.")
+    }
+    digests <- unique(vapply(applied, function(a) a$profile_digest, character(1)))
+    if (length(digests) != 1L) {
+      tsf_abort("Datasets were corrected with DIFFERENT reference profiles (digests ",
+                paste(digests, collapse = ", "), "). One library, one profile.")
+    }
+    a1 <- applied[[1]]
+    if (!file.exists(a1$profile_path)) {
+      tsf_abort("Reference profile ", a1$profile_path, " (recorded in ",
+                "reference_profile_applied.tsv) no longer exists; it must be stored in the library.")
+    }
+    prof <- read_reference_profile(a1$profile_path)
+    if (!identical(unname(tools::md5sum(a1$profile_path)), a1$profile_digest)) {
+      tsf_abort("Reference profile ", a1$profile_path, " changed since it was applied ",
+                "(digest mismatch). Re-run apply_reference_profile.R.")
+    }
+    reference_profile <- list(profile = prof[, c("gene_id", "ref_median")],
+                              digest = a1$profile_digest, path = a1$profile_path,
+                              n_ref_samples = a1$n_ref_samples,
+                              source_datasets = a1$source_datasets,
+                              tissue = a1$tissue,
+                              grid_axis = project$grid_axis %||% "gene",
+                              bin_size = project$bin_size %||% 100000L,
+                              annotation = prov$annotation_file %||% project$annotation_file,
+                              expression_unit = prov$expression_unit %||% NA_character_)
+    tsf_log("Differential library: profile ", basename(a1$profile_path), " (md5 ",
+            substr(a1$profile_digest, 1, 8), ", ", a1$n_ref_samples, " reference sample(s), ",
+            nrow(prof), " positions) is stored in the reference")
+  }
+
   ref <- build_reference(fps, target = project$fingerprint$target %||% "condition",
                          n_features = project$fingerprint$n_features %||% 500L,
                          n_masks = project$fingerprint$n_masks %||% 10L,
@@ -1010,6 +1058,9 @@ stage_reference <- function(project, opt) {
                            expression_unit = prov$expression_unit %||% NA_character_,
                            chrom_levels = paste(project$chrom_levels, collapse = ","),
                            datasets = paste(names(fps), collapse = ",")))
+  ref$reference_profile <- reference_profile
+  ref$params$differential <- !is.null(reference_profile)
+  ref$params$reference_profile_digest <- reference_profile$digest %||% NA_character_
   ensure_dir(file.path(project$results_dir, "reference"))
   path <- file.path(project$results_dir, "reference", "reference.rds")
   saveRDS(ref, path)
@@ -1078,6 +1129,21 @@ stage_differential <- function(project, opt) {
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id)
     conds <- tsf_conditions(inp$conditions, opt)
+    # Without --stage-order the ordered subset comes from the DATASET's
+    # vocabulary (`progression`, the operational labels F0..F4), not from
+    # project$vocabulary_spec, which no config sets: with it unset the trend
+    # test was silently skipped on every run.
+    order_here <- stage_order
+    if (is.null(order_here)) {
+      voc <- tryCatch(load_dataset_config(id)$vocabulary_spec, error = function(e) NULL)
+      order_here <- voc$progression %||% NULL
+      if (!is.null(order_here)) {
+        order_here <- order_here[order_here %in% conds]
+        if (length(order_here) < 3L) order_here <- NULL
+        else tsf_log(id, ": ordinal trend over ", paste(order_here, collapse = " -> "),
+                     " (from vocabulary '", voc$id, "')")
+      }
+    }
     parts <- list()
     for (cond in conds) {
       d <- read_tsv_tsf(p_spectra_samples(inp$paths, cond), required = FALSE)
@@ -1105,7 +1171,7 @@ stage_differential <- function(project, opt) {
       tsf_log("  ", id, ": collapsed to ", length(unique(sp$k)), " period band(s)")
     }
 
-    res <- differential_spectrum(sp, groups, stage_order = stage_order)
+    res <- differential_spectrum(sp, groups, stage_order = order_here)
     if (is.null(res)) { tsf_warn(id, ": nothing to test"); next }
 
     out_dir <- file.path(inp$paths$base, "differential")
