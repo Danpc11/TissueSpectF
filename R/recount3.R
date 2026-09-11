@@ -229,6 +229,12 @@ fetch_recount3_project <- function(project, geo_dir, cache_dir = file.path(geo_d
         " -- EDIT its condition_rules before ingesting: the sample attributes are exploded into columns of the pheno file" else "")
     } else {
       tsf_log("  config exists, left untouched: ", cfg_path)
+      old <- tryCatch(source(cfg_path, local = TRUE)$value, error = function(e) NULL)
+      if (is.null(old) || !identical(old$source, "matrix") || is.null(old$metadata_file) ||
+          !identical(old$count_id_type, "ENSEMBL")) {
+        tsf_warn("  ", cfg_path, " was written by an earlier generator and ingest will not read it ",
+                 "correctly. Run: Rscript scripts/validate_recount3_configs.R --migrate")
+      }
     }
   }
   invisible(list(id = id, source = src, reads = file.path(geo_dir, reads_file),
