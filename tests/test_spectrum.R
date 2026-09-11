@@ -679,6 +679,23 @@ check("confirmation requires beating the permuted null, not just zero", {
     identical(loses$signature_class, "exploratory") &&
     identical(none$signature_class, "exploratory") })
 
+check("the phase gate is p_plv_null when present, Rayleigh only as fallback", {
+  base <- data.frame(chr = "1", N = 200L, k = 6L, freq = 0.03, period = 33,
+                     n_samples_valid = 40L, prevalence = 1,
+                     plv = 0.9, plv_rayleigh_p = 1e-12, plv_rayleigh_q = 1e-10,
+                     consensus_score = 0.5, consensus_score_rank = 0.5,
+                     consensus_score_ci_lower = 0.3, p_null_fwer = 0.02,
+                     stringsAsFactors = FALSE)
+  # Rayleigh says aligned, the permutation null says this tissue is always this
+  # aligned: the calibrated gate must win and the component must not pass.
+  blocked <- consensus_signature(within(base, { p_plv_null <- 0.6 }))
+  passed  <- consensus_signature(within(base, { p_plv_null <- 0.01 }))
+  fallback <- suppressWarnings(consensus_signature(base))
+  is.null(blocked) &&
+    identical(passed$signature_class, "confirmed") &&
+    identical(passed$phase_gate, "plv_null") &&
+    identical(fallback$phase_gate, "rayleigh") })
+
 check("signatures are labelled confirmed or exploratory", {
   # Two samples: exp(-2) * n_freq exceeds the q threshold, so phase alignment
   # is not testable and the component can only be exploratory.
