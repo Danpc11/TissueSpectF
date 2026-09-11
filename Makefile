@@ -26,9 +26,14 @@ test-r:
 # lets the thing it guards fail is worse than no guard.
 ML_MODULES = numpy pandas yaml pytest
 
+# Missing dependencies -> SKIP (a message, exit 0). A failing test -> FAIL. The
+# previous `deps && pytest || true` turned a real pytest failure into success.
 test-ml:
-	@python3 scripts/check_ml_deps.py $(ML_MODULES) \
-	  && python3 -m pytest tests/ml/ -q || true
+	@if python3 scripts/check_ml_deps.py $(ML_MODULES); then \
+	  python3 -m pytest tests/ml/ -q; \
+	else \
+	  echo "test-ml: SKIPPED (missing python modules: $(ML_MODULES))"; \
+	fi
 
 # These pass no paths, so they require TSF_GEO_DIR, TSF_INTERIM_DIR and
 # TSF_RESULTS_DIR in the environment: config/project.R names no paths, and
