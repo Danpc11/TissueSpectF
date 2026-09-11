@@ -21,7 +21,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ml.baselines import format_summary, run_baselines            # noqa: E402
-from ml.dataset import apply_normalisation, build_tensor, normalisation_stats  # noqa: E402
+from ml.dataset import build_tensor  # noqa: E402
 from ml.splits import (describe_folds, format_class_report,               # noqa: E402
                        leave_one_cohort_out)
 from ml.utils import set_seed, software_versions                  # noqa: E402
@@ -44,10 +44,14 @@ def main() -> int:
     folds = leave_one_cohort_out(tensor.dataset_ids, tensor.class_ids)
     print(describe_folds(folds, tensor.dataset_ids, tensor.class_ids))
 
-    # Normalisation is fitted per fold inside run_baselines' models where it
-    # matters; here the tensor is only re-zeroed so padding cannot leak.
-    stats = normalisation_stats(tensor, np.arange(tensor.n_samples))
-    x = apply_normalisation(tensor, stats)
+    # No global normalisation. normalisation_stats() documents that fitting it
+    # on anything but the training fold leaks the held-out cohort's scale, and
+    # this script did exactly that over every sample. Each sklearn baseline
+    # carries its own StandardScaler fitted per fold, and the centroid
+    # baseline is scale-free (cosine), so the tensor only needs its padding
+    # re-zeroed here.
+    x = tensor.x.copy()
+    x[~tensor.mask] = 0.0
 
     order = args.ordinal.split(",") if args.ordinal else [
         c for c in sorted(tensor.manifest.class_ids) if "::disease::" in c]
