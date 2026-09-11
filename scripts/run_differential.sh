@@ -45,6 +45,7 @@
 #   --maxt-b N          permutations for per-sample maxT     (config default)
 #   --combined          also build the combined library
 #   --only LIB          primary | sensitivity_geo | combined: build just that one
+#   --skip-tests        do not run `make test` in step 0 (you ran it by hand; logged)
 #   -h, --help
 #
 # Usage:
@@ -62,7 +63,7 @@ TSF_VOCAB="${TSF_VOCAB:-liver_fibrosis}"
 TSF_BIN_SIZE="${TSF_BIN_SIZE:-100000}"
 N_WORKERS="${N_WORKERS:-4}"
 TSF_RUN_COMBINED="${TSF_RUN_COMBINED:-0}"
-ONLY=""
+ONLY=""; SKIP_TESTS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --root)        TSF_ROOT="$2"; shift 2 ;;
@@ -79,10 +80,17 @@ while [ $# -gt 0 ]; do
     --maxt-b)      export TSF_MAXT_B="$2"; shift 2 ;;
     --combined)    TSF_RUN_COMBINED=1; shift ;;
     --only)        ONLY="$2"; shift 2 ;;
+    --skip-tests)  SKIP_TESTS=1; shift ;;
     -h|--help)     usage; exit 0 ;;
     *) echo "unknown flag: $1" >&2; usage >&2; exit 1 ;;
   esac
 done
+# relative paths become absolute: tsf and the R scripts record them in
+# markers and manifests, and a relative one breaks the md5 checks later
+abs() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s/%s' "$PWD" "${1#./}" ;; esac; }
+[ -z "${TSF_GEO_DIR:-}" ]     || TSF_GEO_DIR=$(abs "$TSF_GEO_DIR")
+[ -z "${TSF_INTERIM_DIR:-}" ] || TSF_INTERIM_DIR=$(abs "$TSF_INTERIM_DIR")
+[ -z "${TSF_RESULTS_DIR:-}" ] || TSF_RESULTS_DIR=$(abs "$TSF_RESULTS_DIR")
 : "${TSF_GEO_DIR:?--geo-dir is required}"
 : "${TSF_INTERIM_DIR:?--interim-dir is required}"
 : "${TSF_RESULTS_DIR:?--results-dir is required}"
@@ -141,7 +149,17 @@ ensure_dir_atomic() {
 # ---------------------------------------------------------------- 0. sanity
 step "0 tests and recount3 config validation"
 TESTS_DIG="tests=$(git rev-parse HEAD 2>/dev/null || echo nogit)"
-ensure "$ROOT_RESULTS/.tests_ok" "$TESTS_DIG" bash -c 'make test >/dev/null && touch "$0"' "$ROOT_RESULTS/.tests_ok"
+if [ "$SKIP_TESTS" = "1" ]; then
+  log "tests SKIPPED by --skip-tests (HEAD $(git rev-parse --short HEAD 2>/dev/null || echo nogit)); run make test by hand"
+  printf 'skipped by flag at %s, HEAD %s\n' "$(date)" "$(git rev-parse HEAD 2>/dev/null || echo nogit)" >> "$ROOT_RESULTS/tests_skipped.log"
+else
+  # the tests must see a CLEAN environment: test_labels.R checks what happens
+  # when no TSF_* path is set, and this script has just exported them. Output
+  # goes to tests.log, and its tail is printed on failure.
+  ensure "$ROOT_RESULTS/.tests_ok" "$TESTS_DIG" bash -c \
+    'cd "$2" && env -u TSF_GEO_DIR -u TSF_INTERIM_DIR -u TSF_RESULTS_DIR -u TSF_CONFIG make test > "$1" 2>&1 && touch "$0" || { echo "tests failed; last lines of $1:"; tail -8 "$1"; exit 1; }' \
+    "$ROOT_RESULTS/.tests_ok" "$ROOT_RESULTS/tests.log" "$TSF_ROOT"
+fi
 # the recount3 configs THIS run uses are validated once the dataset list is
 # known (step 2); other tissues' R3_*.R in the repo are not this run's concern
 
