@@ -134,19 +134,26 @@ apply_reference_profile <- function(dataset_id, project, ref, profile_name = "re
   genes_path <- file.path(dir, "genes.tsv")
   genes_raw_path <- file.path(dir, "genes_raw.tsv")
   applied_path <- file.path(dir, "reference_profile_applied.tsv")
-  # The raw copy is the INGEST output. If ingest ran again (--force) after the
-  # last correction, expression.tsv is raw again and newer than the marker: the
-  # old backup would be stale, so it is refreshed. The marker's own mtime is
-  # the record of the last correction; without it, expression.tsv is raw.
-  ingest_rewrote <- !file.exists(applied_path) ||
-    file.mtime(expr_path) > file.mtime(applied_path) + 1
-  if (ingest_rewrote || !file.exists(raw_path)) {
+  # WHICH expression.tsv is on disk is decided by content, not by mtime: the
+  # marker records the md5 of the corrected file it wrote and of the ingest
+  # output it started from. If the current file is the corrected one, the raw
+  # copy is still valid; anything else means ingest rewrote it (--force, a new
+  # mask, a new annotation) and the raw copy is refreshed from it. Timestamps
+  # on cluster filesystems are not reliable enough to carry this decision.
+  cur_md5 <- unname(tools::md5sum(expr_path))
+  prev <- if (file.exists(applied_path)) read_reference_profile_applied(dir, check = FALSE) else NULL
+  still_corrected <- !is.null(prev) && identical(prev$corrected_md5, cur_md5) &&
+    file.exists(raw_path) && identical(prev$raw_md5, unname(tools::md5sum(raw_path)))
+  if (!still_corrected) {
     file.copy(expr_path, raw_path, overwrite = TRUE)
     file.copy(genes_path, genes_raw_path, overwrite = TRUE)
-    if (file.exists(applied_path)) tsf_log(dataset_id, ": ingest output is newer than the last ",
-                                           "correction; raw copy refreshed")
+    if (!is.null(prev)) tsf_log(dataset_id, ": expression.tsv is not the file the last ",
+                                "correction wrote; taking it as the new ingest output")
   }
-
+  raw_md5 <- unname(tools::md5sum(raw_path))
+  genes_raw_md5 <- unname(tools::md5sum(genes_raw_path))
+  ingest_manifest <- file.path(dir, "manifest.tsv")
+  ingest_md5 <- if (file.exists(ingest_manifest)) unname(tools::md5sum(ingest_manifest)) else NA_character_
   expr <- read_tsv_tsf(raw_path)
   genes <- read_tsv_tsf(genes_raw_path)
   mat <- as.matrix(expr[, setdiff(colnames(expr), "gene_id"), drop = FALSE])
@@ -167,14 +174,15 @@ apply_reference_profile <- function(dataset_id, project, ref, profile_name = "re
     unname(tools::md5sum(profile_path)) else NA_character_
   write_tsv_tsf(data.frame(
     key = c("profile", "profile_path", "profile_digest", "n_ref_samples", "source_datasets",
-            "tissue", "n_genes_before", "n_genes_after", "applied"),
+            "tissue", "n_genes_before", "n_genes_after", "applied",
+            "raw_md5", "genes_raw_md5", "corrected_md5", "genes_md5", "ingest_manifest_md5"),
     value = c(profile_name, profile_path, digest,
               ref$n_ref_samples[1] %||% attr(ref, "n_samples") %||% NA,
               ref$source_datasets[1] %||% NA, ref$tissue[1] %||% NA,
-              nrow(mat), nrow(d), format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
+              nrow(mat), nrow(d), format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+              raw_md5, genes_raw_md5, unname(tools::md5sum(expr_path)),
+              unname(tools::md5sum(genes_path)), ingest_md5),
     stringsAsFactors = FALSE), applied_path)
-  Sys.sleep(1.1)  # the marker must be strictly newer than expression.tsv (second resolution)
-  Sys.setFileTime(applied_path, Sys.time())
   tsf_log(dataset_id, ": expression.tsv is now the deviation from '", profile_name,
           "' (", nrow(d), "/", nrow(mat), " genes kept; ", sum(!in_ref),
           " not in the profile, dropped)")
@@ -182,18 +190,25 @@ apply_reference_profile <- function(dataset_id, project, ref, profile_name = "re
 }
 
 #' The marker apply_reference_profile() leaves, as a list, or NULL if the
-#' dataset is raw (no marker, or expression.tsv rewritten by ingest since).
-read_reference_profile_applied <- function(dir) {
+#' dataset is raw: no marker, or expression.tsv / genes.tsv are not the files
+#' the marker says it wrote (content check by md5, not mtime). With
+#' `check = FALSE` the marker is returned as recorded, for callers that decide
+#' themselves.
+read_reference_profile_applied <- function(dir, check = TRUE) {
   p <- file.path(dir, "reference_profile_applied.tsv")
   if (!file.exists(p)) return(NULL)
-  if (file.mtime(file.path(dir, "expression.tsv")) > file.mtime(p) + 1) {
-    tsf_warn(basename(dir), ": expression.tsv was rewritten after the reference profile was ",
-             "applied; treating it as RAW. Re-run apply_reference_profile.R.")
-    return(NULL)
-  }
   t <- read_tsv_tsf(p)
   out <- as.list(stats::setNames(as.character(t$value), t$key))
   out$n_ref_samples <- suppressWarnings(as.integer(out$n_ref_samples))
+  if (!check) return(out)
+  cur <- unname(tools::md5sum(file.path(dir, "expression.tsv")))
+  cur_g <- unname(tools::md5sum(file.path(dir, "genes.tsv")))
+  if (!identical(out$corrected_md5, cur) || !identical(out$genes_md5, cur_g)) {
+    tsf_warn(basename(dir), ": expression.tsv/genes.tsv are not the files the reference profile ",
+             "was applied to (md5 differs); treating the dataset as RAW. Re-run ",
+             "apply_reference_profile.R.")
+    return(NULL)
+  }
   out
 }
 
