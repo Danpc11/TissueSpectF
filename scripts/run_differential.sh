@@ -288,8 +288,11 @@ run_library() {
   ensure_dir_atomic "$TSF_RESULTS_DIR/crest_genes" "$REF_DIG|lib=$(md5 "$TSF_RESULTS_DIR/condition_library.inputs")" --out crest_all
 
   step "[$NAME] gene-level LOCO baseline"
+  # a failure here must not abort the run: the libraries that follow do not
+  # depend on it, and the baseline can be re-run alone afterwards
   python3 scripts/run_gene_baseline.py --interim-dir "$TSF_INTERIM_DIR" --datasets "$COHORTS" \
-    --target class_id --out "$TSF_RESULTS_DIR/gene_baseline.tsv"
+    --target class_id --out "$TSF_RESULTS_DIR/gene_baseline.tsv" \
+    || log "[$NAME] gene baseline FAILED (continuing); re-run: python3 scripts/run_gene_baseline.py --interim-dir $TSF_INTERIM_DIR --datasets $COHORTS --target class_id --out $TSF_RESULTS_DIR/gene_baseline.tsv"
   log "[$NAME] done -> $TSF_RESULTS_DIR"
 }
 
