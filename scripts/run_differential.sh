@@ -164,8 +164,20 @@ if [ -n "$SRPS" ]; then
     ensure "$TSF_GEO_DIR/R3_${s}_reads.tsv.gz" "srp=$s|tissue=$TSF_TISSUE|vocab=$TSF_VOCAB" \
       Rscript scripts/recount3_fetch.R --projects "$s" --tissue "$TSF_TISSUE" --vocabulary "$TSF_VOCAB"
     if grep -q '^\s*# list(id = "biopsy_fibrosis_stage"' "config/datasets/R3_$s.R"; then
-      log "STOP: config/datasets/R3_$s.R needs condition_rules for the exploded SRA attributes (the pheno columns are listed in it). Edit it, then re-run."
-      exit 2
+      # recount3 carried no usable sample attributes: take the labels from the
+      # GEO series matrix of the same study (joined on SRX) and copy the GEO
+      # config's rules verbatim. Only if that fails is a hand edit needed.
+      gse=$(awk -F'\t' -v srp="$s" 'NR>1 && $2==srp {print $1}' "$SOURCES" | head -1)
+      if [ -n "$gse" ] && [ -f "config/datasets/$gse.R" ]; then
+        ./tsf fetch "$gse" >/dev/null 2>&1 || true
+        if Rscript scripts/recount3_join_geo.R --dataset "R3_$s" --geo "$gse" --geo-dir "$TSF_GEO_DIR"; then
+          log "R3_$s labelled from $gse (series matrix joined on SRX; rules copied from config/datasets/$gse.R)"
+        else
+          log "STOP: could not join R3_$s to $gse. Edit config/datasets/R3_$s.R by hand, then re-run."; exit 2
+        fi
+      else
+        log "STOP: config/datasets/R3_$s.R needs condition_rules and no GEO config is known for $s. Edit it, then re-run."; exit 2
+      fi
     fi
     R3_COHORTS="${R3_COHORTS:+$R3_COHORTS,}R3_$s"
   done
