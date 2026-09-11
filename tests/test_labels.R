@@ -528,6 +528,34 @@ check("--seed reaches maxt$seed", {
       "--dry-run"), stdout = TRUE, stderr = TRUE)), collapse = " ")
   grepl("maxt$seed = 99", out, fixed = TRUE) })
 
+check("todo script ejecutable responde a --help y sale con 0", {
+  # Antes: "Missing value for --help", "No such file: --help", o el script
+  # corria con la configuracion vacia. Un script que no sabe explicarse es un
+  # script que nadie usa bien, y son la puerta de entrada al repo.
+  fs <- setdiff(list.files("scripts", pattern = "[.]R$", full.names = TRUE),
+                c("scripts/tsf.R", "scripts/selfcheck.R"))
+  bad <- Filter(function(f) {
+    st <- suppressWarnings(system2("Rscript", c(f, "--help"),
+                                   stdout = NULL, stderr = NULL))
+    st != 0L
+  }, fs)
+  if (length(bad)) cat("   sin --help:", paste(basename(bad), collapse = ", "), "\n")
+  length(bad) == 0L })
+
+check("todo modulo de R/ carga sin definir nada por accidente", {
+  # Cargar el arbol entero y comprobar que cada llamada a funcion se resuelve.
+  # Tres bugs de esta clase --`dataset$id` por `dataset_id`, `grid` fuera de
+  # alcance, `kept_datasets` en vez de sus nombres-- no los vio ningun test
+  # unitario porque solo aparecen al cargar todo junto.
+  e <- new.env(parent = globalenv())
+  ok <- vapply(tsf_module_order("R"), function(f) {
+    isTRUE(tryCatch({ sys.source(f, envir = e); TRUE },
+                    error = function(err) { cat("   ", basename(f), ":",
+                                                conditionMessage(err), "\n")
+                                            FALSE }))
+  }, logical(1))
+  all(ok) && length(ls(e)) > 100L })
+
 check("se itera sobre los NOMBRES de kept_datasets, no sobre los objetos", {
   # kept_datasets[[id]] <- list(dataset=, chrom_idx=), asi que
   # lapply(kept_datasets, ...) pasaba la lista entera y file.path() recibia
