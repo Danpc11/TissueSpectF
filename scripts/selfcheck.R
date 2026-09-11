@@ -291,6 +291,92 @@ run_selfcheck <- function() {
       !is.null(a) && !is.null(b) && a$coverage > b$coverage * 1.5 })
   }
 
+  # --- EJE bp, EL FLUJO DE DOS PASADAS COMPLETO -------------------------------
+  #
+  # El selfcheck corria solo sobre el eje de rango de gen, y por eso ninguno de
+  # los cuatro fallos del eje bp se veia: posiciones repetidas en el ajuste,
+  # cobertura con tres denominadores distintos, orden de normalizacion
+  # invertido, y la mascara por cohorte. Los tests unitarios cubren las piezas;
+  # esto ejercita la cadena.
+  #
+  #   ingest bp sin mascara -> retained_genes.tsv
+  #   -> shared_gene_mask.R -> ingest bp CON mascara -> spectra -> reference
+  #
+  # `reference` con eje bp no calibra bandas a proposito --las consultas salen
+  # UNCALIBRATED_COVERAGE-- asi que lo que se comprueba es que la cadena corre
+  # y que las cohortes quedan armonizadas, no que clasifique.
+  tsf_log("")
+  tsf_log("selfcheck: eje bp, flujo de dos pasadas")
+  bp_ok <- tryCatch({
+    pbp <- project
+    pbp$interim_dir <- file.path(tmp, "interim_bp")
+    pbp$results_dir <- file.path(tmp, "results_bp")
+    pbp$grid_axis <- "bp"
+    # Los genes sinteticos estan cada 1000 pb, asi que 2000 agrupa DOS por bin:
+    # lo minimo para que la agregacion y bin_min_coverage se ejerciten de
+    # verdad. Con un bin de un gen el eje bp seria indistinguible del de gen y
+    # la prueba no probaria nada.
+    pbp$bin_size <- 2000
+
+    # LONGITUDES DE CROMOSOMA SINTETICAS.
+    #
+    # El eje bp calcula N con la longitud REAL del cromosoma --248 Mb para
+    # chr1-- y la malla sintetica tiene 30 genes en 30 kb. Con bin de 2000 eso
+    # son 15 bins ocupados de 124,478: cobertura del 0.01% y ninguna posicion
+    # sobrevive el minimo. No es un fallo del eje, es que los datos sinteticos
+    # no viven en coordenadas reales.
+    #
+    # Se declaran longitudes acordes al span sintetico para que la prueba
+    # ejercite la cadena en vez de chocar con una escala que no le toca.
+    pbp$chrom_lengths <- stats::setNames(
+      rep(SELFCHECK_GENES_PER_CHR * 1000L + 2000L, length(pbp$chrom_levels)),
+      pbp$chrom_levels)
+    pbp$bin_aggregate <- "mean"
+    pbp$bin_min_coverage <- 0.5
+
+    stage_ingest(pbp, opt)
+
+    rg <- lapply(opt$datasets, function(id)
+      read_tsv_tsf(file.path(pbp$interim_dir, id, "retained_genes.tsv"),
+                   required = FALSE))
+    if (any(vapply(rg, is.null, logical(1)))) {
+      tsf_warn("  falta retained_genes.tsv tras la primera pasada")
+      FALSE
+    } else {
+      sets <- lapply(rg, function(t) unique(as.character(t$gene_id)))
+      # Los ids tienen que ser de GEN, no de bin: genes.tsv guarda
+      # `bin_<chr>_<index>` y leer la mascara de ahi no intersecaria nada.
+      if (any(grepl("^bin_", unlist(sets)))) {
+        tsf_warn("  retained_genes.tsv trae ids de BIN, no de gen")
+        FALSE
+      } else {
+        shared <- Reduce(intersect, sets)
+        mask_f <- file.path(pbp$interim_dir, "shared_gene_mask.tsv")
+        write_tsv_tsf(data.frame(gene_id = shared, stringsAsFactors = FALSE),
+                      mask_f)
+        pbp$gene_mask_file <- mask_f
+        stage_ingest(pbp, opt)          # SEGUNDA pasada, con la mascara
+
+        after <- lapply(opt$datasets, function(id)
+          unique(as.character(read_tsv_tsf(
+            file.path(pbp$interim_dir, id, "retained_genes.tsv"))$gene_id)))
+        harmonised <- length(unique(vapply(after, function(v)
+          paste(sort(v), collapse = "|"), character(1)))) == 1L
+
+        stage_spectra(pbp, opt)
+        # reference no debe abortar: las cohortes ya estan armonizadas
+        ref_bp <- tryCatch({ stage_reference(pbp, opt); TRUE },
+                           error = function(e) {
+                             tsf_warn("  reference bp fallo: ",
+                                      conditionMessage(e)); FALSE })
+        harmonised && ref_bp
+      }
+    }
+  }, error = function(e) {
+    tsf_warn("  flujo bp fallo: ", conditionMessage(e)); FALSE
+  })
+  check("el flujo bp de dos pasadas corre y armoniza las cohortes", bp_ok)
+
   unlink(tmp, recursive = TRUE)
   if (failures == 0L) {
     tsf_log("selfcheck passed: the pipeline recovers the injected signal end to end.")
