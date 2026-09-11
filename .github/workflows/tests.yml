@@ -24,6 +24,7 @@ jobs:
         run: |
           Rscript tests/test_labels.R
           Rscript tests/test_spectrum.R
+          Rscript tests/test_condition_invariants.R
 
       # End-to-end run on synthetic data with a known injected peak: catches
       # regressions that unit tests cannot, such as a stage writing a schema the
