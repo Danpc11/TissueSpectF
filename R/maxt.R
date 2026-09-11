@@ -14,8 +14,8 @@
 #
 # Two schemes are used: `full` (permute all observed values) and `block`
 # (permute contiguous blocks of grid positions, preserving local correlation).
-# The primary p-value is `full`; `p_empirical_maxT_all` is the max across
-# schemes, reported for the conservative reading.
+# Which scheme is primary is declared in config/project.R (`all` by default);
+# both p-values are always written.
 
 MIN_PERMUTATION_BLOCKS <- 10L
 
@@ -23,10 +23,16 @@ MIN_PERMUTATION_BLOCKS <- 10L
 #'   observado y en TODOS los sorteos del nulo; mezclarlos invalidaria el p.
 permutation_gls_test <- function(y, terms, B = 1000L, seed = 42L,
                                  block_sizes = c(10L, 20L, 50L),
-                                 primary_scheme = "full",
+                                 primary_scheme = "all",
                                  estimator = NULL) {
   y <- as.numeric(y)
-  y[!is.finite(y)] <- 0
+  # Same rule as gls_spectrum(): a non-finite value at an observed position is
+  # not zero, it is a bug upstream. Callers route through gls_observed().
+  if (anyNA(y) || any(!is.finite(y))) {
+    tsf_abort("permutation_gls_test() received ", sum(!is.finite(y)),
+              " non-finite value(s) at observed positions; route the signal ",
+              "through gls_observed() first.")
+  }
   n <- terms$n
   if (n < 8L || stats::sd(y) == 0) return(NULL)
 
@@ -222,7 +228,7 @@ maxt_condition <- function(dataset, cond, chrom_idx, maxt_cfg, n_cores = 1L,
                                   B = maxt_cfg$B,
                                   seed = chr_seed + match(s, sig$samples),
                                   block_sizes = maxt_cfg$block_sizes,
-                                  primary_scheme = maxt_cfg$primary_scheme %||% "full",
+                                  primary_scheme = maxt_cfg$primary_scheme %||% "all",
                                   estimator = estimator)
       if (is.null(res) || !nrow(res)) next
       res$chr <- chr_now
