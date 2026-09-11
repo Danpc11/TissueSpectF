@@ -23,10 +23,12 @@ The model, the estimators and the limits of each claim are written up in
 
 ```bash
 make test && ./tsf selfcheck      # 335 checks + the pipeline on a known answer
-./scripts/run_all.sh              # the three axes, end to end
+Rscript scripts/calibrate_null.R  # the negative control: red noise, no peak
+./scripts/run_all.sh              # the three axes, end to end (see below)
 ```
 
-`run_all.sh` encodes the ordering constraints that a list of commands does not:
+`run_all.sh` is the local driver and must be committed alongside the config
+it runs, or the run it produced cannot be reproduced. It encodes the ordering constraints that a list of commands does not:
 `maxt` before `condition` or the Stouffer evidence is dropped, `window` after
 `stability` or there are no stable peaks to place, and the **two-pass ingest**
 the base-pair axis needs.
@@ -555,9 +557,9 @@ Rscript scripts/build_final_condition_spectra.R \
   --min-period auto --period-margin 2 --min-period-biological 10
 ```
 
-The signature is not a top-N list. Each cohort's family-wise permutation
-p-values combine by Stouffer and are BH-adjusted across frequencies; membership
-is `q_meta_null <= 0.05`. Combining across cohorts is what makes that cut
+The signature is not a top-N list. Each cohort's pointwise permutation
+p-values (`p_null`, each frequency against its own null) combine by Stouffer
+and are BH-adjusted across frequencies; membership is `q_meta_null <= 0.05`. Combining across cohorts is what makes that cut
 reachable — with four cohorts it works at 99 draws, with three at 199, with two
 it needs many more, and **with one it is impossible at any number of draws**.
 Those classes are reported `single_cohort` and provisional.
@@ -588,7 +590,11 @@ either way.
 
 **condition** (default) -- a permutation test on the condition's summary signal.
 Values are permuted among the observed grid positions, the spectrum recomputed,
-and the *maximum* power over frequencies gives the null. Family-wise: it asks
+and the *maximum* power over frequencies gives the null. The scheme that
+decides is `maxt$primary_scheme`, `all` by default: the peak has to survive
+the block permutations as well as the full one, because the full permutation
+alone is a white-noise null and calls autocorrelation "periodicity"
+(`Rscript scripts/calibrate_null.R` shows the rate; see THEORY.md §5.3). Family-wise: it asks
 whether a frequency beats the strongest frequency of a permuted spectrum, which
 on 500-800 frequencies is close to asking whether it dominates its chromosome.
 Expect single digits, and believe what passes.
