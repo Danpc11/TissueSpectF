@@ -41,13 +41,18 @@ if (any(commandArgs(TRUE) %in% c("-h", "--help"))) {
   quit(save = "no")
 }
 suppressWarnings({ source("R/utils_io.R"); tsf_load_all("R") })
-project <- load_project_config(Sys.getenv("TSF_CONFIG", "config/project.R"))
 args <- commandArgs(trailingOnly = TRUE)
 flag <- function(n, d = NULL) {
   h <- grep(paste0("^", n, "="), args, value = TRUE)
   if (length(h)) return(sub(paste0("^", n, "="), "", h[1]))
   i <- match(n, args); if (!is.na(i) && length(args) > i) args[i + 1] else d
 }
+# --geo-dir / --interim-dir / --results-dir override the environment, same as ./tsf
+for (pair in list(c("--geo-dir", "TSF_GEO_DIR"), c("--interim-dir", "TSF_INTERIM_DIR"),
+                  c("--results-dir", "TSF_RESULTS_DIR"), c("--config", "TSF_CONFIG"))) {
+  v <- flag(pair[1], NULL); if (!is.null(v)) do.call(Sys.setenv, stats::setNames(list(v), pair[2]))
+}
+project <- load_project_config(Sys.getenv("TSF_CONFIG", "config/project.R"))
 sig_path <- flag("--signature", ""); if (!nzchar(sig_path)) tsf_abort("Pasa --signature <tsv>")
 datasets <- trimws(strsplit(flag("--datasets", ""), ",")[[1]])
 if (!length(datasets)) tsf_abort("Pasa --datasets A,B")
