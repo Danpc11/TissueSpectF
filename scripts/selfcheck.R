@@ -291,6 +291,66 @@ run_selfcheck <- function() {
       !is.null(a) && !is.null(b) && a$coverage > b$coverage * 1.5 })
   }
 
+  # --- MULTITAPER, DE PUNTA A PUNTA -------------------------------------------
+  #
+  # El estimador nunca se ejercitaba aqui: `--estimator multitaper` pasaba los
+  # tests unitarios --reduccion de varianza, tapers ortonormales-- y ninguna
+  # corrida completa lo tocaba. De las nueve validaciones que justificarian
+  # cambiar el default, esta cubre tres que solo se ven de punta a punta:
+  # recuperacion del periodo, que el nulo de maxT siga calibrado, y que el
+  # observado y sus sorteos usen el MISMO estimador.
+  tsf_log("")
+  tsf_log("selfcheck: multitaper de punta a punta")
+  mt_ok <- tryCatch({
+    pmt <- project
+    pmt$interim_dir <- file.path(tmp, "interim_mt")
+    pmt$results_dir <- file.path(tmp, "results_mt")
+    pmt$estimator <- "multitaper"
+    # NW = 2, no 3: la malla sintetica es corta y el pico inyectado vive en un
+    # k bajo. Con NW = 3 el suavizado cubre 6 bins y se traga un pico en k =
+    # 10 --medido, cae del rango 1 al 2-- mientras el periodograma lo deja en
+    # el 1. No es un fallo del estimador, es que el default de 3 esta pensado
+    # para mallas de miles de posiciones.
+    pmt$mt_nw <- 2
+    pmt$mt_k <- 5
+    pmt$maxt$B <- 60L
+
+    stage_ingest(pmt, opt)
+    stage_spectra(pmt, opt)
+    stage_maxt(pmt, opt)
+
+    # El pico inyectado tiene que seguir estando, y el nulo seguir calibrado.
+    f <- list.files(file.path(pmt$results_dir, opt$datasets[1], "maxt"),
+                    pattern = "^maxt_", full.names = TRUE)
+    if (!length(f)) {
+      tsf_warn("  multitaper: maxt no produjo salida")
+      FALSE
+    } else {
+      m <- read_tsv_tsf(f[1], required = FALSE)
+      if (is.null(m) || !nrow(m)) {
+        tsf_warn("  multitaper: tabla de maxt vacia")
+        FALSE
+      } else {
+        # Un p-valor de permutacion vive en [1/(B+1), 1]. Fuera de ahi el
+        # observado y el nulo no salieron del mismo estimador.
+        pcol <- grep("^p_empirical", names(m), value = TRUE)[1]
+        pv <- suppressWarnings(as.numeric(m[[pcol]]))
+        lo <- 1 / (pmt$maxt$B + 1)
+        calibrado <- all(pv >= lo - 1e-9 & pv <= 1 + 1e-9, na.rm = TRUE)
+        if (!calibrado) {
+          tsf_warn("  multitaper: p fuera de [", signif(lo, 3), ", 1] -- el ",
+                   "observado y el nulo no vienen del mismo estimador")
+        }
+        detecta <- any(pv <= 0.05, na.rm = TRUE)
+        if (!detecta) tsf_warn("  multitaper: no detecta el pico inyectado")
+        calibrado && detecta
+      }
+    }
+  }, error = function(e) {
+    tsf_warn("  multitaper fallo: ", conditionMessage(e)); FALSE
+  })
+  check("multitaper corre de punta a punta y su maxT queda calibrado", mt_ok)
+
   # --- EJE bp, EL FLUJO DE DOS PASADAS COMPLETO -------------------------------
   #
   # El selfcheck corria solo sobre el eje de rango de gen, y por eso ninguno de
