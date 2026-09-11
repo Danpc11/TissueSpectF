@@ -14,6 +14,15 @@ module level and do. So the guard passed and pytest then died with
 the thing it guards fail is worse than no guard at all.
 """
 
+import sys
+
+# --help imprime el docstring y sale con 0. Sin esto `--help` se trataba como
+# un nombre de modulo a importar y el script respondia "cannot import --help",
+# que es una respuesta absurda a una peticion de ayuda.
+if "--help" in sys.argv[1:] or "-h" in sys.argv[1:]:
+    print(__doc__.strip())
+    raise SystemExit(0)
+
 import importlib.util
 import sys
 
