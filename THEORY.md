@@ -288,9 +288,30 @@ structure but because the test cannot see. Schemes below the floor are skipped
 and recorded in `block_schemes_skipped`.
 
 `maxt$primary_scheme` declares which null decides: `full`, or `all` (the maximum
-across schemes, requiring the peak to survive the block nulls too). **For any
-claim about periodicity, `all` is the defensible choice**; `full` remains the
-default only so that changing it is a deliberate act.
+across schemes, requiring the peak to survive the block nulls too). **`all` is
+the default.** The reason is measurable, and `scripts/calibrate_null.R`
+measures it: on AR(1) noise with no periodic component whatever
+($N = 1200$, 70% coverage, $B = 200$, 40 replicates), the family-wise error
+of each scheme at nominal $\alpha = 0.05$ was
+
+| process | `full` | `all` |
+|---|---|---|
+| white noise | 0.05 | 0.03 |
+| AR(1), $\phi = 0.3$ | 0.35 | 0.025 |
+| AR(1), $\phi = 0.6$ | 0.95 | 0.20 |
+
+with the false peak landing at low $k$ — the long periods where chromosomal
+structure is claimed. Under `full` the null is white noise; expression along a
+chromosome is not, so `full` tests autocorrelation, not periodicity.
+
+`all` is not exact either: under strong autocorrelation it still exceeds
+$\alpha$ by a factor of four. It is the defensible choice among the schemes
+implemented, not a solution. The solution is a null that preserves the
+background spectrum — an AR surrogate or phase randomisation restricted to the
+observed positions — and that is not implemented. Until it is, a component at
+low $k$ that passes `all` should also be checked against a smoothed version of
+the same chromosome's spectrum (is it a peak, or the top of a red slope?).
+`full` exists to reproduce results trees computed before this change.
 
 ### 5.4 Condition-level test — the primary inference
 
@@ -724,11 +745,21 @@ used, and a footnote does not travel with it.
 
 Taking the top $N$ components by score is a display convention pretending to be
 a criterion: it returns $N$ whether the evidence supports $N$, none, or a
-thousand. Instead, each cohort carries a family-wise permutation p-value per
-frequency ($p_{\text{null,fwer}}$, §5.6). Cohorts are independent studies, so
-those combine by Stouffer, and the multiplicity across frequencies is handled by
-BH. The signature is every frequency with $q_{\text{meta}} \le 0.05$ — a count
-the data decides, and one that can legitimately be zero.
+thousand. Instead, each cohort carries a **pointwise** permutation p-value per
+frequency ($p_{\text{null}}$, §5.6: the observed score against that
+frequency's own null). Cohorts are independent studies, so those combine by
+Stouffer, and the multiplicity across frequencies is handled by BH over the
+combined values. The signature is every frequency with
+$q_{\text{meta}} \le 0.05$ — a count the data decides, and one that can
+legitimately be zero.
+
+It is the pointwise p that is combined, not $p_{\text{null,fwer}}$. The
+family-wise value already pays for every frequency of the cohort; combining
+it and then applying BH across frequencies would pay twice and nothing would
+pass. The pointwise route pays once, at the BH step, over the family that
+was actually tested (§5.5d). An earlier version of this section said the
+family-wise value was combined; the code never did that, and the table below
+is computed for the pointwise floor.
 
 The permutation floor of §5.5b applies here too, but combining across $k$
 cohorts lowers it sharply: $k$ values at $1/(B+1)$ give a combined p far below
