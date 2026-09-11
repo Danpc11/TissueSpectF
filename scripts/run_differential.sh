@@ -63,7 +63,7 @@ TSF_VOCAB="${TSF_VOCAB:-liver_fibrosis}"
 TSF_BIN_SIZE="${TSF_BIN_SIZE:-100000}"
 N_WORKERS="${N_WORKERS:-4}"
 TSF_RUN_COMBINED="${TSF_RUN_COMBINED:-0}"
-ONLY=""; SKIP_TESTS=0
+ONLY=""; SKIP_TESTS=0; INCOMPLETE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --root)        TSF_ROOT="$2"; shift 2 ;;
@@ -111,10 +111,18 @@ md5()  { if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | awk '{print $1
 # minus the path fields. Grepping the file could not see the overrides.
 CONFIG_MD5=$(Rscript scripts/config_digest.R 2>/dev/null | tail -1 | tr -d ' ')
 [ -n "$CONFIG_MD5" ] || { echo "config_digest.R produced nothing"; exit 1; }
-log "effective config digest $CONFIG_MD5"
+# The CODE too: same parameters, newer algorithm, is a different result. The
+# md5 of every file the pipeline executes (R/, scripts/, tsf, vocabularies),
+# computed from their contents so it works without git and sees uncommitted
+# edits; the git commit is recorded alongside for humans.
+_codelist=$(mktemp); for f in $(ls R/*.R scripts/* tsf config/vocabularies/*.R 2>/dev/null | sort); do [ -f "$f" ] && printf '%s %s\n' "$(md5 "$f")" "$f"; done > "$_codelist"
+CODE_MD5=$(md5 "$_codelist"); rm -f "$_codelist"
+GIT_HEAD=$(git rev-parse --short HEAD 2>/dev/null || echo nogit)
+GIT_DIRTY=$( [ -n "$(git status --porcelain 2>/dev/null)" ] && echo "+dirty" || echo "" )
+log "effective config digest $CONFIG_MD5 | code digest $CODE_MD5 (git $GIT_HEAD$GIT_DIRTY)"
 base_digest() {  # $1 = dataset list
-  printf 'datasets=%s|gtex=%s|tissue=%s|gse=%s|vocab=%s|axis=bp|bin=%s|config=%s' \
-    "$1" "$TSF_GTEX_TISSUE" "$TSF_TISSUE" "$TSF_GSE" "$TSF_VOCAB" "$TSF_BIN_SIZE" "$CONFIG_MD5"
+  printf 'datasets=%s|gtex=%s|tissue=%s|gse=%s|vocab=%s|axis=bp|bin=%s|config=%s|code=%s' \
+    "$1" "$TSF_GTEX_TISSUE" "$TSF_TISSUE" "$TSF_GSE" "$TSF_VOCAB" "$TSF_BIN_SIZE" "$CONFIG_MD5" "$CODE_MD5"
 }
 # fresh ARTEFACT DIGEST : 0 if artefact exists and its .inputs equals DIGEST
 fresh() { [ -e "$1" ] && [ -f "$1.inputs" ] && [ "$(cat "$1.inputs")" = "$2" ]; }
@@ -141,7 +149,9 @@ ensure_dir_atomic() {
   rm -rf "$dir.tmp"; mkdir -p "$dir.tmp"
   "$@" "$outflag" "$dir.tmp"
   if [ -d "$dir" ]; then
-    local bak="$dir.bak.$(date +%Y%m%d_%H%M%S)"; mv "$dir" "$bak"; log "previous $(basename "$dir") kept as $(basename "$bak")"
+    local bak="$dir.bak.$(date +%Y%m%d_%H%M%S)"; mv "$dir" "$bak"
+    [ -f "$dir.inputs" ] && mv "$dir.inputs" "$bak.inputs"   # the backup keeps its provenance
+    log "previous $(basename "$dir") kept as $(basename "$bak") (with its .inputs)"
   fi
   mv "$dir.tmp" "$dir"; stamp "$dir" "$dig"
 }
@@ -181,21 +191,22 @@ if [ -n "$SRPS" ]; then
   for s in ${SRPS//,/ }; do
     ensure "$TSF_GEO_DIR/R3_${s}_reads.tsv.gz" "srp=$s|tissue=$TSF_TISSUE|vocab=$TSF_VOCAB|fetch=v2" \
       Rscript scripts/recount3_fetch.R --projects "$s" --tissue "$TSF_TISSUE" --vocabulary "$TSF_VOCAB"
-    if grep -q '^\s*# list(id = "biopsy_fibrosis_stage"' "config/datasets/R3_$s.R"; then
-      # recount3 carried no usable sample attributes: take the labels from the
-      # GEO series matrix of the same study (joined on SRX) and copy the GEO
-      # config's rules verbatim. Only if that fails is a hand edit needed.
-      gse=$(awk -F'\t' -v srp="$s" 'NR>1 && $2==srp {print $1}' "$SOURCES" | head -1)
-      if [ -n "$gse" ] && [ -f "config/datasets/$gse.R" ]; then
-        ./tsf fetch "$gse" >/dev/null 2>&1 || true
-        if Rscript scripts/recount3_join_geo.R --dataset "R3_$s" --geo "$gse" --geo-dir "$TSF_GEO_DIR"; then
-          log "R3_$s labelled from $gse (series matrix joined on SRX; rules copied from config/datasets/$gse.R)"
-        else
-          log "STOP: could not join R3_$s to $gse. Edit config/datasets/R3_$s.R by hand, then re-run."; exit 2
-        fi
-      else
-        log "STOP: config/datasets/R3_$s.R needs condition_rules and no GEO config is known for $s. Edit it, then re-run."; exit 2
-      fi
+    # Labels come from the GEO study of the same SRP: series matrix joined on
+    # GSM/SRX, rules and exclusions taken from the GEO config. The join re-runs
+    # whenever the GEO config, the series matrix, the fetched pheno or the join
+    # script change -- not only the first time.
+    gse=$(awk -F'\t' -v srp="$s" 'NR>1 && $2==srp {print $1}' "$SOURCES" | head -1)
+    if [ -n "$gse" ] && [ -f "config/datasets/$gse.R" ]; then
+      ./tsf fetch "$gse" --geo-dir "$TSF_GEO_DIR" --interim-dir "$TSF_INTERIM_DIR" --results-dir "$TSF_RESULTS_DIR" >/dev/null 2>&1 || true
+      sm=$(grep -o 'series_matrix *= *"[^"]*"' "config/datasets/$gse.R" | head -1 | sed 's/.*"\(.*\)"/\1/')
+      raw_pheno="$TSF_GEO_DIR/R3_${s}_pheno.recount3.tsv"; [ -f "$raw_pheno" ] || raw_pheno="$TSF_GEO_DIR/R3_${s}_pheno.tsv"
+      JOIN_DIG="geocfg=$(md5 "config/datasets/$gse.R")|sm=$( [ -f "$TSF_GEO_DIR/$sm" ] && md5 "$TSF_GEO_DIR/$sm" || echo none)|pheno=$(md5 "$raw_pheno")|join=$(md5 scripts/recount3_join_geo.R)"
+      ensure "$TSF_GEO_DIR/R3_${s}_join.done" "$JOIN_DIG" bash -c \
+        'Rscript scripts/recount3_join_geo.R --dataset "$1" --geo "$2" --geo-dir "$3" && touch "$0"' \
+        "$TSF_GEO_DIR/R3_${s}_join.done" "R3_$s" "$gse" "$TSF_GEO_DIR" \
+        || { log "STOP: could not join R3_$s to $gse (see above). Fix and re-run."; exit 2; }
+    elif grep -q '^\s*# list(id = "biopsy_fibrosis_stage"' "config/datasets/R3_$s.R"; then
+      log "STOP: config/datasets/R3_$s.R needs condition_rules and no GEO config is known for $s. Edit it, then re-run."; exit 2
     fi
     R3_COHORTS="${R3_COHORTS:+$R3_COHORTS,}R3_$s"
   done
@@ -226,7 +237,7 @@ run_library() {
   local MASK="$TSF_INTERIM_DIR/shared_gene_mask.tsv"
   local PROFILE="$TSF_INTERIM_DIR/reference_profile_${TSF_TISSUE}.tsv"
   step "[$NAME] datasets: $COHORTS"
-  printf '%s\n' "$DIG" > "$TSF_RESULTS_DIR/inputs_digest.txt"
+  printf '%s\ngit=%s%s\n' "$DIG" "$GIT_HEAD" "$GIT_DIRTY" > "$TSF_RESULTS_DIR/inputs_digest.txt"
 
   step "[$NAME] ingest pass 1 (per-cohort expression filter)"
   for d in $DS_LIST; do
@@ -257,14 +268,20 @@ run_library() {
   local FORCE=""
   if stale "$TSF_RESULTS_DIR/.stages_done" "$STAGES_DIG"; then
     FORCE="--force"; log "[$NAME] methodological inputs changed since the last run: stages will recompute (--force)"
+  elif [ ! -e "$TSF_RESULTS_DIR/.stages_done" ] && ls -d "$TSF_RESULTS_DIR"/{spectra,maxt,condition,consensus} >/dev/null 2>&1; then
+    # results without a marker: an interrupted run, or a tree from before the
+    # markers existed. Their provenance is unknown; tsf would reuse them.
+    FORCE="--force"; log "[$NAME] stage outputs present without a completion marker: provenance unknown, recomputing (--force)"
   fi
   ensure "$TSF_RESULTS_DIR/.stages_done" "$STAGES_DIG" \
     bash -c './tsf run $1 --from spectra --to compare --grid-axis bp --bin-size "$2" --gene-mask "$3" --stage-order F0,F1,F2,F3,F4 $5 && touch "$4"' _ \
       "$DS_LIST" "$TSF_BIN_SIZE" "$MASK" "$TSF_RESULTS_DIR/.stages_done" "$FORCE"
   step "[$NAME] fingerprint library + out-of-cohort validation (profile stored in reference.rds)"
   local REF_DIG="$DIG|mask=$MASK_MD5|profile=$PROF_MD5"
-  if stale "$TSF_RESULTS_DIR/reference/reference.rds" "$REF_DIG"; then
+  if stale "$TSF_RESULTS_DIR/reference/reference.rds" "$REF_DIG" || \
+     { [ ! -e "$TSF_RESULTS_DIR/reference/reference.rds" ] && [ -d "$TSF_RESULTS_DIR/reference" ]; }; then
     local rbak="$TSF_RESULTS_DIR/reference.bak.$(date +%Y%m%d_%H%M%S)"; mv "$TSF_RESULTS_DIR/reference" "$rbak"
+    [ -f "$TSF_RESULTS_DIR/reference/reference.rds.inputs" ] && mv "$TSF_RESULTS_DIR/reference/reference.rds.inputs" "$rbak.inputs" || true
     log "[$NAME] previous reference kept as $(basename "$rbak")"
   fi
   ensure "$TSF_RESULTS_DIR/reference/reference.rds" "$REF_DIG" \
@@ -282,7 +299,7 @@ run_library() {
       cond=$(basename "$sig" .tsv); cond=${cond#condition_signature_}
       n=$(($(wc -l < "$sig") - 1)); [ "$n" -gt 0 ] || { log "$cond: empty signature, skipped"; continue; }
       Rscript scripts/crest_genes.R --signature "$sig" --datasets "$COHORTS" --condition "$cond" \
-        --out "$outdir" || log "crest genes failed for $cond (continuing)"
+        --out "$outdir" || { log "crest genes failed for $cond (continuing)"; INCOMPLETE="${INCOMPLETE:+$INCOMPLETE; }$NAME: crest genes $cond failed"; }
     done
   }
   ensure_dir_atomic "$TSF_RESULTS_DIR/crest_genes" "$REF_DIG|lib=$(md5 "$TSF_RESULTS_DIR/condition_library.inputs")" --out crest_all
@@ -292,7 +309,8 @@ run_library() {
   # depend on it, and the baseline can be re-run alone afterwards
   python3 scripts/run_gene_baseline.py --interim-dir "$TSF_INTERIM_DIR" --datasets "$COHORTS" \
     --target class_id --out "$TSF_RESULTS_DIR/gene_baseline.tsv" \
-    || log "[$NAME] gene baseline FAILED (continuing); re-run: python3 scripts/run_gene_baseline.py --interim-dir $TSF_INTERIM_DIR --datasets $COHORTS --target class_id --out $TSF_RESULTS_DIR/gene_baseline.tsv"
+    || { log "[$NAME] gene baseline FAILED (continuing); re-run: python3 scripts/run_gene_baseline.py --interim-dir $TSF_INTERIM_DIR --datasets $COHORTS --target class_id --out $TSF_RESULTS_DIR/gene_baseline.tsv"
+         INCOMPLETE="${INCOMPLETE:+$INCOMPLETE; }$NAME: gene baseline failed"; }
   log "[$NAME] done -> $TSF_RESULTS_DIR"
 }
 
@@ -336,5 +354,13 @@ for L in primary sensitivity_geo combined; do
   log "   gene LOCO       $ROOT_RESULTS/$L/gene_baseline.tsv"
 done
 log "Compare cohort_drop (within-cohort minus out-of-cohort) of the spectral and gene LOCOs, per library."
+if [ -n "$INCOMPLETE" ]; then
+  log "LIBRARIES BUILT, ANALYSIS INCOMPLETE: $INCOMPLETE"
+  printf '%s\n' "$INCOMPLETE" > "$ROOT_RESULTS/INCOMPLETE.txt"
+  FINAL_STATUS=3
+else
+  rm -f "$ROOT_RESULTS/INCOMPLETE.txt"; log "ANALYSIS COMPLETE"; FINAL_STATUS=0
+fi
 log "Match a new sample against a library:  ./tsf match <counts.tsv> --results-dir $ROOT_RESULTS/primary"
 log "(the library carries its own profile; TSF_REFERENCE_PROFILE is not needed)"
+exit "${FINAL_STATUS:-0}"
