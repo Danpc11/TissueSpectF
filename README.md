@@ -1054,3 +1054,43 @@ Two consequences worth knowing rather than discovering: CC is not a software
 licence and carries no patent or warranty provisions, and NC is not
 OSI-approved, so a repository that has to be deposited under an open licence
 cannot be deposited as-is.
+
+## Differential mode: tissue reference from GTEx (recount3)
+
+The raw spectrum of asinh(TPM) along a chromosome is dominated by structure
+every human tissue shares (gene density, GC isochores, housekeeping clusters).
+That is the invariant layer, and it is most of the power; a condition is a
+small modulation on top of it, and a classifier fed the raw spectrum learns
+the carrier and the cohort's spectral window. Differential mode subtracts a
+robust per-gene tissue reference before anything spectral happens:
+
+    d_j = asinh(TPM_j) - median over GTEx samples of that tissue of asinh(TPM_j)
+
+and runs every stage on `d`. The reference comes from recount3's GTEx gene
+sums (open access, ~250 liver samples), and cohorts are taken from recount3
+too whenever the SRA study is there, so reference and cohorts share one
+quantification pipeline. A cohort that is not in recount3 stays on the GEO
+path and the write-up must say its deviation includes the pipeline
+difference.
+
+```bash
+export TSF_ROOT=... TSF_GEO_DIR=... TSF_INTERIM_DIR=.../interim_diff TSF_RESULTS_DIR=.../results_diff
+bash scripts/run_differential.sh 2>&1 | tee "$TSF_RESULTS_DIR/run_differential.log"
+```
+
+Pieces, each usable alone:
+
+| script | does |
+|---|---|
+| `scripts/resolve_recount3.R` | GSE -> SRP (ENA) -> is it in recount3? Writes `config/recount3_sources.tsv` |
+| `scripts/recount3_fetch.R` | recount3 gene sums -> read counts + pheno + a dataset config, for GTEx tissues and SRPs |
+| `scripts/build_tissue_reference.R` | median asinh(TPM) per gene over the reference samples |
+| `scripts/apply_reference_profile.R` | rewrites each dataset's `expression.tsv` as the deviation (keeps `expression_raw.tsv`; `--restore` undoes) |
+| `scripts/crest_genes.R` | genes carrying each characteristic peak: projection on the fitted component, ablation `delta_power`, family-wise permutation p |
+| `scripts/run_gene_baseline.py` | LOCO on the top variable genes — the baseline the spectrum has to beat, with the within- vs out-of-cohort drop |
+
+When a library was built in differential mode, `./tsf match` must see
+`TSF_REFERENCE_PROFILE=<profile.tsv>` so the query is corrected the same way.
+The number that decides whether the spectral representation earns its place
+is not the accuracy: it is `cohort_drop` (within-cohort CV minus
+out-of-cohort) of the spectral LOCO against the gene LOCO.
