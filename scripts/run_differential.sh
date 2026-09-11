@@ -21,12 +21,14 @@
 # RESUMABLE BY CONTENT, NOT BY EXISTENCE
 # --------------------------------------
 # Every reusable artefact carries a sidecar <artefact>.inputs with a digest of
-# everything that went into it (dataset list, GTEx project, tissue, GSE list,
-# annotation, gene universe, axis, bin size, expression filters, profile
-# digest). The artefact is rebuilt when that digest differs, so changing
-# TSF_GSE or TSF_BIN_SIZE cannot silently reuse a mask or a profile built for
-# another configuration. Re-run the same command after a failure and it
-# continues.
+# everything that went into it: dataset list, GTEx project, tissue, GSE list,
+# vocabulary, axis, bin size, profile digest, and the md5 of the EFFECTIVE
+# project configuration (config/project.R as R loads it, every TSF_* override
+# applied -- scripts/config_digest.R). The artefact is rebuilt when that digest
+# differs; tsf stages get --force in that case, since they reuse their own
+# files otherwise; directories are rebuilt into .tmp and swapped in with the
+# previous version kept as .bak.<timestamp>. Re-run the same command after a
+# failure and it continues.
 #
 # Required environment:
 #   TSF_ROOT  TSF_GEO_DIR  TSF_INTERIM_DIR  TSF_RESULTS_DIR   (interim/results: NEW trees)
@@ -55,17 +57,19 @@ ROOT_INTERIM="$TSF_INTERIM_DIR"; ROOT_RESULTS="$TSF_RESULTS_DIR"
 mkdir -p "$TSF_GEO_DIR" "$ROOT_INTERIM" "$ROOT_RESULTS"
 log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 step() { log "=== $* ==="; }
-md5()  { md5sum "$1" | cut -c1-32; }
+md5()  { if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | awk '{print $1}'; else md5 -q "$1"; fi; }
 
 # ---------------------------------------------------------------- inputs digest
-# The configuration every artefact depends on. Anything here changes -> rebuild.
-ANNOT=$(grep -o 'annotation_file *= *[^,]*' config/project.R | head -1 | tr -d ' ')
-UNIVERSE="${TSF_GENE_UNIVERSE:-$(grep -o 'gene_universe *= *[^,]*' config/project.R | head -1 | tr -d ' ')}"
-FILTERS=$(grep -oE '(min_tpm|min_fraction) *= *[0-9.]+' config/project.R | tr -d ' ' | paste -sd, -)
-PROJECT_MD5=$(md5 config/project.R)
+# The EFFECTIVE configuration: config/project.R loaded by R with every TSF_*
+# environment override applied (estimator, primary scheme, multitaper NW/K,
+# bin aggregate and coverage, annotation format, stability criterion, ...),
+# minus the path fields. Grepping the file could not see the overrides.
+CONFIG_MD5=$(Rscript scripts/config_digest.R 2>/dev/null | tail -1 | tr -d ' ')
+[ -n "$CONFIG_MD5" ] || { echo "config_digest.R produced nothing"; exit 1; }
+log "effective config digest $CONFIG_MD5"
 base_digest() {  # $1 = dataset list
-  printf 'datasets=%s|gtex=%s|tissue=%s|gse=%s|annot=%s|universe=%s|axis=bp|bin=%s|filters=%s|project=%s' \
-    "$1" "$TSF_GTEX_TISSUE" "$TSF_TISSUE" "$TSF_GSE" "$ANNOT" "$UNIVERSE" "$TSF_BIN_SIZE" "$FILTERS" "$PROJECT_MD5"
+  printf 'datasets=%s|gtex=%s|tissue=%s|gse=%s|vocab=%s|axis=bp|bin=%s|config=%s' \
+    "$1" "$TSF_GTEX_TISSUE" "$TSF_TISSUE" "$TSF_GSE" "$TSF_VOCAB" "$TSF_BIN_SIZE" "$CONFIG_MD5"
 }
 # fresh ARTEFACT DIGEST : 0 if artefact exists and its .inputs equals DIGEST
 fresh() { [ -e "$1" ] && [ -f "$1.inputs" ] && [ "$(cat "$1.inputs")" = "$2" ]; }
@@ -77,19 +81,32 @@ ensure() {
   [ -e "$art" ] && log "rebuild $(basename "$art"): inputs changed"
   "$@"; stamp "$art" "$dig"
 }
+# stale ARTEFACT DIGEST : 0 if the artefact exists but its inputs changed.
+# Used to add --force to tsf stages that otherwise reuse their own files
+# ("reusing existing maxT"): the marker would then say "new B" while some
+# products still came from the old one. --force only when something changed.
+stale() { [ -e "$1" ] && ! fresh "$1" "$2"; }
+# ensure_dir_atomic DIR DIGEST OUTFLAG CMD... : build into DIR.tmp via
+# "CMD... OUTFLAG DIR.tmp", then swap in; the previous DIR is kept as
+# DIR.bak.<timestamp>. Old signatures of a condition the new run no longer
+# produces cannot survive in the new directory.
+ensure_dir_atomic() {
+  local dir="$1" dig="$2" outflag="$3"; shift 3
+  if fresh "$dir" "$dig"; then log "reuse $(basename "$dir") (inputs unchanged)"; return; fi
+  rm -rf "$dir.tmp"; mkdir -p "$dir.tmp"
+  "$@" "$outflag" "$dir.tmp"
+  if [ -d "$dir" ]; then
+    local bak="$dir.bak.$(date +%Y%m%d_%H%M%S)"; mv "$dir" "$bak"; log "previous $(basename "$dir") kept as $(basename "$bak")"
+  fi
+  mv "$dir.tmp" "$dir"; stamp "$dir" "$dig"
+}
 
 # ---------------------------------------------------------------- 0. sanity
 step "0 tests and recount3 config validation"
 TESTS_DIG="tests=$(git rev-parse HEAD 2>/dev/null || echo nogit)"
 ensure "$ROOT_RESULTS/.tests_ok" "$TESTS_DIG" bash -c 'make test >/dev/null && touch "$0"' "$ROOT_RESULTS/.tests_ok"
-if ls config/datasets/R3_*.R >/dev/null 2>&1; then
-  Rscript scripts/validate_recount3_configs.R --vocabulary "$TSF_VOCAB" || {
-    log "STOP: recount3 configs from an earlier generator. Review them, then:"
-    log "      Rscript scripts/validate_recount3_configs.R --migrate --vocabulary $TSF_VOCAB"
-    log "      (header fields only; condition_rules are never touched; .bak kept)"
-    exit 2
-  }
-fi
+# the recount3 configs THIS run uses are validated once the dataset list is
+# known (step 2); other tissues' R3_*.R in the repo are not this run's concern
 
 # ---------------------------------------------------------- 1. which sources
 step "1 resolve GEO -> SRP -> recount3"
@@ -115,8 +132,14 @@ if [ -n "$SRPS" ]; then
     fi
     R3_COHORTS="${R3_COHORTS:+$R3_COHORTS,}R3_$s"
   done
-  Rscript scripts/validate_recount3_configs.R --vocabulary "$TSF_VOCAB" || exit 2
 fi
+step "2b validate the recount3 configs this run uses"
+Rscript scripts/validate_recount3_configs.R --datasets "$GTEX_ID${R3_COHORTS:+,$R3_COHORTS}" --vocabulary "$TSF_VOCAB" || {
+  log "STOP: review the configs above, then:"
+  log "      Rscript scripts/validate_recount3_configs.R --datasets $GTEX_ID${R3_COHORTS:+,$R3_COHORTS} --migrate --vocabulary $TSF_VOCAB"
+  log "      (header fields only; condition_rules are never touched; .bak kept)"
+  exit 2
+}
 
 # ---------------------------------------------------------- 3. GEO inputs
 if [ -n "$GEO_ONLY" ]; then
@@ -163,26 +186,39 @@ run_library() {
   Rscript scripts/apply_reference_profile.R --datasets "$COHORTS" --profile "$PROFILE"
 
   step "[$NAME] spectra ... compare on the deviation (null = all, bp axis)"
-  ensure "$TSF_RESULTS_DIR/.stages_done" "$DIG|mask=$MASK_MD5|profile=$PROF_MD5|B=${TSF_CONDITION_B:-cfg}/${TSF_MAXT_B:-cfg}" \
-    bash -c './tsf run $1 --from spectra --to compare --grid-axis bp --bin-size "$2" --gene-mask "$3" --stage-order F0,F1,F2,F3,F4 && touch "$4"' _ \
-      "$DS_LIST" "$TSF_BIN_SIZE" "$MASK" "$TSF_RESULTS_DIR/.stages_done"
+  local STAGES_DIG="$DIG|mask=$MASK_MD5|profile=$PROF_MD5|B=${TSF_CONDITION_B:-cfg}/${TSF_MAXT_B:-cfg}"
+  local FORCE=""
+  if stale "$TSF_RESULTS_DIR/.stages_done" "$STAGES_DIG"; then
+    FORCE="--force"; log "[$NAME] methodological inputs changed since the last run: stages will recompute (--force)"
+  fi
+  ensure "$TSF_RESULTS_DIR/.stages_done" "$STAGES_DIG" \
+    bash -c './tsf run $1 --from spectra --to compare --grid-axis bp --bin-size "$2" --gene-mask "$3" --stage-order F0,F1,F2,F3,F4 $5 && touch "$4"' _ \
+      "$DS_LIST" "$TSF_BIN_SIZE" "$MASK" "$TSF_RESULTS_DIR/.stages_done" "$FORCE"
   step "[$NAME] fingerprint library + out-of-cohort validation (profile stored in reference.rds)"
-  ensure "$TSF_RESULTS_DIR/reference/reference.rds" "$DIG|mask=$MASK_MD5|profile=$PROF_MD5" \
+  local REF_DIG="$DIG|mask=$MASK_MD5|profile=$PROF_MD5"
+  if stale "$TSF_RESULTS_DIR/reference/reference.rds" "$REF_DIG"; then
+    local rbak="$TSF_RESULTS_DIR/reference.bak.$(date +%Y%m%d_%H%M%S)"; mv "$TSF_RESULTS_DIR/reference" "$rbak"
+    log "[$NAME] previous reference kept as $(basename "$rbak")"
+  fi
+  ensure "$TSF_RESULTS_DIR/reference/reference.rds" "$REF_DIG" \
     ./tsf reference $DS_LIST --grid-axis bp --bin-size "$TSF_BIN_SIZE" --gene-mask "$MASK"
 
-  step "[$NAME] condition library (cross-cohort meta-analysis)"
-  ensure "$TSF_RESULTS_DIR/condition_library" "$DIG|mask=$MASK_MD5|profile=$PROF_MD5" \
-    Rscript scripts/build_final_condition_spectra.R --results-dir "$TSF_RESULTS_DIR" --cores "$N_WORKERS" \
-      --out-dir "$TSF_RESULTS_DIR/condition_library"
+  step "[$NAME] condition library (cross-cohort meta-analysis), built atomically"
+  ensure_dir_atomic "$TSF_RESULTS_DIR/condition_library" "$REF_DIG" --out-dir \
+    Rscript scripts/build_final_condition_spectra.R --results-dir "$TSF_RESULTS_DIR" --cores "$N_WORKERS"
 
-  step "[$NAME] crest genes per characteristic peak"
-  for sig in "$TSF_RESULTS_DIR"/condition_library/condition_signature_*.tsv; do
-    [ -f "$sig" ] || continue
-    local cond; cond=$(basename "$sig" .tsv); cond=${cond#condition_signature_}
-    local n; n=$(($(wc -l < "$sig") - 1)); [ "$n" -gt 0 ] || { log "$cond: empty signature, skipped"; continue; }
-    Rscript scripts/crest_genes.R --signature "$sig" --datasets "$COHORTS" --condition "$cond" \
-      --out "$TSF_RESULTS_DIR/crest_genes" || log "crest genes failed for $cond (continuing)"
-  done
+  step "[$NAME] crest genes per characteristic peak, built atomically"
+  crest_all() {  # $1 = out dir (last arg, supplied by ensure_dir_atomic)
+    local outdir="${@: -1}" sig cond n
+    for sig in "$TSF_RESULTS_DIR"/condition_library/condition_signature_*.tsv; do
+      [ -f "$sig" ] || continue
+      cond=$(basename "$sig" .tsv); cond=${cond#condition_signature_}
+      n=$(($(wc -l < "$sig") - 1)); [ "$n" -gt 0 ] || { log "$cond: empty signature, skipped"; continue; }
+      Rscript scripts/crest_genes.R --signature "$sig" --datasets "$COHORTS" --condition "$cond" \
+        --out "$outdir" || log "crest genes failed for $cond (continuing)"
+    done
+  }
+  ensure_dir_atomic "$TSF_RESULTS_DIR/crest_genes" "$REF_DIG|lib=$(md5 "$TSF_RESULTS_DIR/condition_library.inputs")" --out crest_all
 
   step "[$NAME] gene-level LOCO baseline"
   python3 scripts/run_gene_baseline.py --interim-dir "$TSF_INTERIM_DIR" --datasets "$COHORTS" \
