@@ -75,12 +75,24 @@ report <- function(label, filename) {
 
 ok <- report("annotation", project$annotation_file)
 
-dataset_ids <- sub("\\.R$", "", list.files("config/datasets", pattern = "\\.R$"))
+# Only the datasets asked for (positional, via ./tsf check <ids>); every config
+# in the directory when none is named. A stale config for a cohort this run
+# does not use must not fail the check.
+dataset_ids <- if (exists("opt", inherits = TRUE) && length(get0("opt")$datasets))
+  get0("opt")$datasets else sub("\\.R$", "", list.files("config/datasets", pattern = "\\.R$"))
 for (id in dataset_ids) {
   cfg <- load_dataset_config(id)
   tsf_log("dataset ", cfg$id, " (has_control_cohort = ", cfg$has_control_cohort, ")")
   ok <- report("counts", cfg$counts_file) && ok
-  ok <- report("series matrix", cfg$series_matrix) && ok
+  # GEO configs declare series_matrix; recount3 / matrix configs declare
+  # metadata_file. One of the two has to be there, and file.exists(NULL) is an
+  # R error, not a MISSING.
+  pheno <- cfg$series_matrix %||% cfg$metadata_file
+  if (is.null(pheno)) {
+    tsf_warn("  MISSING phenotype: config declares neither series_matrix nor metadata_file"); ok <- FALSE
+  } else {
+    ok <- report(if (is.null(cfg$series_matrix)) "metadata" else "series matrix", pheno) && ok
+  }
 }
 
 # Writability of the output trees, checked now rather than after an hour of work.
@@ -94,7 +106,8 @@ for (d in c(project$interim_dir, project$results_dir)) {
 }
 
 if (!ok) {
-  tsf_abort("Inputs incomplete. Fix the file names in config/datasets/<GSE>.R ",
-            "(counts_file, series_matrix) or config/project.R (annotation_file, paths).")
+  tsf_abort("Inputs incomplete. Fix the file names in config/datasets/<id>.R ",
+            "(counts_file, series_matrix or metadata_file) or config/project.R ",
+            "(annotation_file, paths). To check only some datasets: ./tsf check <id> ...")
 }
 tsf_log("All inputs present. Next: ./tsf ingest")
