@@ -121,7 +121,16 @@ run_selfcheck <- function() {
   project$interim_dir <- file.path(tmp, "interim")
   project$results_dir <- file.path(tmp, "results")
   project$maxt$B <- 100L
-  project$gene_universe <- NULL   # the synthetic annotation carries no biotypes   # enough to separate an injected peak from noise
+  project$gene_universe <- NULL   # the synthetic annotation carries no biotypes
+  # The selfcheck answers one question: does the machinery recover a signal it
+  # is known to contain? Its injected components live at periods of 17 and 33
+  # genes on a 200-gene chromosome, and the block nulls (10/20/50 positions)
+  # treat structure at that scale as local correlation -- correctly, that is
+  # what they are for. The white-noise scheme is therefore forced here so the
+  # recovery check stays a recovery check. The question the block nulls answer
+  # -- does a red slope get called a peak? -- is scripts/calibrate_null.R, not
+  # this file. Real runs keep config/project.R's default, `all`.
+  project$maxt$primary_scheme <- "full"
 
   opt <- list(datasets = c("GSE135251", "GSE162694"), cond = NULL,
               branch = NULL, branches = "average", force = TRUE)
