@@ -1097,6 +1097,7 @@ Pieces, each usable alone:
 |---|---|
 | `scripts/resolve_recount3.R` | GSE -> SRP (ENA) -> is it in recount3? Writes `config/recount3_sources.tsv` |
 | `scripts/recount3_fetch.R` | recount3 gene sums -> read counts + pheno + a dataset config, for GTEx tissues and SRPs |
+| `scripts/recount3_join_geo.R` | when recount3 carries no sample attributes: joins the SRP's samples to the GEO series matrix on SRX and copies the GEO config's rules verbatim into `R3_<SRP>.R` |
 | `scripts/validate_recount3_configs.R` | checks the `R3_*.R` configs a run uses (`--datasets`, or `--all` to audit) against what ingest needs; `--migrate` fixes header fields only, never `condition_rules` |
 | `scripts/config_digest.R` | md5 of the effective project configuration (every `TSF_*` override applied); part of every artefact's input digest |
 | `scripts/build_tissue_reference.R` | median asinh(TPM) per gene over the reference samples |
