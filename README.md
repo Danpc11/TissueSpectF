@@ -1089,8 +1089,12 @@ Pieces, each usable alone:
 | `scripts/crest_genes.R` | genes carrying each characteristic peak: projection on the fitted component, ablation `delta_power`, family-wise permutation p |
 | `scripts/run_gene_baseline.py` | LOCO on the top variable genes — the baseline the spectrum has to beat, with the within- vs out-of-cohort drop |
 
-When a library was built in differential mode, `./tsf match` must see
-`TSF_REFERENCE_PROFILE=<profile.tsv>` so the query is corrected the same way.
+A library built in differential mode carries the profile inside
+`reference.rds` (with its md5, tissue, axis, bin size and the number of
+reference samples); `./tsf match` corrects the query from there, on the
+library's own positions (bins on the bp axis, genes otherwise), and refuses a
+raw query against a differential library or the reverse.
+`TSF_REFERENCE_PROFILE` is optional and, if set, must be the same file.
 The number that decides whether the spectral representation earns its place
 is not the accuracy: it is `cohort_drop` (within-cohort CV minus
 out-of-cohort) of the spectral LOCO against the gene LOCO.
