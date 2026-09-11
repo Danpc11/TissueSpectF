@@ -30,21 +30,31 @@
 # previous version kept as .bak.<timestamp>. Re-run the same command after a
 # failure and it continues.
 #
-# Required environment:
-#   TSF_ROOT  TSF_GEO_DIR  TSF_INTERIM_DIR  TSF_RESULTS_DIR   (interim/results: NEW trees)
-# Optional:
-#   TSF_GSE          GEO cohorts (default: the five liver ones)
-#   TSF_GTEX_TISSUE  recount3 GTEx project (LIVER)      TSF_TISSUE  label (liver)
-#   TSF_VOCAB        vocabulary (liver_fibrosis; must contain Control_external_study)
-#   TSF_BIN_SIZE     bp bin width (100000)              N_WORKERS   cores (4)
-#   TSF_RUN_COMBINED=1  also build the combined library
-#   TSF_CONDITION_B / TSF_MAXT_B  permutations (defaults from config/project.R)
+# Flags (every one has a default; the environment is only a fallback):
+#   --root DIR          repo checkout                 (default: directory of this script/..)
+#   --geo-dir DIR       raw inputs                    (required)
+#   --interim-dir DIR   interim trees, NEW location   (required)
+#   --results-dir DIR   results trees, NEW location   (required)
+#   --gse LIST          GEO cohorts                   (GSE135251,GSE130970,GSE162694,GSE276114,GSE142530)
+#   --gtex PROJECT      recount3 GTEx project         (LIVER)
+#   --tissue LABEL      tissue label                  (liver)
+#   --vocab ID          vocabulary; must hold Control_external_study (liver_fibrosis)
+#   --bin-size N        bp bin width                  (100000)
+#   --workers N         cores for the library builder (4)
+#   --condition-b N     permutations for the condition test (config default)
+#   --maxt-b N          permutations for per-sample maxT     (config default)
+#   --combined          also build the combined library
+#   --only LIB          primary | sensitivity_geo | combined: build just that one
+#   -h, --help
 #
-# Usage:  bash scripts/run_differential.sh 2>&1 | tee "$TSF_RESULTS_DIR/run_differential.log"
+# Usage:
+#   bash scripts/run_differential.sh --geo-dir /d/geo --interim-dir /d/interim_diff \
+#        --results-dir /d/results_diff --workers 8 2>&1 | tee /d/results_diff/run.log
+#
 set -euo pipefail
 
-: "${TSF_ROOT:?export TSF_ROOT}"; : "${TSF_GEO_DIR:?export TSF_GEO_DIR}"
-: "${TSF_INTERIM_DIR:?export TSF_INTERIM_DIR}"; : "${TSF_RESULTS_DIR:?export TSF_RESULTS_DIR}"
+usage() { sed -n '2,/^set -euo/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'; }
+TSF_ROOT="${TSF_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 TSF_GSE="${TSF_GSE:-GSE135251,GSE130970,GSE162694,GSE276114,GSE142530}"
 TSF_GTEX_TISSUE="${TSF_GTEX_TISSUE:-LIVER}"
 TSF_TISSUE="${TSF_TISSUE:-liver}"
@@ -52,6 +62,33 @@ TSF_VOCAB="${TSF_VOCAB:-liver_fibrosis}"
 TSF_BIN_SIZE="${TSF_BIN_SIZE:-100000}"
 N_WORKERS="${N_WORKERS:-4}"
 TSF_RUN_COMBINED="${TSF_RUN_COMBINED:-0}"
+ONLY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --root)        TSF_ROOT="$2"; shift 2 ;;
+    --geo-dir)     TSF_GEO_DIR="$2"; shift 2 ;;
+    --interim-dir) TSF_INTERIM_DIR="$2"; shift 2 ;;
+    --results-dir) TSF_RESULTS_DIR="$2"; shift 2 ;;
+    --gse)         TSF_GSE="$2"; shift 2 ;;
+    --gtex)        TSF_GTEX_TISSUE="$2"; shift 2 ;;
+    --tissue)      TSF_TISSUE="$2"; shift 2 ;;
+    --vocab)       TSF_VOCAB="$2"; shift 2 ;;
+    --bin-size)    TSF_BIN_SIZE="$2"; shift 2 ;;
+    --workers)     N_WORKERS="$2"; shift 2 ;;
+    --condition-b) export TSF_CONDITION_B="$2"; shift 2 ;;
+    --maxt-b)      export TSF_MAXT_B="$2"; shift 2 ;;
+    --combined)    TSF_RUN_COMBINED=1; shift ;;
+    --only)        ONLY="$2"; shift 2 ;;
+    -h|--help)     usage; exit 0 ;;
+    *) echo "unknown flag: $1" >&2; usage >&2; exit 1 ;;
+  esac
+done
+: "${TSF_GEO_DIR:?--geo-dir is required}"
+: "${TSF_INTERIM_DIR:?--interim-dir is required}"
+: "${TSF_RESULTS_DIR:?--results-dir is required}"
+# tsf and the R scripts read these from the environment; the flags are the
+# only interface the user needs to touch
+export TSF_ROOT TSF_GEO_DIR TSF_INTERIM_DIR TSF_RESULTS_DIR
 cd "$TSF_ROOT"
 ROOT_INTERIM="$TSF_INTERIM_DIR"; ROOT_RESULTS="$TSF_RESULTS_DIR"
 mkdir -p "$TSF_GEO_DIR" "$ROOT_INTERIM" "$ROOT_RESULTS"
@@ -228,7 +265,9 @@ run_library() {
 
 # ------------------------------------------------------------- 4. primary
 PRIMARY="$GTEX_ID${R3_COHORTS:+,$R3_COHORTS}"
-if [ -z "$R3_COHORTS" ]; then
+want() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
+if ! want primary; then :
+elif [ -z "$R3_COHORTS" ]; then
   log "PRIMARY library would be GTEx alone: no cohort of $TSF_GSE is in recount3, so there is no"
   log "recount3-only disease cohort to validate against. The primary library is skipped; the"
   log "sensitivity library (GTEx + GEO) is the only one buildable, and it MUST be reported as such."
@@ -237,12 +276,14 @@ else
 fi
 
 # ---------------------------------------------------------- 5. sensitivity
-if [ -n "$GEO_ONLY" ]; then
+if want sensitivity_geo && [ -n "$GEO_ONLY" ]; then
   run_library sensitivity_geo "$GTEX_ID,$GEO_ONLY"
 fi
 
 # ------------------------------------------------------------- 6. combined
-if [ "$TSF_RUN_COMBINED" = "1" ] && [ -n "$R3_COHORTS" ] && [ -n "$GEO_ONLY" ]; then
+[ "$ONLY" = "combined" ] && TSF_RUN_COMBINED=1
+if ! want combined; then :
+elif [ "$TSF_RUN_COMBINED" = "1" ] && [ -n "$R3_COHORTS" ] && [ -n "$GEO_ONLY" ]; then
   run_library combined "$GTEX_ID,$R3_COHORTS,$GEO_ONLY"
 elif [ -n "$R3_COHORTS" ] && [ -n "$GEO_ONLY" ]; then
   log "combined library not built (TSF_RUN_COMBINED=1 enables it). Build it only after comparing"
@@ -262,5 +303,5 @@ for L in primary sensitivity_geo combined; do
   log "   gene LOCO       $ROOT_RESULTS/$L/gene_baseline.tsv"
 done
 log "Compare cohort_drop (within-cohort minus out-of-cohort) of the spectral and gene LOCOs, per library."
-log "Match a new sample against a library:  TSF_RESULTS_DIR=$ROOT_RESULTS/primary ./tsf match <counts.tsv>"
+log "Match a new sample against a library:  ./tsf match <counts.tsv> --results-dir $ROOT_RESULTS/primary"
 log "(the library carries its own profile; TSF_REFERENCE_PROFILE is not needed)"
