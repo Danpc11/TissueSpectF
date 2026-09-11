@@ -46,6 +46,8 @@
 # la descomposicion propia de una matriz N x N: 7.15 s con N = 2000. Sin cache
 # eso se repite en cada permutacion y maxT pasaria de 50 minutos a 118 dias.
 # Medido, no estimado.
+.tsf_mt_warned <- new.env(parent = emptyenv())
+
 .dpss_cache <- new.env(parent = emptyenv())
 
 dpss_tapers <- function(N, NW = 3, K = NULL) {
@@ -134,8 +136,13 @@ gls_multitaper <- function(y, terms, NW = 3, K = NULL, adaptive = TRUE) {
   #
   # Se reporta por frecuencia en `bandwidth_fraction` en vez de avisar una vez,
   # porque el mismo espectro tiene frecuencias seguras y frecuencias borradas.
+  # Once per (N, NW) rather than once per call: this function runs inside the
+  # permutation loop, so the same warning was printed thousands of times per
+  # stage and buried everything else in the log.
   n_low <- sum(terms$k < 2 * NW * 2)
-  if (n_low > 0) {
+  warn_key <- paste("mt", terms$N, NW)
+  if (n_low > 0 && !isTRUE(.tsf_mt_warned[[warn_key]])) {
+    .tsf_mt_warned[[warn_key]] <- TRUE
     tsf_warn("multitaper: con NW = ", NW, " el suavizado cubre ", 2 * NW,
              " bins, asi que las ", n_low, " frecuencia(s) con k < ",
              4 * NW, " quedan dentro de su propia banda y su potencia se ",
