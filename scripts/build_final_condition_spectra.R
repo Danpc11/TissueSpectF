@@ -932,6 +932,11 @@ aggregate_condition <- function(
   }
 
   if ("p_null" %in% names(long)) {
+    # What is combined: the POINTWISE p_null (each frequency against its own
+    # null), never p_null_fwer. THEORY.md 8.2 says why; stated here so a reader
+    # of the log knows which column the meta-analysis rests on.
+    message("  meta-analysis combines p_null (pointwise) by Stouffer across ",
+            "cohorts, then BH across frequencies")
     n_draws <- if (
       "n_null" %in% names(long)
     ) {
