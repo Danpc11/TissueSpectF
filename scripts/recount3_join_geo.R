@@ -40,7 +40,12 @@ cfg_r3  <- source(cfg_r3_path, local = TRUE)$value
 cfg_geo <- source(cfg_geo_path, local = TRUE)$value
 
 pheno_path <- file.path(geo_dir, cfg_r3$metadata_file %||% paste0(ds, "_pheno.tsv"))
-pheno <- utils::read.delim(pheno_path, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE,
+# The fetch output is preserved as <pheno>.recount3.tsv the first time; every
+# join (re)starts from it, so a re-join after the GEO config or series matrix
+# changed does not stack onto a previously joined table.
+raw_path <- sub("\\.tsv$", ".recount3.tsv", pheno_path)
+if (!file.exists(raw_path)) invisible(file.copy(pheno_path, raw_path))
+pheno <- utils::read.delim(raw_path, sep = "\t", check.names = FALSE, stringsAsFactors = FALSE,
                            na.strings = c("", "NA"), quote = "")
 sm_path <- file.path(geo_dir, cfg_geo$series_matrix)
 if (!file.exists(sm_path)) tsf_abort("series matrix not found: ", sm_path, " (run ./tsf fetch ", geo, ")")
@@ -86,6 +91,34 @@ if (n_ok < 0.9 * nrow(pheno)) {
 }
 if (any(duplicated(idx[!is.na(idx)]))) tsf_abort("two recount3 runs map to the same GSM; a GSM with several runs must be summed before this step")
 
+# EXCLUSIONS. The GEO config names samples by GSM; this config's sample_id is
+# the recount3 run. Copying the GSM list verbatim would exclude nothing (the
+# pipeline warns "none of the named samples are in this series" and goes on),
+# and the two GSE135251 controls with incidental fibrosis would re-enter as
+# healthy. Translate each GSM to its recount3 id and refuse to continue if any
+# cannot be translated: here "none matched" is not acceptable.
+geo_excl <- as.character(cfg_geo$exclude_samples %||% character(0))
+r3_excl <- character(0)
+if (length(geo_excl)) {
+  gsm_of_row <- if (!is.na(gsm_col)) as.character(sm[[gsm_col]])[idx] else rep(NA_character_, nrow(pheno))
+  hit <- gsm_of_row %in% geo_excl
+  r3_excl <- pheno$sample_id[hit]
+  missing <- setdiff(geo_excl, gsm_of_row[hit])
+  if (length(missing)) {
+    # a GSM absent from this run's samples (not sequenced, or dropped by
+    # recount3) is fine ONLY if it is also absent from the series matrix join
+    # target; otherwise the exclusion would be silently lost
+    in_sm <- missing %in% as.character(sm[[gsm_col]])
+    if (any(in_sm)) tsf_abort("exclude_samples of ", geo, " could not be translated to recount3 ids: ",
+                              paste(missing[in_sm], collapse = ", "),
+                              " are in the series matrix but matched no recount3 sample. Refusing to write ",
+                              "a config whose exclusions would exclude nothing.")
+    tsf_log("exclude_samples: ", paste(missing, collapse = ", "), " not in the series matrix at all; ",
+            "nothing to exclude for them")
+  }
+  tsf_log("exclude_samples translated: ", paste(sprintf("%s->%s", gsm_of_row[hit], r3_excl), collapse = ", "))
+}
+
 # add every series-matrix column; keep recount3's own first
 sm_cols <- setdiff(colnames(sm), "srx")
 add <- sm[idx, sm_cols, drop = FALSE]
@@ -113,7 +146,10 @@ grab <- function(field) {
   if (!grepl(",\\s*$", block[last])) block[last] <- paste0(block[last], ",")
   block
 }
-copied <- unlist(lapply(c("covariate_columns", "condition_rules", "exclude_samples"), grab))
+copied <- unlist(lapply(c("covariate_columns", "condition_rules"), grab))
+excl_line <- if (length(r3_excl)) sprintf('  exclude_samples = c(%s),   # %s translated from %s GSM ids',
+                                          paste(sprintf('"%s"', r3_excl), collapse = ", "),
+                                          length(r3_excl), geo) else NULL
 tissue <- cfg_geo$tissue %||% cfg_r3$tissue
 vocab  <- cfg_geo$vocabulary %||% cfg_r3$vocabulary
 invisible(file.copy(cfg_r3_path, paste0(cfg_r3_path, ".bak"), overwrite = TRUE))
@@ -137,6 +173,7 @@ txt <- c(
   sprintf('  has_control_cohort = %s,', if (isTRUE(cfg_geo$has_control_cohort)) "TRUE" else "FALSE"),
   '  donor_column  = "donor",',
   sprintf('  geo_series    = "%s",', geo),
+  excl_line,
   copied,
   sprintf('  notes = "Same samples and labels as %s; only the quantification (recount3/Monorail) differs."', geo),
   ")"
