@@ -85,13 +85,18 @@ check("n_ref_samples and source datasets are columns, and a manifest with md5 is
         identical(man$value[man$key == "md5"], unname(tools::md5sum(pf))))
 apply_reference_profile("COH", project, ref2, "profile.tsv", profile_path = pf)
 ap <- read_reference_profile_applied(file.path(tmp, "COH"))
-check("the applied marker records path, digest and n_ref_samples",
+check("the applied marker records path, digest, n_ref_samples and the md5 of raw and corrected files",
       identical(ap$profile_digest, unname(tools::md5sum(pf))) && ap$n_ref_samples == 30L &&
-        identical(ap$profile_path, pf))
+        identical(ap$profile_path, pf) &&
+        identical(ap$corrected_md5, unname(tools::md5sum(file.path(tmp, "COH", "expression.tsv")))) &&
+        identical(ap$raw_md5, unname(tools::md5sum(file.path(tmp, "COH", "expression_raw.tsv")))))
+check("a correction re-applied on an unchanged file keeps the same raw copy",
+      { r0 <- unname(tools::md5sum(file.path(tmp, "COH", "expression_raw.tsv")))
+        apply_reference_profile("COH", project, ref2, "profile.tsv", profile_path = pf)
+        identical(r0, unname(tools::md5sum(file.path(tmp, "COH", "expression_raw.tsv")))) })
 
-# --- a re-ingest after the correction is detected (finding 6) -----------------
-Sys.sleep(1.2)
-fresh <- mk("COH", 8, shift = 4)           # "ingest --force": expression.tsv is raw again, newer
+# --- a re-ingest after the correction is detected by CONTENT (finding 6) -----
+fresh <- mk("COH", 8, shift = 4)           # "ingest --force": expression.tsv is raw again
 check("a rewritten expression.tsv makes the dataset raw again",
       is.null(suppressWarnings(read_reference_profile_applied(file.path(tmp, "COH")))))
 apply_reference_profile("COH", project, ref2, "profile.tsv", profile_path = pf)
