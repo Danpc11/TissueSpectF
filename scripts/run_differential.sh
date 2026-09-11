@@ -156,12 +156,12 @@ log "recount3 cohorts: ${SRPS:-none}   GEO-only cohorts: ${GEO_ONLY:-none}"
 # ------------------------------------------------------------- 2. recount3
 GTEX_ID="R3_${TSF_GTEX_TISSUE}"
 step "2 fetch recount3 ($GTEX_ID${SRPS:+, $SRPS})"
-ensure "$TSF_GEO_DIR/${GTEX_ID}_reads.tsv.gz" "gtex=$TSF_GTEX_TISSUE|tissue=$TSF_TISSUE|vocab=$TSF_VOCAB" \
+ensure "$TSF_GEO_DIR/${GTEX_ID}_reads.tsv.gz" "gtex=$TSF_GTEX_TISSUE|tissue=$TSF_TISSUE|vocab=$TSF_VOCAB|fetch=v2" \
   Rscript scripts/recount3_fetch.R --projects "$TSF_GTEX_TISSUE" --tissue "$TSF_TISSUE" --vocabulary "$TSF_VOCAB"
 R3_COHORTS=""
 if [ -n "$SRPS" ]; then
   for s in ${SRPS//,/ }; do
-    ensure "$TSF_GEO_DIR/R3_${s}_reads.tsv.gz" "srp=$s|tissue=$TSF_TISSUE|vocab=$TSF_VOCAB" \
+    ensure "$TSF_GEO_DIR/R3_${s}_reads.tsv.gz" "srp=$s|tissue=$TSF_TISSUE|vocab=$TSF_VOCAB|fetch=v2" \
       Rscript scripts/recount3_fetch.R --projects "$s" --tissue "$TSF_TISSUE" --vocabulary "$TSF_VOCAB"
     if grep -q '^\s*# list(id = "biopsy_fibrosis_stage"' "config/datasets/R3_$s.R"; then
       # recount3 carried no usable sample attributes: take the labels from the
