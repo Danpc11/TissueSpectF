@@ -2,9 +2,11 @@
 # validate_recount3_configs.R -- check (and optionally migrate) config/datasets/R3_*.R
 #
 # Usage:
-#   Rscript scripts/validate_recount3_configs.R            # report; exit 1 if any invalid
-#   Rscript scripts/validate_recount3_configs.R --migrate  # fix the header fields in place
-#   Rscript scripts/validate_recount3_configs.R --vocabulary liver_fibrosis
+#   Rscript scripts/validate_recount3_configs.R --datasets R3_LIVER,R3_SRP217231 [--vocabulary liver_fibrosis]
+#   Rscript scripts/validate_recount3_configs.R --datasets ... --migrate   # fix header fields in place
+#   Rscript scripts/validate_recount3_configs.R --all                      # every R3_*.R in the repo
+# Only the configs a run uses are validated (--datasets); --all is for auditing
+# the repository, so an experimental config of another tissue never stops a run.
 #
 # fetch_recount3_project() never overwrites an existing config, so a file
 # written by an earlier version keeps whatever that version emitted. Configs
@@ -32,8 +34,18 @@ flag <- function(n, d = NULL) {
 }
 migrate <- "--migrate" %in% args
 want_vocab <- flag("--vocabulary", NULL)
-files <- Sys.glob("config/datasets/R3_*.R")
-if (!length(files)) { tsf_log("no config/datasets/R3_*.R present"); quit(save = "no") }
+ds <- flag("--datasets", NULL)
+if (is.null(ds) && !"--all" %in% args) {
+  tsf_abort("Pass --datasets R3_LIVER,R3_SRP... (the configs THIS run uses) or --all. ",
+            "An experimental config for another tissue must not stop a liver run.")
+}
+files <- if (!is.null(ds)) {
+  f <- file.path("config", "datasets", paste0(trimws(strsplit(ds, ",")[[1]]), ".R"))
+  miss <- f[!file.exists(f)]
+  if (length(miss)) tsf_abort("config(s) not found: ", paste(miss, collapse = ", "))
+  f
+} else Sys.glob("config/datasets/R3_*.R")
+if (!length(files)) { tsf_log("no recount3 configs to validate"); quit(save = "no") }
 
 vocab_levels <- function(id) {
   f <- file.path("config", "vocabularies", paste0(id, ".R"))
