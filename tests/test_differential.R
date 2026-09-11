@@ -76,14 +76,55 @@ restore_raw_expression("COH", project)
 e4 <- read_tsv_tsf(file.path(tmp, "COH", "expression.tsv"))
 check("restore brings back the ingest output", abs(mean(as.matrix(e4[1:10, -1])) - 7) < 0.3)
 
-# --- query path picks the profile up from the environment --------------------
-pf <- file.path(tmp, "profile.tsv"); write_tsv_tsf(ref, pf)
-Sys.setenv(TSF_REFERENCE_PROFILE = pf)
-q <- stats::setNames(rep(1000, 100), rownames(mc))
-qs <- query_signal(q, unit = "tpm")
-check("query_signal subtracts the active profile", isTRUE(attr(qs, "reference_profile")) &&
-        abs(mean(qs - (asinh(1000) - ref$ref_median))) < 1e-9)
+# --- provenance survives the TSV round trip (finding 5) ------------------------
+pf <- file.path(tmp, "profile.tsv"); write_reference_profile(ref, pf, list(grid_axis = "gene"))
+ref2 <- read_reference_profile(pf)
+man <- read_tsv_tsf(sub("\\.tsv$", "_manifest.tsv", pf))
+check("n_ref_samples and source datasets are columns, and a manifest with md5 is written",
+      identical(ref2$n_ref_samples[1], 30L) && identical(ref2$source_datasets[1], "REF") &&
+        identical(man$value[man$key == "md5"], unname(tools::md5sum(pf))))
+apply_reference_profile("COH", project, ref2, "profile.tsv", profile_path = pf)
+ap <- read_reference_profile_applied(file.path(tmp, "COH"))
+check("the applied marker records path, digest and n_ref_samples",
+      identical(ap$profile_digest, unname(tools::md5sum(pf))) && ap$n_ref_samples == 30L &&
+        identical(ap$profile_path, pf))
+
+# --- a re-ingest after the correction is detected (finding 6) -----------------
+Sys.sleep(1.2)
+fresh <- mk("COH", 8, shift = 4)           # "ingest --force": expression.tsv is raw again, newer
+check("a rewritten expression.tsv makes the dataset raw again",
+      is.null(suppressWarnings(read_reference_profile_applied(file.path(tmp, "COH")))))
+apply_reference_profile("COH", project, ref2, "profile.tsv", profile_path = pf)
+e5 <- read_tsv_tsf(file.path(tmp, "COH", "expression.tsv"))
+check("re-applying after a re-ingest uses the NEW ingest output, not the stale backup",
+      abs(mean(as.matrix(e5[1:10, -1])) - 4) < 0.3)
+
+# --- the query is corrected from the reference object, on both axes (3, 4) ----
+grid <- data.frame(gene_id = sub("\\..*$", "", rownames(mc)), chr = "1", grid_index = 1:100, grid_N = 100L)
+ref_obj <- list(reference_profile = list(profile = ref2[, c("gene_id", "ref_median")],
+                                         digest = ap$profile_digest, grid_axis = "gene"),
+                params = list(differential = TRUE))
+y <- asinh(rep(1000, 100)); ids <- rownames(mc)
 Sys.unsetenv("TSF_REFERENCE_PROFILE")
-check("without the variable query_signal is unchanged", is.null(attr(query_signal(q, "tpm"), "reference_profile")))
+yc <- apply_query_reference_profile(y, ids, ref_obj)
+check("a query against a differential library is corrected from the stored profile",
+      identical(attr(yc, "reference_profile"), ap$profile_digest) &&
+        abs(mean(yc - (asinh(1000) - ref2$ref_median))) < 1e-9)
+raw_obj <- list(reference_profile = NULL, params = list())
+check("a raw library leaves the query alone", identical(apply_query_reference_profile(y, ids, raw_obj), y))
+Sys.setenv(TSF_REFERENCE_PROFILE = pf)
+check("TSF_REFERENCE_PROFILE set against a RAW library is refused",
+      inherits(try(apply_query_reference_profile(y, ids, raw_obj), silent = TRUE), "try-error"))
+other <- file.path(tmp, "other.tsv"); write_tsv_tsf(ref2[1:50, ], other)
+Sys.setenv(TSF_REFERENCE_PROFILE = other)
+check("a variable pointing at a DIFFERENT profile than the library's is refused",
+      inherits(try(apply_query_reference_profile(y, ids, ref_obj), silent = TRUE), "try-error"))
+Sys.unsetenv("TSF_REFERENCE_PROFILE")
+check("a query mostly off the profile's positions is refused",
+      inherits(try(apply_query_reference_profile(y, paste0("ENSX", 1:100), ref_obj), silent = TRUE), "try-error"))
+bin_obj <- ref_obj; bin_obj$reference_profile$profile$gene_id <- paste0("bin_1_", 1:100)
+check("on the bp axis the profile is keyed by bin id and the same function applies",
+      abs(mean(apply_query_reference_profile(y, paste0("bin_1_", 1:100), bin_obj) -
+                 (asinh(1000) - ref2$ref_median))) < 1e-9)
 
 if (fails) { cat(" ", fails, "check(s) failed\n"); quit(status = 1) } else cat(" All tests passed. \n")
