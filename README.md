@@ -1078,12 +1078,22 @@ export TSF_ROOT=... TSF_GEO_DIR=... TSF_INTERIM_DIR=.../interim_diff TSF_RESULTS
 bash scripts/run_differential.sh 2>&1 | tee "$TSF_RESULTS_DIR/run_differential.log"
 ```
 
+The run builds up to three libraries, each with its own interim tree, shared
+mask, profile and results: `primary` (recount3-only cohorts: the claim),
+`sensitivity_geo` (GTEx + the cohorts only available from GEO, quantified by
+another pipeline: never the headline number) and, with `TSF_RUN_COMBINED=1`,
+`combined`. Every reusable artefact carries an `.inputs` sidecar with a digest
+of the dataset list, GTEx project, tissue, GSE list, annotation, gene universe,
+axis, bin size, expression filters and profile; it is rebuilt when that digest
+changes, not reused because the file exists.
+
 Pieces, each usable alone:
 
 | script | does |
 |---|---|
 | `scripts/resolve_recount3.R` | GSE -> SRP (ENA) -> is it in recount3? Writes `config/recount3_sources.tsv` |
 | `scripts/recount3_fetch.R` | recount3 gene sums -> read counts + pheno + a dataset config, for GTEx tissues and SRPs |
+| `scripts/validate_recount3_configs.R` | checks `config/datasets/R3_*.R` against what ingest needs; `--migrate` fixes header fields only, never `condition_rules` |
 | `scripts/build_tissue_reference.R` | median asinh(TPM) per gene over the reference samples |
 | `scripts/apply_reference_profile.R` | rewrites each dataset's `expression.tsv` as the deviation (keeps `expression_raw.tsv`; `--restore` undoes) |
 | `scripts/crest_genes.R` | genes carrying each characteristic peak: projection on the fitted component, ablation `delta_power`, family-wise permutation p |
