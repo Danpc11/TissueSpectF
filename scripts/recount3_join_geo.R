@@ -62,9 +62,15 @@ gsm_col <- grep("^geo_accession$", colnames(sm), value = TRUE)[1]
 if (is.na(gsm_col)) gsm_col <- colnames(sm)[grepl("^GSM", as.character(sm[[1]]))][1] %||% NA
 title_col <- grep("^title$", colnames(sm), value = TRUE)[1]
 
-# join: SRX first, title second
-idx <- match(pheno$experiment, sm$srx)
-via <- rep("srx", nrow(pheno)); via[is.na(idx)] <- NA
+# join: GSM (from the exploded attributes) first, SRX second, title third
+idx <- rep(NA_integer_, nrow(pheno)); via <- rep(NA_character_, nrow(pheno))
+if ("gsm" %in% colnames(pheno) && !is.na(gsm_col)) {
+  idx <- match(pheno$gsm, as.character(sm[[gsm_col]])); via[!is.na(idx)] <- "gsm"
+}
+if (any(is.na(idx)) && "experiment" %in% colnames(pheno)) {
+  alt <- match(pheno$experiment, sm$srx); fill <- is.na(idx) & !is.na(alt)
+  idx[fill] <- alt[fill]; via[fill] <- "srx"
+}
 if (any(is.na(idx)) && !is.na(title_col) && "sample_title" %in% colnames(pheno)) {
   alt <- match(trimws(pheno$sample_title), trimws(as.character(sm[[title_col]])))
   fill <- is.na(idx) & !is.na(alt)
@@ -72,7 +78,8 @@ if (any(is.na(idx)) && !is.na(title_col) && "sample_title" %in% colnames(pheno))
 }
 n_ok <- sum(!is.na(idx))
 tsf_log(ds, ": ", n_ok, "/", nrow(pheno), " recount3 sample(s) matched to a GSM (",
-        sum(via == "srx", na.rm = TRUE), " by SRX, ", sum(via == "title", na.rm = TRUE), " by title)")
+        sum(via == "gsm", na.rm = TRUE), " by GSM, ", sum(via == "srx", na.rm = TRUE), " by SRX, ",
+        sum(via == "title", na.rm = TRUE), " by title)")
 if (n_ok < 0.9 * nrow(pheno)) {
   tsf_abort("fewer than 90% matched. Inspect: head data/", basename(pheno_path),
             " and the !Sample_relation lines of ", basename(sm_path))
