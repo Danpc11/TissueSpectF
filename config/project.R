@@ -262,8 +262,16 @@ list(
     # Which null decides significance. "full" permutes every observed value and
     # so destroys local autocorrelation as well as long-range structure; "all"
     # additionally requires the peak to survive the block schemes, i.e. to be
-    # more than local correlation. Use "all" for any claim about periodicity.
-    primary_scheme = Sys.getenv("TSF_PRIMARY_SCHEME", "full"),
+    # more than local correlation.
+    #
+    # "all" is the default. Under "full" the null is white noise, and expression
+    # along a chromosome is not: measured on AR(1) noise with no periodicity at
+    # all (scripts/calibrate_null.R), the family-wise error of "full" at nominal
+    # 0.05 was 0.35 at phi = 0.3 and 0.95 at phi = 0.6; "all" gave 0.025 and
+    # 0.20. Neither is exact under strong autocorrelation, but "full" is not a
+    # test of periodicity at all -- it is a test of autocorrelation. Set
+    # TSF_PRIMARY_SCHEME=full only to reproduce an existing results tree.
+    primary_scheme = Sys.getenv("TSF_PRIMARY_SCHEME", "all"),
     alpha        = 0.05,
     stable_frac  = as.numeric(Sys.getenv("TSF_STABLE_FRAC", "0.9")),
     # Permutations for the condition-level test. It runs once per condition
