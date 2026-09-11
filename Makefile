@@ -1,4 +1,4 @@
-.PHONY: test test-r test-ml check run selfcheck status clean clean-dry clean-force sonify require-paths
+.PHONY: test test-r test-ml check run selfcheck calibrate status clean clean-dry clean-force sonify require-paths
 
 # Every suite. `make test` used to run two of the three R files, so a failure in
 # tests/test_condition_invariants.R was invisible until someone ran it by hand.
@@ -56,6 +56,12 @@ check: require-paths
 
 run: require-paths
 	./tsf run
+
+# Negative control for the permutation null: autocorrelated noise with no
+# periodic component. selfcheck proves a real peak is found; this proves a
+# red slope is not called one. Takes a few minutes.
+calibrate:
+	Rscript scripts/calibrate_null.R
 
 selfcheck:
 	./tsf selfcheck
