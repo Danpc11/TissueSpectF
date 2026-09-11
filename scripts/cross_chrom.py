@@ -384,6 +384,10 @@ def main():
     ap.add_argument("--bin-mb", type=float, default=0.25,
                     help="ancho de bin del eje; 0 para el eje de gen")
     ap.add_argument("--n-null", type=int, default=2000)
+    ap.add_argument("--n-maxt", type=int, default=0,
+                    help="permutaciones del maxT conjunto; 0 usa --n-null. Es "
+                         "mas caro que el nulo por banda porque recalcula el "
+                         "estadistico de todas las bandas en cada permutacion")
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--out")
     a = ap.parse_args()
@@ -488,8 +492,18 @@ def main():
                     ch = sorted(chrs)
                     sm = sorted(smp)
                     aligned = {b: mats[b].loc[sm, ch].to_numpy() for b in mats}
-                    out = joint_maxt(aligned, n_null=min(a.n_null, 1000),
-                                     seed=7)
+                    # SIN TOPE SILENCIOSO. `min(a.n_null, 1000)` ignoraba lo
+                    # que el usuario pedia: con --n-null 20000 el maxT usaba
+                    # 1000 y el piso del p-valor quedaba en 1/1001 sin que
+                    # nada lo dijera. El maxT conjunto es mas caro --recalcula
+                    # el estadistico de TODAS las bandas en cada permutacion--
+                    # asi que el costo se avisa en vez de recortarlo.
+                    n_joint = a.n_maxt if a.n_maxt else a.n_null
+                    if n_joint * len(mats) > 20000:
+                        print(f"   maxT conjunto: {n_joint} permutacion(es) x "
+                              f"{len(mats)} banda(s); puede tardar. Usa "
+                              f"--n-maxt para bajarlo.")
+                    out = joint_maxt(aligned, n_null=n_joint, seed=7)
                     if out is not None:
                         res, gmax = out
                         df["p_maxt"] = np.nan
