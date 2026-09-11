@@ -8,6 +8,7 @@ test-r:
 	Rscript tests/test_labels.R
 	Rscript tests/test_spectrum.R
 	Rscript tests/test_condition_invariants.R
+	Rscript tests/test_differential.R
 
 # The learned layer's tests need numpy/scikit-learn but not torch. They are
 # skipped with a message rather than failing the target, so `make test` still
