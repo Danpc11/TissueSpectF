@@ -1354,6 +1354,30 @@ check("el multitaper reduce el cv sobre ruido puro", {
   cv <- function(M) stats::median(apply(M, 1, stats::sd) / rowMeans(M), na.rm = TRUE)
   cv(S1) / cv(SM) > 1.5 })
 
+check("el ancho de banda se reporta por frecuencia, no de golpe", {
+  # El mismo espectro tiene frecuencias seguras y frecuencias borradas: un
+  # pico en k=10 con NW=3 queda cubierto de k=7 a k=13 --el 60% de su propia
+  # frecuencia-- mientras uno en k=100 solo pierde el 6%. Las BAJAS, que es
+  # donde vive la estructura cromosomica, son las vulnerables.
+  set.seed(81); N <- 200L
+  tm <- gls_prepare(seq_len(N), N)
+  b <- suppressMessages(gls_multitaper(stats::rnorm(N), tm, NW = 3))
+  "bandwidth_fraction" %in% names(b) &&
+    b$bandwidth_fraction[5] > b$bandwidth_fraction[50] &&
+    all(b$bandwidth_fraction <= 1) })
+
+check("un NW demasiado ancho para la malla borra el pico", {
+  # El numero que justifica el aviso, anclado: con N=200 y un componente en
+  # k=10, NW=3 lo deja en el rango 2 y NW<=2.5 en el 1.
+  set.seed(82); N <- 200L
+  t <- seq_len(N); tm <- gls_prepare(t, N); per <- 20
+  rk <- function(nw) stats::median(vapply(seq_len(15), function(i) {
+    y <- 1.5 * cos(2 * pi * t / per) + stats::rnorm(N, 0, 1)
+    b <- suppressMessages(gls_multitaper(y, tm, NW = nw))
+    rank(-b$power)[which.min(abs(b$period - per))]
+  }, numeric(1)))
+  rk(2) <= 1 && rk(4) > 1 })
+
 check("los tapers se cachean", {
   # Sin cache la descomposicion propia N x N se repite en cada permutacion:
   # 7.35 s con N = 2000, y maxT pasaria de 50 minutos a 118 dias. Medido.
