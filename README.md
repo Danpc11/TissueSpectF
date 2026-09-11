@@ -1083,9 +1083,13 @@ mask, profile and results: `primary` (recount3-only cohorts: the claim),
 `sensitivity_geo` (GTEx + the cohorts only available from GEO, quantified by
 another pipeline: never the headline number) and, with `TSF_RUN_COMBINED=1`,
 `combined`. Every reusable artefact carries an `.inputs` sidecar with a digest
-of the dataset list, GTEx project, tissue, GSE list, annotation, gene universe,
-axis, bin size, expression filters and profile; it is rebuilt when that digest
-changes, not reused because the file exists.
+of the dataset list, GTEx project, tissue, GSE list, vocabulary, axis, bin
+size, profile and the md5 of the effective project configuration
+(`scripts/config_digest.R`, so `TSF_ESTIMATOR`, `TSF_PRIMARY_SCHEME`,
+`TSF_MT_NW`, ... count). It is rebuilt when that digest changes, not reused
+because the file exists; `tsf` stages are re-run with `--force` in that case,
+and directories are rebuilt atomically with the previous version kept as
+`.bak.<timestamp>`.
 
 Pieces, each usable alone:
 
@@ -1093,7 +1097,8 @@ Pieces, each usable alone:
 |---|---|
 | `scripts/resolve_recount3.R` | GSE -> SRP (ENA) -> is it in recount3? Writes `config/recount3_sources.tsv` |
 | `scripts/recount3_fetch.R` | recount3 gene sums -> read counts + pheno + a dataset config, for GTEx tissues and SRPs |
-| `scripts/validate_recount3_configs.R` | checks `config/datasets/R3_*.R` against what ingest needs; `--migrate` fixes header fields only, never `condition_rules` |
+| `scripts/validate_recount3_configs.R` | checks the `R3_*.R` configs a run uses (`--datasets`, or `--all` to audit) against what ingest needs; `--migrate` fixes header fields only, never `condition_rules` |
+| `scripts/config_digest.R` | md5 of the effective project configuration (every `TSF_*` override applied); part of every artefact's input digest |
 | `scripts/build_tissue_reference.R` | median asinh(TPM) per gene over the reference samples |
 | `scripts/apply_reference_profile.R` | rewrites each dataset's `expression.tsv` as the deviation (keeps `expression_raw.tsv`; `--restore` undoes) |
 | `scripts/crest_genes.R` | genes carrying each characteristic peak: projection on the fitted component, ablation `delta_power`, family-wise permutation p |
