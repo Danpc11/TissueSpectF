@@ -81,8 +81,3 @@ descarta el supuesto de forma con un número.
 integrado porque no usa FFT --la FFT exige pesos uniformes-- y a O(n·m) es del
 orden de un segundo por espectro: sirve para un análisis dirigido, no para las
 mil permutaciones de maxT.
-
-**El GLS ponderado sí gana**, 76% contra 62% en el límite de detección. No está
-integrado porque no usa FFT --la FFT exige pesos uniformes-- y a O(n·m) es del
-orden de un segundo por espectro: sirve para un análisis dirigido, no para las
-mil permutaciones de maxT.
