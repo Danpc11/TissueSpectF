@@ -19,6 +19,53 @@ genes, and whether that structure changes with disease stage.
 The model, the estimators and the limits of each claim are written up in
 [THEORY.md](THEORY.md).
 
+## Start here
+
+```bash
+make test && ./tsf selfcheck      # 335 checks + the pipeline on a known answer
+./scripts/run_all.sh              # the three axes, end to end
+```
+
+`run_all.sh` encodes the ordering constraints that a list of commands does not:
+`maxt` before `condition` or the Stouffer evidence is dropped, `window` after
+`stability` or there are no stable peaks to place, and the **two-pass ingest**
+the base-pair axis needs.
+
+## What each axis is for
+
+| axis | coverage | period means | classify queries? |
+|---|---|---|---|
+| `gene` (default) | ~70% | a rank distance, **not** a genomic one | yes |
+| `bp250` | ~46% | megabases, directly | no |
+| `bp100` | ~26% | megabases, directly | no |
+
+The gene axis is the only one that can classify a new sample, because coverage
+bands cannot be calibrated faithfully on binned data — the mask would simulate
+losing whole bins while a real query loses genes inside them, and a bin's value
+is an aggregate that `sinh()` does not invert (measured ratio 0.03). Queries on
+a base-pair axis come back `UNCALIBRATED_COVERAGE`, which means *no threshold
+exists for that coverage*, not *no match*.
+
+The base-pair axes are for `differential` and `consensus`, which report
+distances rather than decisions.
+
+## The two-pass ingest, and why
+
+With `--grid-axis bp` several genes are aggregated per bin, but
+`filter_expressed()` picks them with `rowMeans` over each cohort's samples: every
+cohort keeps a different set and the same bin is built from different genes. A
+single-sample query cannot reproduce that filter at all.
+
+```bash
+./tsf ingest ... --grid-axis bp --force              # writes retained_genes.tsv
+Rscript scripts/shared_gene_mask.R --interim-dir ... # the intersection
+./tsf ingest ... --gene-mask <file> --force          # re-aggregate with it
+```
+
+`stage_reference` **aborts** if this was not done. The third step is a full
+re-ingest, not a patch: the bins have to be rebuilt, and with them the spectra,
+the validation and the centroids.
+
 Three things make the result trustworthy rather than merely computable:
 
 - the spectral axis is the **annotation grid**, not the genes that survived a
