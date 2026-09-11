@@ -152,7 +152,9 @@ def main():
         print(f"{held:>14}  out-of-cohort {acc:.3f}  majority {base:.3f}  "
               f"within-cohort CV {within:.3f}  classes {shared}")
 
-    tab = pd.DataFrame(rows)
+    cols = ["held_out", "n_train", "n_test", "n_shared_classes", "n_genes", "top_genes",
+            "out_of_cohort_acc", "majority_baseline", "within_cohort_cv_acc", "cohort_drop", "note"]
+    tab = pd.DataFrame(rows).reindex(columns=cols)   # every column present even when every fold was skipped
     out = a.out or str(interim.parent / "results" / "gene_baseline.tsv")
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     tab.to_csv(out, sep="\t", index=False)
@@ -161,6 +163,13 @@ def main():
         print(f"\nmean out-of-cohort accuracy {ok.mean():.3f} over {len(ok)} fold(s) -> {out}")
         print("Compare with results/reference/validation (spectral LOCO): the number to "
               "report is the cohort_drop of each, not the accuracy alone.")
+    else:
+        # Not an error: a library whose cohorts share fewer than two classes (a
+        # tissue reference plus one disease cohort, say) has no informative
+        # fold. The table says so per fold; the caller decides what that means.
+        print(f"\nno fold with >= 2 shared classes: no out-of-cohort accuracy can be "
+              f"estimated for this library (table with the per-fold reasons -> {out}). "
+              f"This is expected when one cohort is a single-class reference.")
 
 
 if __name__ == "__main__":
