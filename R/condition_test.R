@@ -48,7 +48,7 @@ stouffer_combine <- function(p, B = NULL) {
 #' Permutation test on one condition's summary signal, one chromosome.
 condition_permutation_test <- function(signal, terms, B = 1000L, seed = 42L,
                                        block_sizes = c(10L, 20L, 50L),
-                                       primary_scheme = "full") {
+                                       primary_scheme = "all") {
   permutation_gls_test(signal, terms, B = B, seed = seed,
                        block_sizes = block_sizes,
                        primary_scheme = primary_scheme)
@@ -78,7 +78,7 @@ condition_significance <- function(dataset, cond, chrom_idx, maxt_cfg,
       fit$y, fit$terms, B = B,
       seed = maxt_cfg$seed + 100000L * match(chr_now, chrom_levels),
       block_sizes = maxt_cfg$block_sizes,
-      primary_scheme = maxt_cfg$primary_scheme %||% "full")
+      primary_scheme = maxt_cfg$primary_scheme %||% "all")
     if (is.null(res) || !nrow(res)) return(NULL)
 
     out <- data.frame(
