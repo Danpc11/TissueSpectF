@@ -132,6 +132,17 @@ validate_across_datasets <- function(fps,
                                      threshold_policy = "pooled",
                                      grid_size = NULL) {
   target <- match.arg(target)
+  # grid_size es el denominador de reference_coverage(), la MISMA cantidad que
+  # usa la consulta. Sin el la calibracion medía n/n = 1 y el umbral salia de
+  # una banda que no correspondia.
+  if (!is.null(datasets) && (is.null(grid_size) || !is.finite(grid_size) ||
+                             grid_size <= 0)) {
+    tsf_abort("validate_across_datasets: hace falta `grid_size` --el numero de ",
+              "posiciones de la referencia-- para calibrar las bandas de ",
+              "cobertura. Es el denominador de reference_coverage(), y sin el ",
+              "la calibracion y la consulta miden cantidades distintas. ",
+              "build_reference() lo pasa como nrow(grid).")
+  }
   ids <- unique(unlist(lapply(fps, function(f) f$labels$dataset_id)))
   if (length(ids) < 2) {
     tsf_warn("Only one dataset: out-of-cohort validation is not possible. ",
@@ -212,12 +223,15 @@ validate_across_datasets <- function(fps,
     calibrate_coverage_bands(datasets, fps, lab, ids, target, n_features,
                              ref_params = ref_params, n_masks = n_masks,
                              max_queries_per_mask = max_queries_per_mask,
-                             # nrow(grid) explicito: es el denominador de
-                             # reference_coverage(), asi que la calibracion y
-                             # la consulta miden lo mismo. Antes llegaba NULL
-                             # y la cobertura salia 1.
-                             grid_size = grid_size %||%
-                               (if (!is.null(grid)) nrow(grid) else NULL),
+                             # `grid` NO existe en esta funcion: el fallback
+                             # `if (!is.null(grid)) nrow(grid)` fallaba en una
+                             # llamada directa y solo pasaba desapercibido
+                             # porque build_reference() siempre pasa
+                             # grid_size. Se exige aqui en vez de adivinar:
+                             # sin el, reference_coverage() no tiene
+                             # denominador y la calibracion mide otra cosa que
+                             # la consulta.
+                             grid_size = grid_size,
                              grid_axis = ref_params$grid_axis %||% "gene")
   }
   calib$bands <- summarise_bands(band_pred, policy = threshold_policy)
