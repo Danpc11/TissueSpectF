@@ -338,14 +338,14 @@ gls_prepare <- function(t, N) {
 #'
 #' WHY THIS EXISTS
 #' ---------------
-#' gls_spectrum() replaces a non-finite value with zero before the FFT. For the
-#' positions that are absent from `t` that is the documented computational
-#' device: they never enter the fit, because the normalisation goes through the
-#' presence indicator w. For a position that IS in `t` but whose value is NA it
-#' is something else entirely -- w counts it as observed, so a zero lands at a
-#' fixed grid position and is treated as a measurement of zero expression. That
-#' is exactly the failure the reference grid was built to avoid, and it would
-#' arrive silently.
+#' gls_spectrum() zero-fills the positions ABSENT from `t` before the FFT; that
+#' is the documented computational device, and the normalisation through the
+#' presence indicator w makes it exact. A position that IS in `t` but whose value
+#' is NA is something else entirely -- w would count it as observed and a zero
+#' would land at a fixed grid position as a measurement of zero expression. That
+#' is exactly the failure the reference grid was built to avoid, so
+#' gls_spectrum() and permutation_gls_test() ABORT on it, and this function is
+#' how a caller removes such positions before fitting.
 #'
 #' Ingest drops genes with no usable value, so in a normal run every observed
 #' position is finite and this function returns the shared terms untouched at no
