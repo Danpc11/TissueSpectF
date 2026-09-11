@@ -387,13 +387,28 @@ collapse_duplicate_ids <- function(values, ids, unit = "counts") {
 
 #' Values on the observed positions, on the scale the reference was built on.
 query_signal <- function(v, unit = "counts") {
-  switch(unit,
+  out <- switch(unit,
     counts = asinh(v / max(sum(v, na.rm = TRUE), 1) * 1e6),
     cpm = ,
     tpm = asinh(v),
     logged = v,
     tsf_abort("Unknown input unit '", unit,
               "'. Use counts, cpm, tpm or logged."))
+  # Differential mode (R/reference_profile.R): if the library was built on
+  # deviations from a tissue profile, the query has to be the same deviation.
+  # TSF_REFERENCE_PROFILE names that profile. Whether the library was built on
+  # deviations is recorded per dataset in
+  # <interim>/<dataset>/reference_profile_applied.tsv; the run script exports
+  # the variable so `match` and the library agree. Matching a raw query
+  # against a differential library (or the reverse) is a silent error.
+  ref <- if (exists("active_reference_profile")) active_reference_profile() else NULL
+  if (!is.null(ref)) {
+    if (is.null(names(out))) tsf_abort("query_signal: differential mode needs gene ids on the query")
+    out <- subtract_reference_profile(out, ref)
+    tsf_log("query corrected with reference profile (", attr(out, "n_unmatched"),
+            " gene(s) not in the profile -> unmeasured)")
+  }
+  out
 }
 
 #' Fingerprint of one query column, built only on the genes it actually contains.
