@@ -32,6 +32,7 @@ set -euo pipefail
 TSF_GSE="${TSF_GSE:-GSE135251,GSE130970,GSE162694,GSE276114,GSE142530}"
 TSF_GTEX_TISSUE="${TSF_GTEX_TISSUE:-LIVER}"
 TSF_TISSUE="${TSF_TISSUE:-liver}"
+TSF_VOCAB="${TSF_VOCAB:-liver_fibrosis}"   # must contain Control_external_study (the GTEx label)
 TSF_BIN_SIZE="${TSF_BIN_SIZE:-100000}"
 N_WORKERS="${N_WORKERS:-4}"
 cd "$TSF_ROOT"
@@ -61,9 +62,9 @@ log "recount3 cohorts: ${SRPS:-none}   GEO-only cohorts: ${GEO_ONLY:-none}"
 # ------------------------------------------------------------- 2. recount3
 step "2 fetch recount3 ($GTEX_ID${SRPS:+, $SRPS})"
 [ -f "$TSF_GEO_DIR/${GTEX_ID}_reads.tsv.gz" ] || \
-  Rscript scripts/recount3_fetch.R --projects "$TSF_GTEX_TISSUE" --tissue "$TSF_TISSUE" --vocabulary case_control
+  Rscript scripts/recount3_fetch.R --projects "$TSF_GTEX_TISSUE" --tissue "$TSF_TISSUE" --vocabulary "$TSF_VOCAB"
 if [ -n "$SRPS" ]; then
-  Rscript scripts/recount3_fetch.R --projects "$SRPS" --tissue "$TSF_TISSUE" --vocabulary liver_fibrosis
+  Rscript scripts/recount3_fetch.R --projects "$SRPS" --tissue "$TSF_TISSUE" --vocabulary "$TSF_VOCAB"
   for s in ${SRPS//,/ }; do
     if grep -q '^\s*# list(id = "biopsy_fibrosis_stage"' "config/datasets/R3_$s.R"; then
       log "STOP: config/datasets/R3_$s.R needs condition_rules for the exploded SRA attributes (see the pheno columns listed in it). Edit it, then re-run."
@@ -93,23 +94,29 @@ done
 step "4b shared gene mask across all cohorts"
 [ -f "$MASK" ] || Rscript scripts/shared_gene_mask.R --interim-dir "$TSF_INTERIM_DIR" --datasets "$COHORTS" --out "$MASK"
 step "4c ingest, pass 2 with the shared mask"
+MASK_MD5=$(md5sum "$MASK" | cut -c1-32)
+STAMP="mask=$MASK_MD5 bin=$TSF_BIN_SIZE annot=$(grep -o 'annotation_file *= *"[^"]*"' config/project.R | head -1)"
 for d in $DS_LIST; do
-  [ -f "$TSF_INTERIM_DIR/$d/.masked" ] || {
+  # the marker records WHAT was used, not just that something was: a new mask,
+  # bin size or annotation invalidates it
+  if [ ! -f "$TSF_INTERIM_DIR/$d/.masked" ] || [ "$(cat "$TSF_INTERIM_DIR/$d/.masked")" != "$STAMP" ]; then
     ./tsf ingest "$d" --grid-axis bp --bin-size "$TSF_BIN_SIZE" --gene-mask "$MASK" --force
-    touch "$TSF_INTERIM_DIR/$d/.masked"
-  }
+    printf '%s' "$STAMP" > "$TSF_INTERIM_DIR/$d/.masked"
+  fi
 done
 
 # ------------------------------------------------- 5. reference & deviation
 step "5 tissue reference profile from $GTEX_ID"
-[ -f "$PROFILE" ] || Rscript scripts/build_tissue_reference.R --datasets "$GTEX_ID" --out "$PROFILE"
+[ -f "$PROFILE" ] || Rscript scripts/build_tissue_reference.R --datasets "$GTEX_ID" --tissue "$TSF_TISSUE" --out "$PROFILE"
 step "5b every cohort -> deviation from the profile (GTEx included: its deviations are the healthy class)"
+# idempotent and stale-safe: re-run after any ingest --force
 Rscript scripts/apply_reference_profile.R --datasets "$COHORTS" --profile "$PROFILE"
-export TSF_REFERENCE_PROFILE="$PROFILE"
 
 # ------------------------------------------------------------- 6. spectra
-step "6 spectral pipeline on the deviation (null = all, bp axis)"
-./tsf run $DS_LIST --from spectra --to reference --grid-axis bp --bin-size "$TSF_BIN_SIZE" --gene-mask "$MASK"
+step "6 spectral pipeline on the deviation (null = all, bp axis): spectra ... compare"
+./tsf run $DS_LIST --from spectra --to compare --grid-axis bp --bin-size "$TSF_BIN_SIZE" --gene-mask "$MASK"
+step "6b fingerprint library + out-of-cohort validation (stores the profile in reference.rds)"
+./tsf reference $DS_LIST --grid-axis bp --bin-size "$TSF_BIN_SIZE" --gene-mask "$MASK"
 
 # ------------------------------------------------------ 7. condition library
 step "7 condition library (cross-cohort meta-analysis)"
@@ -138,4 +145,4 @@ log "crest genes:      $TSF_RESULTS_DIR/crest_genes/"
 log "spectral LOCO:    $TSF_RESULTS_DIR/reference/   (validation tables)"
 log "gene LOCO:        $TSF_RESULTS_DIR/gene_baseline.tsv"
 log "Compare cohort_drop (within-cohort minus out-of-cohort) of the two LOCOs: that is the claim."
-log "To match a new sample: export TSF_REFERENCE_PROFILE=$PROFILE; ./tsf match <counts.tsv>"
+log "To match a new sample: ./tsf match <counts.tsv>   (the library carries the profile; no variable needed)"
