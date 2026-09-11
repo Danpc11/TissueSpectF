@@ -394,20 +394,6 @@ query_signal <- function(v, unit = "counts") {
     logged = v,
     tsf_abort("Unknown input unit '", unit,
               "'. Use counts, cpm, tpm or logged."))
-  # Differential mode (R/reference_profile.R): if the library was built on
-  # deviations from a tissue profile, the query has to be the same deviation.
-  # TSF_REFERENCE_PROFILE names that profile. Whether the library was built on
-  # deviations is recorded per dataset in
-  # <interim>/<dataset>/reference_profile_applied.tsv; the run script exports
-  # the variable so `match` and the library agree. Matching a raw query
-  # against a differential library (or the reverse) is a silent error.
-  ref <- if (exists("active_reference_profile")) active_reference_profile() else NULL
-  if (!is.null(ref)) {
-    if (is.null(names(out))) tsf_abort("query_signal: differential mode needs gene ids on the query")
-    out <- subtract_reference_profile(out, ref)
-    tsf_log("query corrected with reference profile (", attr(out, "n_unmatched"),
-            " gene(s) not in the profile -> unmeasured)")
-  }
   out
 }
 
@@ -462,6 +448,24 @@ fingerprint_query <- function(values, ids, ref, unit = "counts") {
   # asinh en el orden de ingest, y volver a pasar por query_signal() daria
   # asinh(asinh(TPM)).
   y <- if (prepared) v else query_signal(v, unit)
+
+  # DIFFERENTIAL MODE. The library may hold deviations from a tissue reference
+  # profile (R/reference_profile.R). The query has to be the same deviation,
+  # on the same positions the library uses -- bins on the bp axis, genes on
+  # the gene axis -- so the subtraction happens HERE, after bin_query() /
+  # query_signal() have put the query on those positions and that scale, and
+  # never in query_signal() alone (the bp path does not go through it).
+  # The profile comes from the reference object. TSF_REFERENCE_PROFILE, if set,
+  # must agree with it; a raw library with the variable set, or a differential
+  # library without a profile in the object, is refused rather than matched.
+  y <- apply_query_reference_profile(y, qi$key, ref)
+  if (!all(is.finite(y))) {
+    # positions the profile does not cover are unmeasured, not zero deviation
+    names(y) <- qi$key
+    qi <- query_grid_index(ref$grid, qi$key[is.finite(y)])
+    if (is.null(qi)) return(NULL)
+    y <- unname(y[qi$key])
+  }
 
   terms <- fingerprint_terms(qi$chrom_idx)
   fp <- fingerprint_vector(y, qi$chrom_idx, terms,
@@ -631,4 +635,41 @@ bin_grid_from_genes <- function(g, bin_size = 100000L) {
              grid_N = b$grid_N,
              n_genes_annotated = n,
              stringsAsFactors = FALSE)
+}
+
+
+#' Correct a prepared query with the library's reference profile, or refuse.
+apply_query_reference_profile <- function(y, ids, ref) {
+  prof <- ref$reference_profile
+  env_path <- Sys.getenv("TSF_REFERENCE_PROFILE", "")
+  if (is.null(prof)) {
+    if (nzchar(env_path)) {
+      tsf_abort("TSF_REFERENCE_PROFILE is set but this reference was built on RAW ",
+                "expression (no profile stored). Either unset the variable or match ",
+                "against a differential library.")
+    }
+    return(y)
+  }
+  if (nzchar(env_path)) {
+    d <- unname(tools::md5sum(env_path))
+    if (!identical(d, prof$digest)) {
+      tsf_abort("TSF_REFERENCE_PROFILE (", env_path, ", md5 ", substr(d, 1, 8),
+                ") is not the profile this library was built with (md5 ",
+                substr(prof$digest, 1, 8), "). The library carries its own profile; ",
+                "unset the variable or point it at the right file.")
+    }
+  }
+  m <- match(sub("\\..*$", "", ids), prof$profile$gene_id)
+  frac <- mean(!is.na(m))
+  if (frac < 0.5) {
+    tsf_abort("Only ", round(100 * frac), "% of the query positions are in the library's ",
+              "reference profile (", nrow(prof$profile), " positions, axis ",
+              prof$grid_axis, "). The query is not on the library's positions.")
+  }
+  out <- y - prof$profile$ref_median[m]
+  attr(out, "reference_profile") <- prof$digest
+  attr(out, "n_unmatched") <- sum(is.na(m))
+  tsf_log("query corrected with the library's reference profile (", sum(!is.na(m)),
+          " positions; ", sum(is.na(m)), " not in the profile -> unmeasured)")
+  out
 }
