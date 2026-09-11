@@ -938,6 +938,39 @@ stage_reference <- function(project, opt) {
       gene_mask <- sets[[1]]
     }
     # No hay tercer ramal: si faltara algun archivo ya se aborto arriba.
+  } else {
+    # Gene axis. The same per-cohort filter applies -- each cohort keeps its own
+    # set of expressed genes -- and although no bin is aggregated from different
+    # genes, the OBSERVED POSITIONS differ, so each cohort carries its own
+    # spectral window. That window is cohort identity, and the fingerprint sees
+    # it. It is not an error here (the grid stays comparable), so this warns and
+    # measures instead of aborting; --gene-mask works on this axis exactly as on
+    # bp if a shared set is wanted.
+    ids_kept <- names(kept_datasets)
+    sets <- lapply(ids_kept, function(id) {
+      t <- read_tsv_tsf(file.path(project$interim_dir, id, "retained_genes.tsv"),
+                        required = FALSE)
+      if (is.null(t) || !"gene_id" %in% names(t)) NULL
+      else unique(as.character(t$gene_id))
+    })
+    sets <- Filter(Negate(is.null), sets)
+    if (length(sets) >= 2L) {
+      inter <- Reduce(intersect, sets); un <- Reduce(union, sets)
+      jac <- length(inter) / max(1L, length(un))
+      if (jac < 0.95) {
+        tsf_warn("Gene axis: cohorts observe DIFFERENT gene sets (", length(inter),
+                 " shared of ", length(un), " in the union, Jaccard ",
+                 round(jac, 3), "). Each cohort therefore has its own spectral ",
+                 "window, which is a cohort signature the fingerprint can learn. ",
+                 "Out-of-cohort accuracy is the honest number for that reason; ",
+                 "to remove it, re-ingest with --gene-mask ",
+                 file.path(project$interim_dir, "shared_gene_mask.tsv"),
+                 " (scripts/shared_gene_mask.R builds it).")
+      } else {
+        tsf_log("Gene axis: retained gene sets agree across cohorts (Jaccard ",
+                round(jac, 3), ")")
+      }
+    }
   }
 
   prov <- grids[[1]]$provenance
