@@ -25,8 +25,10 @@
 # <interim>/<dataset>/expression.tsv. apply_reference_profile() rewrites that
 # file (keeping expression_raw.tsv) so spectra / condition / consensus /
 # reference / fingerprint run unchanged. A query sample has to go through the
-# same subtraction: subtract_reference_profile() is that function, and
-# query_signal() calls it when TSF_REFERENCE_PROFILE is set.
+# same subtraction: the profile is STORED in reference.rds by stage_reference
+# (with its md5) and fingerprint_query() applies it from there, after the
+# query has been put on the library's positions (bins or genes). A raw query
+# against a differential library, or the reverse, is refused.
 #
 # The reference and the cohorts MUST come from the same quantification
 # pipeline (recount3 for all of them, see R/recount3.R). Subtracting a GTEx
@@ -41,7 +43,7 @@
 #' @param condition  optional condition level to restrict to.
 #' @return data.frame gene_id, ref_median, ref_mad, n_ref
 build_reference_profile <- function(dataset_ids, project, condition = NULL,
-                                    min_samples = 20L) {
+                                    min_samples = 20L, tissue = NULL) {
   mats <- lapply(dataset_ids, function(id) {
     d <- load_dataset(id, project)
     m <- d$expression
@@ -65,10 +67,32 @@ build_reference_profile <- function(dataset_ids, project, condition = NULL,
     ref_median = apply(m, 1, stats::median, na.rm = TRUE),
     ref_mad    = apply(m, 1, stats::mad, na.rm = TRUE),
     n_ref      = rowSums(is.finite(m)),
+    # Provenance as COLUMNS, so it survives the TSV round trip. R attributes
+    # do not, and reference_profile_applied.tsv used to record n_ref_samples
+    # = NA for that reason.
+    n_ref_samples   = ncol(m),
+    source_datasets = paste(dataset_ids, collapse = ","),
+    tissue          = tissue %||% NA_character_,
     stringsAsFactors = FALSE)
   attr(ref, "n_samples") <- ncol(m)
   attr(ref, "datasets") <- dataset_ids
   ref
+}
+
+#' Write the profile plus a sidecar manifest with its digest and provenance.
+write_reference_profile <- function(ref, path, project = NULL) {
+  ensure_dir(dirname(path))
+  write_tsv_tsf(ref, path)
+  man <- data.frame(
+    key = c("profile", "md5", "n_positions", "n_ref_samples", "source_datasets", "tissue",
+            "grid_axis", "bin_size", "annotation_file", "created"),
+    value = c(basename(path), unname(tools::md5sum(path)), nrow(ref),
+              ref$n_ref_samples[1] %||% NA, ref$source_datasets[1] %||% NA, ref$tissue[1] %||% NA,
+              project$grid_axis %||% NA, project$bin_size %||% NA, project$annotation_file %||% NA,
+              format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
+    stringsAsFactors = FALSE)
+  write_tsv_tsf(man, sub("\\.tsv$", "_manifest.tsv", path))
+  invisible(path)
 }
 
 read_reference_profile <- function(path) {
@@ -102,14 +126,26 @@ subtract_reference_profile <- function(x, ref) {
 #' call, so applying a different profile later does not stack subtractions.
 #' Genes not in the profile are DROPPED from expression.tsv and genes.tsv (both
 #' files must describe the same positions), and the drop is logged.
-apply_reference_profile <- function(dataset_id, project, ref, profile_name = "reference") {
+apply_reference_profile <- function(dataset_id, project, ref, profile_name = "reference",
+                                    profile_path = NA_character_) {
   dir <- file.path(project$interim_dir, dataset_id)
   raw_path <- file.path(dir, "expression_raw.tsv")
   expr_path <- file.path(dir, "expression.tsv")
   genes_path <- file.path(dir, "genes.tsv")
   genes_raw_path <- file.path(dir, "genes_raw.tsv")
-  if (!file.exists(raw_path)) file.copy(expr_path, raw_path)
-  if (!file.exists(genes_raw_path)) file.copy(genes_path, genes_raw_path)
+  applied_path <- file.path(dir, "reference_profile_applied.tsv")
+  # The raw copy is the INGEST output. If ingest ran again (--force) after the
+  # last correction, expression.tsv is raw again and newer than the marker: the
+  # old backup would be stale, so it is refreshed. The marker's own mtime is
+  # the record of the last correction; without it, expression.tsv is raw.
+  ingest_rewrote <- !file.exists(applied_path) ||
+    file.mtime(expr_path) > file.mtime(applied_path) + 1
+  if (ingest_rewrote || !file.exists(raw_path)) {
+    file.copy(expr_path, raw_path, overwrite = TRUE)
+    file.copy(genes_path, genes_raw_path, overwrite = TRUE)
+    if (file.exists(applied_path)) tsf_log(dataset_id, ": ingest output is newer than the last ",
+                                           "correction; raw copy refreshed")
+  }
 
   expr <- read_tsv_tsf(raw_path)
   genes <- read_tsv_tsf(genes_raw_path)
@@ -127,15 +163,38 @@ apply_reference_profile <- function(dataset_id, project, ref, profile_name = "re
 
   write_tsv_tsf(data.frame(gene_id = rownames(d), d, check.names = FALSE), expr_path)
   write_tsv_tsf(genes_keep, genes_path)
+  digest <- if (!is.na(profile_path) && file.exists(profile_path))
+    unname(tools::md5sum(profile_path)) else NA_character_
   write_tsv_tsf(data.frame(
-    key = c("profile", "n_ref_samples", "n_genes_before", "n_genes_after", "applied"),
-    value = c(profile_name, attr(ref, "n_samples") %||% NA, nrow(mat), nrow(d),
-              format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
-    stringsAsFactors = FALSE), file.path(dir, "reference_profile_applied.tsv"))
+    key = c("profile", "profile_path", "profile_digest", "n_ref_samples", "source_datasets",
+            "tissue", "n_genes_before", "n_genes_after", "applied"),
+    value = c(profile_name, profile_path, digest,
+              ref$n_ref_samples[1] %||% attr(ref, "n_samples") %||% NA,
+              ref$source_datasets[1] %||% NA, ref$tissue[1] %||% NA,
+              nrow(mat), nrow(d), format(Sys.time(), "%Y-%m-%d %H:%M:%S")),
+    stringsAsFactors = FALSE), applied_path)
+  Sys.sleep(1.1)  # the marker must be strictly newer than expression.tsv (second resolution)
+  Sys.setFileTime(applied_path, Sys.time())
   tsf_log(dataset_id, ": expression.tsv is now the deviation from '", profile_name,
           "' (", nrow(d), "/", nrow(mat), " genes kept; ", sum(!in_ref),
           " not in the profile, dropped)")
   invisible(list(n_before = nrow(mat), n_after = nrow(d)))
+}
+
+#' The marker apply_reference_profile() leaves, as a list, or NULL if the
+#' dataset is raw (no marker, or expression.tsv rewritten by ingest since).
+read_reference_profile_applied <- function(dir) {
+  p <- file.path(dir, "reference_profile_applied.tsv")
+  if (!file.exists(p)) return(NULL)
+  if (file.mtime(file.path(dir, "expression.tsv")) > file.mtime(p) + 1) {
+    tsf_warn(basename(dir), ": expression.tsv was rewritten after the reference profile was ",
+             "applied; treating it as RAW. Re-run apply_reference_profile.R.")
+    return(NULL)
+  }
+  t <- read_tsv_tsf(p)
+  out <- as.list(stats::setNames(as.character(t$value), t$key))
+  out$n_ref_samples <- suppressWarnings(as.integer(out$n_ref_samples))
+  out
 }
 
 #' Restore expression.tsv / genes.tsv to the ingest output.
@@ -147,12 +206,4 @@ restore_raw_expression <- function(dataset_id, project) {
   }
   unlink(file.path(dir, "reference_profile_applied.tsv"))
   invisible(TRUE)
-}
-
-#' The profile a query must be corrected with, if the environment names one.
-active_reference_profile <- function() {
-  p <- Sys.getenv("TSF_REFERENCE_PROFILE", "")
-  if (!nzchar(p)) return(NULL)
-  if (!file.exists(p)) tsf_abort("TSF_REFERENCE_PROFILE points to a missing file: ", p)
-  read_reference_profile(p)
 }
