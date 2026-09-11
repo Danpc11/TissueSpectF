@@ -391,6 +391,22 @@ null_consensus_distribution <- function(spectra_all, n_samples, n_null = 50L,
   engine <- match.arg(engine)
   samples <- unique(spectra_all$sample)
   if (length(samples) <= n_samples || n_null < 10L) return(NULL)
+  # When the condition is most of the dataset, every null draw overlaps the
+  # observed set heavily and the null is nearly the observed statistic: the
+  # expected overlap of a random draw of n from M with a fixed set of n is
+  # n^2/M. With 42 of 55 samples that is 32 of 42, so p_null_fwer cannot get
+  # small however strong the component. Say so: that is "not reachable", which
+  # is a different finding from "not present".
+  frac <- n_samples / length(samples)
+  if (frac > 0.5) {
+    tsf_warn("Consensus null: the condition holds ", n_samples, " of ",
+             length(samples), " samples (", round(100 * frac), "%). A random ",
+             "draw shares about ", round(n_samples * frac), " of them with the ",
+             "observed set, so the null is close to the observed score and ",
+             "p_null / p_null_fwer are conservative to the point of being ",
+             "uninformative. Treat an unconfirmed component here as NOT ",
+             "REACHABLE, not as absent.")
+  }
   set.seed(seed)
 
   draw <- if (is.null(blocks)) {
@@ -695,11 +711,35 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
     hit <- hit[order(-hit$consensus_score_ci_lower), ]
     return(utils::head(hit, max_components))
   }
-  keep <- cs$prevalence >= min_prevalence &
+  # PHASE GATE: the permutation-calibrated PLV when it exists, Rayleigh only as
+  # the fallback. Rayleigh assumes phases iid uniform across samples, which is
+  # false on a shared grid and shared tissue -- on a real cohort it admitted
+  # 98.9% of frequencies (THEORY.md 5.6). p_plv_null asks the question that
+  # matters: more phase-coherent than a random group of the same size from the
+  # same tissue.
+  #
+  # The UNADJUSTED p_plv_null is used, deliberately. This is a filter, like
+  # `prevalence >= min_prevalence` next to it, not the inferential claim: the
+  # claim is p_null_fwer, which is family-wise by construction and whose score
+  # already contains the PLV as a factor. BH-adjusting a pointwise permutation
+  # p over n_f frequencies puts its floor at n_f/(B+1), unreachable at any
+  # realistic B (5.5b) -- so q_plv_null is reported but cannot gate.
+  # `phase_gate` records which statistic decided each row.
+  has_plv_null <- "p_plv_null" %in% colnames(cs) && any(is.finite(cs$p_plv_null))
+  phase_ok <- if (has_plv_null) {
+    !is.na(cs$p_plv_null) & cs$p_plv_null <= plv_q
+  } else {
     !is.na(cs$plv_rayleigh_q) & cs$plv_rayleigh_q <= plv_q
+  }
+  if (!has_plv_null) {
+    tsf_warn("No permutation-calibrated PLV (q_plv_null) available; the phase ",
+             "gate falls back to Rayleigh, which over-admits on a shared grid.")
+  }
+  keep <- cs$prevalence >= min_prevalence & phase_ok
   hit <- cs[keep, , drop = FALSE]
   if (!nrow(hit)) return(NULL)
   hit$phase_alignment_testable <- TRUE
+  hit$phase_gate <- if (has_plv_null) "plv_null" else "rayleigh"
   # "confirmed" needs the component to beat its OWN permuted null (BH-adjusted
   # across components), not merely to clear zero, which a product of
   # non-negative quantities does automatically. The global-maximum null is
@@ -710,8 +750,7 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
   # reachable with the default number of draws.
   beats_null <- if (has_null)
     !is.na(hit$p_null_fwer) & hit$p_null_fwer <= null_q else rep(FALSE, nrow(hit))
-  hit$signature_class <- ifelse(beats_null & hit$plv_rayleigh_q <= plv_q,
-                                "confirmed", "exploratory")
+  hit$signature_class <- ifelse(beats_null, "confirmed", "exploratory")
   if (!has_null) {
     tsf_warn("No permutation null was computed, so no component can be ",
              "confirmed: clearing zero is not evidence. Set consensus$n_null.")
