@@ -491,7 +491,9 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
                                biotypes = project$gene_universe,
                                min_genes_per_chr = project$min_genes_per_chr,
                                axis = project$grid_axis %||% "gene",
-                               bin_size = project$bin_size %||% 100000L)
+                               bin_size = project$bin_size %||% 100000L,
+                               chrom_lengths = project$chrom_lengths %||%
+                                 GRCH38_CHROM_LENGTHS)
 
   # entrez_id is kept because GEO count tables are commonly keyed on it, and a
   # query file has to be matchable without the user converting identifiers.
@@ -692,7 +694,11 @@ ingest_dataset <- function(dataset_id, project, dataset_dir = "config/datasets")
   # esa trazabilidad es el punto de declarar la cobertura en vez de promediarla.
   rg <- attr(genes_out, "retained_genes")
   if (!is.null(rg)) {
-    if (is.na(rg$dataset_id[1])) rg$dataset_id <- dataset$id
+    # `dataset_id`, no `dataset$id`: el parametro de ingest_dataset() se llama
+    # asi. Un error de una palabra que solo se dispara con eje bp, y que solo
+    # la prueba de integracion podia encontrar -- los tests unitarios no
+    # llegan hasta el escritor.
+    if (is.na(rg$dataset_id[1])) rg$dataset_id <- dataset_id
     write_tsv_tsf(rg, file.path(out_dir, "retained_genes.tsv"))
     tsf_log("  wrote retained_genes.tsv (", nrow(rg), " gene(s) that survived ",
             "this cohort's expression filter, with their real ids)")
