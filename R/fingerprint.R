@@ -258,12 +258,23 @@ fingerprint_dataset <- function(dataset, chrom_idx, k_max = 64L,
 #' in expression level, cannot drive a match. What survives is the SHAPE of the
 #' spectrum across frequencies, which is the thing claimed to be characteristic.
 normalise_fingerprints <- function(mat) {
-  mat[!is.finite(mat)] <- 0
-  t(apply(mat, 1, function(v) {
-    s <- stats::sd(v)
-    if (!is.finite(s) || s == 0) return(v - mean(v))
-    (v - mean(v)) / s
+  # A non-finite feature is a frequency or bin this sample did not observe --
+  # a period bin empty on a short chromosome, a chromosome a masked query
+  # lost. It stays NA. It used to become 0 here, which after centring is a
+  # measurement of "average power" the sample never made, and it entered the
+  # cosine in validation because score_query() was called without `available`.
+  # Centre and scale are computed over the finite features of the row;
+  # score_query() then drops non-finite features pairwise.
+  out <- t(apply(mat, 1, function(v) {
+    ok <- is.finite(v)
+    if (sum(ok) < 2L) return(rep(NA_real_, length(v)))
+    s <- stats::sd(v[ok]); m <- mean(v[ok])
+    z <- if (!is.finite(s) || s == 0) v - m else (v - m) / s
+    z[!ok] <- NA_real_
+    z
   }))
+  dimnames(out) <- dimnames(mat)
+  out
 }
 
 
