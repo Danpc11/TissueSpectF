@@ -106,6 +106,7 @@ read_recount3_md <- function(path) {
 #' columns, so a dataset config can use column_match / fibrosis_stage rules
 #' on them exactly as it does on a GEO series matrix.
 explode_sample_attributes <- function(x) {
+  if (is.null(x)) return(NULL)
   x[is.na(x)] <- ""
   parsed <- lapply(strsplit(x, "|", fixed = TRUE), function(pairs) {
     kv <- strsplit(pairs, ";;", fixed = TRUE)
@@ -161,9 +162,23 @@ fetch_recount3_project <- function(project, geo_dir, cache_dir = file.path(geo_d
 
   md <- read_recount3_md(f_md)
   qc <- read_recount3_md(f_qc)
-  key <- if ("external_id" %in% colnames(md)) "external_id" else colnames(md)[1]
-  md <- md[match(colnames(mat), md[[key]]), , drop = FALSE]
-  qc <- qc[match(colnames(mat), qc[[if ("external_id" %in% colnames(qc)) "external_id" else colnames(qc)[1]]]), , drop = FALSE]
+  # recount3 metadata columns are NOT namespaced ("experiment_acc", "smtsd",
+  # "sample_attributes"); the Bioconductor package adds the "sra."/"gtex."
+  # prefix when it builds the colData. Accept both, so the same code reads
+  # the raw files and a table someone exported from the package.
+  col <- function(df, name) {
+    for (n in c(name, paste0(src, ".", name), paste0("recount_", name))) {
+      if (n %in% colnames(df)) return(df[[n]])
+    }
+    NULL
+  }
+  key_of <- function(df) {
+    for (k in c("external_id", "run_acc", "rail_id")) if (k %in% colnames(df) && all(colnames(mat) %in% df[[k]])) return(k)
+    colnames(df)[1]
+  }
+  md <- md[match(colnames(mat), md[[key_of(md)]]), , drop = FALSE]
+  qc <- qc[match(colnames(mat), qc[[key_of(qc)]]), , drop = FALSE]
+  if (all(is.na(md[[1]]))) tsf_abort("could not align recount3 metadata rows to the gene-sums columns")
 
   rl_col <- grep("average_input_read_length$", colnames(qc), value = TRUE)[1]
   if (is.na(rl_col)) tsf_abort("recount_qc metadata lacks average_input_read_length")
@@ -180,26 +195,33 @@ fetch_recount3_project <- function(project, geo_dir, cache_dir = file.path(geo_d
   if (src == "gtex") {
     pheno <- data.frame(
       sample_id = colnames(counts),
-      donor     = md[["gtex.subjid"]] %||% sub("^(GTEX-[^-]+).*", "\\1", colnames(counts)),
-      tissue    = md[["gtex.smtsd"]] %||% project,
-      tissue_group = md[["gtex.smts"]] %||% NA_character_,
-      sex       = md[["gtex.sex"]] %||% NA,
-      age       = md[["gtex.age"]] %||% NA,
-      rin       = md[["gtex.smrin"]] %||% NA,
+      donor     = col(md, "subjid") %||% sub("^(GTEX-[^-]+).*", "\\1", colnames(counts)),
+      tissue    = col(md, "smtsd") %||% project,
+      tissue_group = col(md, "smts") %||% NA_character_,
+      sex       = col(md, "sex") %||% NA,
+      age       = col(md, "age") %||% NA,
+      rin       = col(md, "smrin") %||% NA,
       condition = "Control_external_study",
       stringsAsFactors = FALSE, check.names = FALSE)
   } else {
-    attrs <- explode_sample_attributes(md[["sra.sample_attributes"]])
+    attrs <- explode_sample_attributes(col(md, "sample_attributes"))
+    xattrs <- explode_sample_attributes(col(md, "experiment_attributes"))
     pheno <- data.frame(
       sample_id  = colnames(counts),
-      run        = md[["sra.run_acc"]] %||% colnames(counts),
-      experiment = md[["sra.experiment_acc"]] %||% NA_character_,
-      biosample  = md[["sra.sample_acc.x"]] %||% md[["sra.sample_acc"]] %||% NA_character_,
-      sample_title = md[["sra.sample_title"]] %||% NA_character_,
-      donor      = md[["sra.sample_acc.x"]] %||% colnames(counts),
+      run        = col(md, "run_acc") %||% colnames(counts),
+      experiment = col(md, "experiment_acc") %||% NA_character_,
+      biosample  = col(md, "biosample") %||% col(md, "sample_acc") %||% NA_character_,
+      sample_title = col(md, "sample_title") %||% NA_character_,
+      donor      = col(md, "sample_acc") %||% colnames(counts),
       stringsAsFactors = FALSE, check.names = FALSE)
-    if (!is.null(attrs)) pheno <- cbind(pheno, attrs)
+    if (!is.null(attrs))  pheno <- cbind(pheno, attrs[, setdiff(colnames(attrs), colnames(pheno)), drop = FALSE])
+    if (!is.null(xattrs)) pheno <- cbind(pheno, xattrs[, setdiff(colnames(xattrs), colnames(pheno)), drop = FALSE])
+    # GEO's own accession travels in the attributes ("GEO Accession;;GSM...")
+    gsm_col <- grep("^geo accession$", colnames(pheno), value = TRUE)[1]
+    if (!is.na(gsm_col)) pheno$gsm <- pheno[[gsm_col]]
     if (!"condition" %in% colnames(pheno)) pheno$condition <- NA_character_
+    tsf_log("  attributes exploded into ", if (is.null(attrs)) 0L else ncol(attrs), " column(s)",
+            if (!is.na(gsm_col)) "; GEO accession present (gsm column)" else "")
   }
 
   if (!is.null(max_samples) && ncol(counts) > max_samples) {
