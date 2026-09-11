@@ -391,6 +391,15 @@ near this scale", wrong for "is the period 30.1 or 30.4".
 depends on which taper was used is not a peak, and a single periodogram cannot
 report that at all.
 
+**The bandwidth has to fit the grid.** Averaging $K$ tapers with bandwidth
+$NW$ smooths over $2NW$ frequency bins, and what matters is that width against
+the component's own frequency, not against the total. Measured on $N = 200$
+with a component at $k = 10$: $NW = 3$ covers $k = 7$ to $13$ — 60% of its own
+frequency — and drops the peak from rank 1 to rank 2, while the periodogram
+keeps it at 1. With $NW \le 2.5$ it returns to rank 1. Low frequencies, which
+is where chromosomal structure lives, are the vulnerable ones, so
+`bandwidth_fraction` is reported per frequency rather than warned once.
+
 **The default is still the periodogram.** Nine validations would be needed
 before switching the primary analysis: amplitude and phase bias, period
 recovery, resolution between close peaks, family-wise error, power across
