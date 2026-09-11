@@ -32,6 +32,9 @@ if ("--restore" %in% args) {
 profile <- flag("--profile", "")
 if (!nzchar(profile)) tsf_abort("Pasa --profile <reference_profile.tsv> o --restore")
 ref <- read_reference_profile(profile)
-for (d in datasets) apply_reference_profile(d, project, ref, profile_name = basename(profile))
-tsf_log("Now run ./tsf run --from spectra ... with TSF_REFERENCE_PROFILE=", profile,
-        " exported, so `match` corrects queries the same way.")
+profile <- normalizePath(profile)
+for (d in datasets) apply_reference_profile(d, project, ref, profile_name = basename(profile),
+                                            profile_path = profile)
+tsf_log("Now run ./tsf run --from spectra ... then ./tsf reference. The reference stage ",
+        "stores this profile (md5 ", substr(unname(tools::md5sum(profile)), 1, 8),
+        ") inside reference.rds and `match` corrects queries from there.")
