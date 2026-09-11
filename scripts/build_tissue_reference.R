@@ -3,7 +3,7 @@
 #
 # Usage:
 #   Rscript scripts/build_tissue_reference.R --datasets R3_LIVER \
-#       --out $TSF_INTERIM_DIR/reference_profile_liver.tsv [--condition Control_external_study]
+#       --out $TSF_INTERIM_DIR/reference_profile_liver.tsv [--tissue liver] [--condition ...]
 #
 # The output is the profile apply_reference_profile.R subtracts from every
 # cohort, and the one TSF_REFERENCE_PROFILE must name when a query is matched.
@@ -24,8 +24,11 @@ datasets <- trimws(strsplit(flag("--datasets", ""), ",")[[1]])
 if (!length(datasets)) tsf_abort("Pasa --datasets R3_LIVER")
 out <- flag("--out", file.path(project$interim_dir, "reference_profile.tsv"))
 cond <- flag("--condition", NULL)
+tissue <- flag("--tissue", NULL)
 
-ref <- build_reference_profile(datasets, project, condition = cond)
-ensure_dir(dirname(out)); write_tsv_tsf(ref, out)
-tsf_log("reference profile: ", nrow(ref), " genes from ", attr(ref, "n_samples"),
-        " sample(s) of ", paste(datasets, collapse = ","), " -> ", out)
+ref <- build_reference_profile(datasets, project, condition = cond, tissue = tissue)
+write_reference_profile(ref, out, project)
+tsf_log("reference profile: ", nrow(ref), " positions from ", ref$n_ref_samples[1],
+        " sample(s) of ", paste(datasets, collapse = ","), " -> ", out,
+        " (+ ", basename(sub("\\.tsv$", "_manifest.tsv", out)), ", md5 ",
+        substr(unname(tools::md5sum(out)), 1, 8), ")")
