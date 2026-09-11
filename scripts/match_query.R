@@ -8,6 +8,25 @@
 # ingested dataset, so a reference.rds is portable to a machine that has never
 # seen the cohorts it was built from.
 
+
+# --help imprime la cabecera del propio archivo y sale con 0. Antes `--help` se
+# tomaba como el VALOR de la bandera anterior --"Missing value for --help",
+# "No such file: --help"-- o el script corria con la configuracion vacia. Un
+# script que no sabe explicarse es un script que nadie usa bien.
+if (any(commandArgs(TRUE) %in% c("-h", "--help"))) {
+  self <- sub("^--file=", "",
+              grep("^--file=", commandArgs(FALSE), value = TRUE)[1])
+  if (!is.na(self) && file.exists(self)) {
+    hdr <- readLines(self, warn = FALSE)
+    hdr <- hdr[!grepl("^#!", hdr)]                    # fuera el shebang
+    stop_at <- which(!grepl("^#", hdr) & nzchar(hdr))[1]
+    if (is.na(stop_at)) stop_at <- length(hdr) + 1L
+    hdr <- hdr[seq_len(stop_at - 1L)]
+    cat(paste(sub("^#[ ]?", "", hdr[grepl("^#", hdr)]), collapse = "\n"), "\n")
+  }
+  quit(save = "no", status = 0)
+}
+
 run_match <- function(project, opt) {
   ref_path <- opt$reference %||%
     file.path(project$results_dir, "reference", "reference.rds")
