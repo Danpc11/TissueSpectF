@@ -1122,7 +1122,13 @@ check("an empty period bin is NA, never zero", {
   ci <- list("21" = mk_ci(759))
   v <- fingerprint_vector(rnorm(759), ci, fingerprint_terms(ci),
                           features = "period_bins")
-  any(is.na(v)) && !any(v[is.finite(v)] == 0 & is.na(v)) })
+  # `v[is.finite(v)] == 0 & is.na(v)` comparaba un vector filtrado contra uno
+  # sin filtrar --de ahi el aviso de longitudes-- y ademas era una
+  # contradiccion: un valor finito nunca es NA, asi que siempre daba FALSE y
+  # el test no comprobaba nada.
+  #
+  # Lo que hay que afirmar: hay bins vacios, y ninguno de ellos vale cero.
+  any(is.na(v)) && all(v[is.finite(v)] != 0) })
 
 check("band ratios are invariant to a global scale factor", {
   # The premise of the representation: what identifies a spectrum is the
