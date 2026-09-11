@@ -24,9 +24,14 @@ fit_centroids <- function(mat, labels, n_features = 500L) {
   # between-class variance is largest relative to within-class.
   cls <- factor(labels)
   keep_var <- apply(mat, 2, function(v) {
-    if (!is.finite(stats::sd(v)) || stats::sd(v) == 0) return(0)
-    between <- stats::var(tapply(v, cls, mean))
-    within <- mean(tapply(v, cls, stats::var), na.rm = TRUE)
+    ok <- is.finite(v)
+    # A feature has to be observed in at least two samples of every class to
+    # be selectable; otherwise a class mean rests on one value or on none.
+    if (sum(ok) < 3L || any(tapply(ok, cls, sum) < 2L)) return(0)
+    v_ok <- v[ok]; cls_ok <- cls[ok]
+    if (!is.finite(stats::sd(v_ok)) || stats::sd(v_ok) == 0) return(0)
+    between <- stats::var(tapply(v_ok, cls_ok, mean))
+    within <- mean(tapply(v_ok, cls_ok, stats::var), na.rm = TRUE)
     if (!is.finite(between) || !is.finite(within) || within <= 0) return(0)
     between / within
   })
@@ -34,7 +39,7 @@ fit_centroids <- function(mat, labels, n_features = 500L) {
   sel <- sel[!is.na(sel)]
 
   centroids <- t(vapply(levels(cls), function(l) {
-    colMeans(mat[cls == l, sel, drop = FALSE])
+    colMeans(mat[cls == l, sel, drop = FALSE], na.rm = TRUE)
   }, numeric(length(sel))))
   rownames(centroids) <- levels(cls)
   list(features = sel, centroids = centroids, classes = levels(cls),
@@ -54,6 +59,9 @@ score_query <- function(model, query_vec, available = NULL) {
   sel <- model$features
   if (!is.null(available)) sel <- intersect(sel, available)
   sel <- intersect(sel, names(query_vec))
+  # Pairwise: a feature the query did not observe (NA) contributes nothing,
+  # rather than a zero that the centroid is then compared against.
+  sel <- sel[is.finite(query_vec[sel])]
   if (length(sel) < 3) return(NULL)
 
   zs <- function(x) {
@@ -69,7 +77,13 @@ score_query <- function(model, query_vec, available = NULL) {
     if (!is.finite(d) || d == 0) return(NA_real_)
     sum(a * b) / d
   }
-  s <- apply(model$centroids[, sel, drop = FALSE], 1, function(c) cos_sim(v, zs(c)))
+  # A centroid can be NaN on a feature no training sample of that class
+  # observed; drop those pairwise as well, per class.
+  s <- apply(model$centroids[, sel, drop = FALSE], 1, function(c) {
+    ok <- is.finite(c)
+    if (sum(ok) < 3) return(NA_real_)
+    cos_sim(zs(query_vec[sel][ok]), zs(c[ok]))
+  })
   ord <- order(-s)
   data.frame(class = names(s)[ord], similarity = unname(s[ord]),
              stringsAsFactors = FALSE)
@@ -88,6 +102,7 @@ match_query <- function(model, query_vec, available = NULL,
   sel <- intersect(intersect(model$features, names(query_vec)),
                    available %||% names(query_vec))
   v <- query_vec[sel]
+  sel <- sel[is.finite(v)]; v <- v[is.finite(v)]
   set.seed(seed)
   null_best <- vapply(seq_len(n_shuffle), function(i) {
     sc <- score_query(model, stats::setNames(sample(v), sel), sel)
