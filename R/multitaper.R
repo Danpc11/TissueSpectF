@@ -116,6 +116,34 @@ gls_multitaper <- function(y, terms, NW = 3, K = NULL, adaptive = TRUE) {
               "value(s). Route the signal through gls_observed() first.")
   }
   N <- terms$N
+
+  # EL ANCHO DE BANDA TIENE QUE CABER EN LA MALLA.
+  #
+  # Promediar K tapers con banda NW suaviza sobre 2*NW bins de frecuencia. En
+  # una malla corta eso se traga el pico: medido con N = 200 y un componente en
+  # k = 10, NW = 3 cubre de k = 7 a k = 13 y el pico cae al rango 2 mientras el
+  # periodograma lo deja en el 1. Con NW <= 2.5 vuelve al rango 1.
+  #
+  # La regla: el ancho no debe pasar de la quinta parte de las frecuencias
+  # disponibles, o el suavizado deja de ser suavizado y pasa a ser borrado.
+  # Lo que importa NO es el ancho frente al total de frecuencias, sino frente
+  # a la frecuencia de cada componente: un pico en k = 10 con ancho 6 queda
+  # cubierto de k = 7 a k = 13, el 60% de su propia frecuencia, mientras uno en
+  # k = 100 solo pierde el 6%. Las frecuencias BAJAS --los periodos largos, que
+  # es donde vive la estructura cromosomica-- son las vulnerables.
+  #
+  # Se reporta por frecuencia en `bandwidth_fraction` en vez de avisar una vez,
+  # porque el mismo espectro tiene frecuencias seguras y frecuencias borradas.
+  n_low <- sum(terms$k < 2 * NW * 2)
+  if (n_low > 0) {
+    tsf_warn("multitaper: con NW = ", NW, " el suavizado cubre ", 2 * NW,
+             " bins, asi que las ", n_low, " frecuencia(s) con k < ",
+             4 * NW, " quedan dentro de su propia banda y su potencia se ",
+             "mezcla con la de sus vecinas. Medido: un pico en k = 10 con ",
+             "NW = 3 cae del rango 1 al 2; con NW <= 2.5 vuelve al 1. Ver ",
+             "`bandwidth_fraction` en la salida.")
+  }
+
   V <- dpss_tapers(N, NW = NW, K = K)
   K <- ncol(V)
 
@@ -201,6 +229,10 @@ gls_multitaper <- function(y, terms, NW = 3, K = NULL, adaptive = TRUE) {
   cols$power <- pw
   cols$power_normalised <- pn
   cols$n_tapers <- rep(length(keep), m)
+  # Que fraccion de su propia frecuencia cubre el suavizado. Por encima de ~0.5
+  # la potencia de esa frecuencia esta mezclada con la de sus vecinas y su
+  # rango no significa lo que parece.
+  cols$bandwidth_fraction <- pmin(2 * NW / pmax(terms$k, 1), 1)
   cols$power_sd <- psd
   structure(cols, class = "data.frame", row.names = seq_len(m))
 }
