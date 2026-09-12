@@ -698,7 +698,11 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
   has_null <- "p_null_fwer" %in% colnames(cs) && any(is.finite(cs$p_null_fwer))
   n_min <- min(cs$n_samples_valid, na.rm = TRUE)
   reachable <- exp(-n_min) * nrow(cs)
-  if (reachable > plv_q) {
+  # The reachability argument is about the RAYLEIGH q. When the permutation-
+  # calibrated p_plv_null exists it is the gate (see below) and this branch
+  # would wrongly bypass it, labelling everything exploratory by prevalence.
+  rayleigh_is_gate <- !("p_plv_null" %in% colnames(cs) && any(is.finite(cs$p_plv_null)))
+  if (rayleigh_is_gate && reachable > plv_q) {
     tsf_warn("With ", n_min, " sample(s) and ", nrow(cs), " frequencies the ",
              "smallest reachable phase-alignment q is ", signif(reachable, 2),
              " > ", plv_q, ": perfect alignment could not pass. About ",
