@@ -123,6 +123,17 @@ stage_condition <- function(project, opt) {
   n_sig <- 0L
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id, need = "maxt")
+    # A dataset with ONE condition holding every sample (a tissue reference
+    # such as GTEx) has no null: a random draw of n from n is the observed set.
+    # Nothing can be confirmed, and preparing the per-sample matrices for 251
+    # samples costs a quarter of an hour to conclude that. Say it and move on.
+    if (length(inp$conditions) == 1L &&
+        sum(as.character(inp$dataset$samples$condition) == inp$conditions[1]) ==
+          nrow(inp$dataset$samples)) {
+      tsf_log(id, ": a single condition holding every sample; the consensus null ",
+              "cannot be drawn (n from n). Skipped -- this dataset is a reference, not a signature.")
+      next
+    }
     n_cores <- maxt_cores(inp$chrom_idx, opt)
     tsf_log(id, ": condition-level test (B = ",
             project$maxt$condition_B %||% project$maxt$B, ", ", n_cores, " core(s))")
@@ -306,7 +317,8 @@ stage_consensus <- function(project, opt) {
         min_period = project$consensus$min_period %||% "off",
         period_margin = project$consensus$period_margin %||% 2,
         margin_mode = project$consensus$margin_mode %||% "add",
-        min_period_biological = project$consensus$min_period_biological %||% 0)
+        min_period_biological = project$consensus$min_period_biological %||% 0,
+        max_period = project$consensus$max_period %||% "off")
       if (is.null(cs) || !nrow(cs)) {
         tsf_warn("  ", cond, ": every frequency fell below the period floor")
         next
@@ -421,7 +433,7 @@ stage_consensus <- function(project, opt) {
         tsf_log("  ", cond, ": ", n_conf, " confirmed and ",
                 nrow(sig) - n_conf, " exploratory component(s) of ", nrow(cs),
                 " frequencies | top: chr", sig$chr[1], " k", sig$k[1],
-                " period ", round(sig$period[1]), " genes, PLV ",
+                " period ", round(sig$period[1]), " ", if (identical(project$grid_axis, "bp")) "bins" else "genes", ", PLV ",
                 round(sig$plv[1], 2), ", prevalence ", round(sig$prevalence[1], 2),
                 " [", sig$signature_class[1], "]")
       } else {
@@ -478,7 +490,7 @@ stage_clean <- function(project, opt) {
                                     sprintf("components_%s_%s.tsv", branch, cond)))
         tsf_log("  ", cond, "/", branch, ": ", nrow(cp), " component(s) over ",
                 length(unique(cp$chr)), " chromosome(s), median period ",
-                round(stats::median(cp$period)), " genes")
+                round(stats::median(cp$period)), " ", if (identical(project$grid_axis, "bp")) "bins" else "genes")
         total <- total + nrow(cp)
       }
     }
