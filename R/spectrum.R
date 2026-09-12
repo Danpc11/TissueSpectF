@@ -140,10 +140,14 @@ condition_signals <- function(dataset, cond) {
 
   n_missing <- sum(!is.finite(mat))
   if (n_missing) {
-    tsf_warn("Condition ", cond, ": ", n_missing, " of ", length(mat),
-             " expression values are not finite. Those positions are dropped ",
-             "from each affected fit, never zero-filled. A large count means ",
-             "ingest admitted genes it should have filtered.")
+    frac <- n_missing / length(mat)
+    tsf_log("Condition ", cond, ": ", n_missing, " of ", length(mat), " (",
+            round(100 * frac, 1), "%) expression values are unmeasured and dropped ",
+            "from each affected fit, never zero-filled",
+            if (!is.null(dataset$genes) && any(grepl("^bin_", dataset$genes$gene_id)))
+              " (bp axis: cells below bin_min_coverage, declared at ingest)"
+            else if (frac > 0.1) ". More than 10%: ingest admitted genes it should have filtered"
+            else "", ".")
   }
 
   n_obs <- rowSums(is.finite(mat))
