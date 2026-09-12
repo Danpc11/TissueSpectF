@@ -313,6 +313,15 @@ low $k$ that passes `all` should also be checked against a smoothed version of
 the same chromosome's spectrum (is it a peak, or the top of a red slope?).
 `full` exists to reproduce results trees computed before this change.
 
+The floor has a counterpart. `--max-period` (positions; `consensus$max_period`)
+drops frequencies whose period exceeds it before any null is compared. A
+component at $k = 2$ or $3$ spans a third to a half of the chromosome: an arm,
+a compartment, a centromere-to-telomere gradient — a trend, not a periodicity,
+and exactly where an autocorrelated signal concentrates its power. On the bp
+axis with 100 kb bins, `scripts/run_differential.sh` uses a floor of 10 bins
+(1 Mb) and a ceiling of 300 bins (30 Mb) by default. Both are declared in the
+inputs digest; both are pre-specifications, not tuning knobs.
+
 ### 5.4 Condition-level test — the primary inference
 
 The per-sample criterion originally used — "significant in $\ge 90\%$ of
