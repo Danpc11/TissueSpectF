@@ -40,6 +40,8 @@
 #   --tissue LABEL      tissue label                  (liver)
 #   --vocab ID          vocabulary; must hold Control_external_study (liver_fibrosis)
 #   --bin-size N        bp bin width                  (100000)
+#   --min-period-bins N period floor, in bins           (10  -> 1 Mb at 100 kb bins)
+#   --max-period-bins N period ceiling, in bins         (300 -> 30 Mb; longer = trend, dropped)
 #   --workers N         cores for the library builder (4)
 #   --condition-b N     permutations for the condition test (config default)
 #   --maxt-b N          permutations for per-sample maxT     (config default)
@@ -61,6 +63,8 @@ TSF_GTEX_TISSUE="${TSF_GTEX_TISSUE:-LIVER}"
 TSF_TISSUE="${TSF_TISSUE:-liver}"
 TSF_VOCAB="${TSF_VOCAB:-liver_fibrosis}"
 TSF_BIN_SIZE="${TSF_BIN_SIZE:-100000}"
+MIN_PERIOD_BINS="${MIN_PERIOD_BINS:-10}"
+MAX_PERIOD_BINS="${MAX_PERIOD_BINS:-300}"
 N_WORKERS="${N_WORKERS:-4}"
 TSF_RUN_COMBINED="${TSF_RUN_COMBINED:-0}"
 ONLY=""; SKIP_TESTS=0; INCOMPLETE=""
@@ -75,6 +79,8 @@ while [ $# -gt 0 ]; do
     --tissue)      TSF_TISSUE="$2"; shift 2 ;;
     --vocab)       TSF_VOCAB="$2"; shift 2 ;;
     --bin-size)    TSF_BIN_SIZE="$2"; shift 2 ;;
+    --min-period-bins) MIN_PERIOD_BINS="$2"; shift 2 ;;
+    --max-period-bins) MAX_PERIOD_BINS="$2"; shift 2 ;;
     --workers)     N_WORKERS="$2"; shift 2 ;;
     --condition-b) export TSF_CONDITION_B="$2"; shift 2 ;;
     --maxt-b)      export TSF_MAXT_B="$2"; shift 2 ;;
@@ -121,8 +127,8 @@ GIT_HEAD=$(git rev-parse --short HEAD 2>/dev/null || echo nogit)
 GIT_DIRTY=$( [ -n "$(git status --porcelain 2>/dev/null)" ] && echo "+dirty" || echo "" )
 log "effective config digest $CONFIG_MD5 | code digest $CODE_MD5 (git $GIT_HEAD$GIT_DIRTY)"
 base_digest() {  # $1 = dataset list
-  printf 'datasets=%s|gtex=%s|tissue=%s|gse=%s|vocab=%s|axis=bp|bin=%s|config=%s|code=%s' \
-    "$1" "$TSF_GTEX_TISSUE" "$TSF_TISSUE" "$TSF_GSE" "$TSF_VOCAB" "$TSF_BIN_SIZE" "$CONFIG_MD5" "$CODE_MD5"
+  printf 'datasets=%s|gtex=%s|tissue=%s|gse=%s|vocab=%s|axis=bp|bin=%s|period=%s-%s|config=%s|code=%s' \
+    "$1" "$TSF_GTEX_TISSUE" "$TSF_TISSUE" "$TSF_GSE" "$TSF_VOCAB" "$TSF_BIN_SIZE" "$MIN_PERIOD_BINS" "$MAX_PERIOD_BINS" "$CONFIG_MD5" "$CODE_MD5"
 }
 # fresh ARTEFACT DIGEST : 0 if artefact exists and its .inputs equals DIGEST
 fresh() { [ -e "$1" ] && [ -f "$1.inputs" ] && [ "$(cat "$1.inputs")" = "$2" ]; }
@@ -274,8 +280,8 @@ run_library() {
     FORCE="--force"; log "[$NAME] stage outputs present without a completion marker: provenance unknown, recomputing (--force)"
   fi
   ensure "$TSF_RESULTS_DIR/.stages_done" "$STAGES_DIG" \
-    bash -c './tsf run $1 --from spectra --to compare --grid-axis bp --bin-size "$2" --gene-mask "$3" --stage-order F0,F1,F2,F3,F4 $5 && touch "$4"' _ \
-      "$DS_LIST" "$TSF_BIN_SIZE" "$MASK" "$TSF_RESULTS_DIR/.stages_done" "$FORCE"
+    bash -c './tsf run $1 --from spectra --to compare --grid-axis bp --bin-size "$2" --gene-mask "$3" --stage-order F0,F1,F2,F3,F4 --min-period-biological "$6" --max-period "$7" $5 && touch "$4"' _ \
+      "$DS_LIST" "$TSF_BIN_SIZE" "$MASK" "$TSF_RESULTS_DIR/.stages_done" "$FORCE" "$MIN_PERIOD_BINS" "$MAX_PERIOD_BINS"
   step "[$NAME] fingerprint library + out-of-cohort validation (profile stored in reference.rds)"
   local REF_DIG="$DIG|mask=$MASK_MD5|profile=$PROF_MD5"
   if stale "$TSF_RESULTS_DIR/reference/reference.rds" "$REF_DIG" || \
