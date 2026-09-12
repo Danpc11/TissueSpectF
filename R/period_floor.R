@@ -43,8 +43,29 @@ apply_period_floor <- function(long,
                                period_margin = 2,
                                margin_mode = "add",
                                min_period_biological = 0,
+                               max_period = "off",
                                quiet = FALSE) {
   if (is.null(long) || !nrow(long)) return(long)
+
+  # CEILING. The floor removes periods too short to be resolved; nothing
+  # removed periods too LONG to be periodicity. A component at k = 2 or 3 is a
+  # third or a half of the chromosome: a trend (arm, compartment, a
+  # centromere-to-telomere gradient), indistinguishable from red noise, and
+  # exactly where an autocorrelated signal puts its power. `max_period`, in
+  # grid positions (genes or bins), drops those rows before any null is
+  # compared. "off" keeps the historical behaviour.
+  max_period <- tolower(as.character(max_period))
+  if (!identical(max_period, "off")) {
+    mp <- suppressWarnings(as.numeric(max_period))
+    if (!is.finite(mp) || mp <= 0) tsf_abort("max_period must be 'off' or a positive number, got '", max_period, "'")
+    over <- is.finite(long$period) & long$period > mp
+    if (any(over) && !quiet) {
+      tsf_log(sprintf("  period ceiling for %s: %d of %d frequencies above %s positions (trend regime), dropped",
+                      label, sum(over), nrow(long), format(mp)))
+    }
+    long <- long[!over, , drop = FALSE]
+    if (!nrow(long)) return(long)
+  }
 
   min_period <- tolower(as.character(min_period))
   margin_mode <- tolower(as.character(margin_mode))
