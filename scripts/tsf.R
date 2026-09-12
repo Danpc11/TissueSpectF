@@ -98,6 +98,7 @@ Parameters (override config/project.R):
   --period-margin <f>   margin on the auto floor            (default 2)
   --margin-mode <s>     add | mult                          (default add)
   --min-period-biological <g>  flat floor in genes          (default 0)
+  --max-period <g>      off | <positions>  ceiling: longer periods are trends, dropped (default off)
   --n-null <n>          permutation draws for the consensus null
   --n-contrast <n>      label permutations for the condition contrast
   --period-bins         differential: collapse to ~40 common period bands.
@@ -189,6 +190,7 @@ OPTION_ALIASES <- c(
   marginmode = "margin_mode", margin_mode = "margin_mode",
   minperiodbiological = "min_period_biological",
   min_period_biological = "min_period_biological",
+  maxperiod = "max_period", max_period = "max_period",
   nnull = "n_null", n_null = "n_null",
   ncontrast = "n_contrast", n_contrast = "n_contrast",
   stageorder = "stage_order", stage_order = "stage_order",
@@ -312,6 +314,7 @@ apply_cli_overrides <- function(project, opt) {
   set(c("consensus", "margin_mode"), opt$margin_mode, as.character)
   set(c("consensus", "min_period_biological"),
       opt$min_period_biological, as.numeric)
+  set(c("consensus", "max_period"), opt$max_period, as.character)
   set(c("consensus", "n_boot"), opt$n_boot, as.integer)
   # --seed was in OPTION_ALIASES and wired to nothing: accepted without
   # complaint, then silently discarded. Every permutation and every bootstrap in
