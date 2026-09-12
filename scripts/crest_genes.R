@@ -31,10 +31,12 @@
 # p_maxperm = fraction of permutations whose largest contribution exceeds its
 # own. That is a family-wise p over the chromosome's genes, like maxT.
 #
-# Output: <out>/crest_genes_<condition>.tsv (all genes of all peaks), and
+# Output: <out>/crest_genes_<condition>.tsv (all positions of all peaks), and
 # <out>/crest_genes_<condition>_top.tsv (top N per peak), aggregated over the
-# datasets given (mean contribution, and in how many datasets the gene is in
-# the peak's top decile).
+# datasets given (mean contribution, and in how many datasets the position is
+# in the peak's top decile). On the bp axis a position is a BIN: the table
+# carries `member_genes`, and crest_genes_<condition>_members.tsv has one row
+# per member gene with an equal-share attribution of the bin's contribution.
 if (any(commandArgs(TRUE) %in% c("-h", "--help"))) {
   cat(paste(sub("^# ?", "", grep("^#", readLines(sub("^--file=", "",
     grep("^--file=", commandArgs(FALSE), value = TRUE)[1]))[-1], value = TRUE)), collapse = "\n"), "\n")
@@ -130,6 +132,41 @@ for (ds in datasets) {
 if (!length(rows)) tsf_abort("nothing computed: check --datasets/--condition and that the grid N matches the signature")
 all <- do.call(rbind, rows)
 
+# BP AXIS: the positions are bins, not genes. The contribution and the ablation
+# belong to the BIN (its aggregated value is what the spectrum saw); the genes
+# inside it are listed as members, with an equal share of the bin's
+# contribution as a first-pass attribution. A per-gene contribution proper
+# would need the un-binned expression, which the interim does not keep. The
+# members come from retained_genes.tsv (real ids, chr, bin index) of each
+# dataset the condition was computed on.
+is_bp <- any(grepl("^bin_", all$gene_id))
+members <- NULL
+if (is_bp) {
+  rg <- do.call(rbind, lapply(unique(all$dataset), function(ds) {
+    f <- file.path(project$interim_dir, ds, "retained_genes.tsv")
+    if (!file.exists(f)) return(NULL)
+    t <- read_tsv_tsf(f); t$dataset <- ds
+    t[, intersect(c("dataset", "gene_id", "entrez_id", "chr", "grid_index"), colnames(t))]
+  }))
+  if (!is.null(rg) && nrow(rg)) {
+    rg$bin_id <- paste0("bin_", rg$chr, "_", rg$grid_index)
+    all$bin_id <- all$gene_id
+    all$n_genes_in_bin <- vapply(seq_len(nrow(all)), function(i)
+      sum(rg$bin_id == all$bin_id[i] & rg$dataset == all$dataset[i]), integer(1))
+    members <- merge(all[, c("dataset", "condition", "chr", "N", "k", "period", "bin_id",
+                             "contribution", "share", "delta_power", "p_maxperm", "n_genes_in_bin")],
+                     rg[, c("dataset", "bin_id", "gene_id", "entrez_id")], by = c("dataset", "bin_id"))
+    members$gene_share_equal <- members$contribution / pmax(members$n_genes_in_bin, 1L)
+    names(members)[names(members) == "gene_id"] <- "member_gene_id"
+    all$member_genes <- vapply(seq_len(nrow(all)), function(i)
+      paste(rg$gene_id[rg$bin_id == all$bin_id[i] & rg$dataset == all$dataset[i]], collapse = ","), "")
+    all$gene_name <- paste0(all$chr, ":", format((as.numeric(sub(".*_", "", all$bin_id)) - 1) * 1e5, big.mark = ",", scientific = FALSE), "+")
+    tsf_log("bp axis: rows are BINS; ", nrow(members), " member gene rows written alongside (equal-share attribution)")
+  } else {
+    tsf_warn("bp axis but no retained_genes.tsv found: bins cannot be expanded to genes")
+  }
+}
+
 # aggregate across datasets
 key <- paste(all$chr, all$N, all$k, all$gene_id)
 all$top_decile <- ave(all$contribution, paste(all$dataset, all$chr, all$k),
@@ -147,6 +184,12 @@ names(pmin_agg)[5] <- "p_maxperm_min"
 agg <- merge(agg, pmin_agg, by = c("chr", "N", "k", "gene_id"))
 agg <- agg[order(agg$chr, agg$k, -agg$contribution), , drop = FALSE]
 
+if (is_bp && !is.null(members)) {
+  mg <- unique(all[, c("chr", "N", "k", "gene_id", "member_genes")])
+  agg <- merge(agg, mg, by = c("chr", "N", "k", "gene_id"), all.x = TRUE)
+  names(agg)[names(agg) == "gene_id"] <- "bin_id"
+  agg$gene_id <- agg$bin_id
+}
 top <- do.call(rbind, lapply(split(agg, paste(agg$chr, agg$k)), function(t) {
   t <- t[order(-t$contribution), , drop = FALSE]
   utils::head(t, top_n)
@@ -154,6 +197,7 @@ top <- do.call(rbind, lapply(split(agg, paste(agg$chr, agg$k)), function(t) {
 rownames(top) <- NULL
 
 write_tsv_tsf(all, file.path(out_dir, sprintf("crest_genes_%s_by_dataset.tsv", condition)))
+if (!is.null(members)) write_tsv_tsf(members, file.path(out_dir, sprintf("crest_genes_%s_members.tsv", condition)))
 write_tsv_tsf(agg, file.path(out_dir, sprintf("crest_genes_%s.tsv", condition)))
 write_tsv_tsf(top, file.path(out_dir, sprintf("crest_genes_%s_top.tsv", condition)))
 tsf_log(nrow(agg), " gene x peak rows, ", nrow(top), " in the top table -> ", out_dir)
