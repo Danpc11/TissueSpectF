@@ -263,12 +263,20 @@ verifies afterwards that the removal actually happened rather than assuming it.
 | `TSF_LIBRARY_DIR` | condition library, for the peak-gene and sonification scripts | `$TSF_RESULTS_DIR/library_domains` |
 | `TSF_MAXT_B` | permutations for the per-sample maxT test | as `config/project.R` says |
 | `TSF_CONDITION_B` | permutations for the condition-level test | as `config/project.R` says |
+| `TSF_QUANTILE_CUT` | "stands out" quantile for prevalence, in `prevalence_from_rank()` | as `config/project.R` says (`0.95`) |
 | `TSF_APP_MAX_UPLOAD_MB` | upload cap in the app | 512 |
 
 `TSF_MAXT_B` and `TSF_CONDITION_B` exist so a smoke run finishes: they lower the
 permutation count, which raises the floor on the smallest reportable p-value to
 `1/(B+1)`. Use them for a self-check or a Colab demo, never for a result — the
 Colab notebook and CI both set them for exactly that reason and say so.
+
+`TSF_QUANTILE_CUT` is different: it is a pre-specification (THEORY.md §5.5d),
+not a shortcut, so changing it changes what counts as a result, not how long
+getting one takes. Set it before any run whose output will be reported, never
+after seeing which components survive; a sweep across declared values (e.g.
+to check how much the signature count depends on the cut) must report every
+value run, not only the one that found something.
 
 ## Common format
 
