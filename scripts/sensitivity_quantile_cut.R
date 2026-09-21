@@ -23,6 +23,25 @@
 # to run_differential.sh's --results-dir plus the library name (here: only
 # "combined", since that is what --only combined built for the three runs).
 
+# --help prints this file's own header comment and exits with 0. Before this
+# guard, --help was taken as the VALUE of the previous flag, or the script ran
+# with an empty configuration. A script that cannot explain itself is a script
+# nobody uses correctly (tests/test_labels.R: "todo script ejecutable responde
+# a --help y sale con 0").
+if (any(commandArgs(TRUE) %in% c("-h", "--help"))) {
+  self <- sub("^--file=", "",
+              grep("^--file=", commandArgs(FALSE), value = TRUE)[1])
+  if (!is.na(self) && file.exists(self)) {
+    hdr <- readLines(self, warn = FALSE)
+    hdr <- hdr[!grepl("^#!", hdr)]                    # drop the shebang
+    stop_at <- which(!grepl("^#", hdr) & nzchar(hdr))[1]
+    if (is.na(stop_at)) stop_at <- length(hdr) + 1L
+    hdr <- hdr[seq_len(stop_at - 1L)]
+    cat(paste(sub("^#[ ]?", "", hdr[grepl("^#", hdr)]), collapse = "\n"), "\n")
+  }
+  quit(save = "no", status = 0)
+}
+
 args <- commandArgs(trailingOnly = TRUE)
 out_dir <- "."
 pairs <- list()
