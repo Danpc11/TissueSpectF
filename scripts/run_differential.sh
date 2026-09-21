@@ -45,6 +45,7 @@
 #   --workers N         cores for the library builder (4)
 #   --condition-b N     permutations for the condition test (config default)
 #   --maxt-b N          permutations for per-sample maxT     (config default)
+#   --quantile-cut Q    "stands out" quantile for prevalence  (config default, 0.95)
 #   --combined          also build the combined library
 #   --only LIB          primary | sensitivity_geo | combined: build just that one
 #   --skip-tests        do not run `make test` in step 0 (you ran it by hand; logged)
@@ -84,6 +85,7 @@ while [ $# -gt 0 ]; do
     --workers)     N_WORKERS="$2"; shift 2 ;;
     --condition-b) export TSF_CONDITION_B="$2"; shift 2 ;;
     --maxt-b)      export TSF_MAXT_B="$2"; shift 2 ;;
+    --quantile-cut) export TSF_QUANTILE_CUT="$2"; shift 2 ;;
     --combined)    TSF_RUN_COMBINED=1; shift ;;
     --only)        ONLY="$2"; shift 2 ;;
     --skip-tests)  SKIP_TESTS=1; shift ;;
@@ -270,7 +272,7 @@ run_library() {
   Rscript scripts/apply_reference_profile.R --datasets "$COHORTS" --profile "$PROFILE"
 
   step "[$NAME] spectra ... compare on the deviation (null = all, bp axis)"
-  local STAGES_DIG="$DIG|mask=$MASK_MD5|profile=$PROF_MD5|B=${TSF_CONDITION_B:-cfg}/${TSF_MAXT_B:-cfg}"
+  local STAGES_DIG="$DIG|mask=$MASK_MD5|profile=$PROF_MD5|B=${TSF_CONDITION_B:-cfg}/${TSF_MAXT_B:-cfg}|q=${TSF_QUANTILE_CUT:-cfg}"
   local FORCE=""
   if stale "$TSF_RESULTS_DIR/.stages_done" "$STAGES_DIG"; then
     FORCE="--force"; log "[$NAME] methodological inputs changed since the last run: stages will recompute (--force)"
