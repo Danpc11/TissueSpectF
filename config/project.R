@@ -183,7 +183,7 @@ list(
   # this is not the spectrum of the mean profile.
   consensus = list(
     n_boot         = 200L,
-    quantile_cut   = as.numeric(Sys.getenv("TSF_QUANTILE_CUT", "0.95")),   # "stands out" cut when no maxT is available
+    quantile_cut   = 0.95,   # "stands out" cut when no maxT is available
     min_prevalence = 0.5,
     plv_q          = 0.05,   # BH-adjusted Rayleigh p for phase alignment
     # Draws of n random samples, ignoring condition, whose best consensus score
@@ -196,7 +196,14 @@ list(
     # tumour-normal pair). When set, the null draws whole blocks. NULL treats
     # samples as independent, which is only right when they are.
     permutation_block = NULL,
-    max_components = 50L
+    max_components = 50L,
+    # Prevalence tiers for a condition's OWN invariants (condition_invariants_
+    # <cond>.tsv): fraction of that condition's own samples where a component
+    # stands out (prevalence_rank), with no requirement on phase or power --
+    # a different, looser question from min_prevalence/plv_q above, which
+    # gate the confirmed signature. See classify_condition_invariants() in
+    # consensus.R.
+    condition_invariant_thresholds = c(0.60, 0.80, 0.90)
   ),
 
   # CLEAN decomposition: greedy deflation with an extended-BIC stopping rule.
