@@ -762,3 +762,247 @@ consensus_signature <- function(cs, max_components = 50L, min_prevalence = 0.5,
   hit <- hit[order(-hit$consensus_score_ci_lower), ]
   utils::head(hit, max_components)
 }
+
+#' Classify a condition's components by how common they are WITHIN that
+#' condition alone, using nothing but per-sample prevalence.
+#'
+#' A different question from consensus_signature(): that one asks whether a
+#' component is a CONFIRMED signature (prevalent AND phase-locked AND beats a
+#' permutation null against the whole dataset). This one asks only "in what
+#' fraction of this condition's own samples does the frequency stand out",
+#' using `prevalence` -- already computed condition-blind, per sample, per
+#' chromosome, against that sample's own spectrum alone
+#' (see prevalence_from_rank()) -- with no requirement on phase or power.
+#'
+#' `prevalence` is deliberately used here rather than `prevalence_rank`: it
+#' already takes the best evidence available per sample -- `prevalence_maxt`
+#' (the fraction of samples where the peak was significant under the maxT
+#' permutation test, when the maxt stage was run) when it exists, and falls
+#' back to `prevalence_rank` (a same-sample top-quantile heuristic, no
+#' significance test) only when it does not. So the tiers below are backed by
+#' real per-sample significance whenever maxT ran, without any change here.
+#'
+#' Three nested tiers, from `thresholds` (default 0.60/0.80/0.90). Nested by
+#' construction: prevalence >= 0.90 implies >= 0.80 implies >= 0.60, so a
+#' component is labelled by the HIGHEST threshold it clears.
+#'
+#' @param cs the consensus_spectrum() table for ONE condition (needs the
+#'   `prevalence` column it already produces)
+#' @param thresholds increasing prevalence cutoffs (default 0.60, 0.80, 0.90)
+#' @return `cs` with one new logical column per threshold
+#'   (`condition_invariant_60`, `_80`, `_90`) and `condition_invariant_class`,
+#'   the highest tier label reached ("60", "80", "90") or "none".
+classify_condition_invariants <- function(cs, thresholds = c(0.60, 0.80, 0.90)) {
+  if (is.null(cs) || !nrow(cs)) return(cs)
+  if (!"prevalence" %in% colnames(cs)) {
+    tsf_abort("classify_condition_invariants needs a prevalence column ",
+              "(from consensus_spectrum())")
+  }
+  thresholds <- sort(as.numeric(thresholds))
+  labels <- as.character(round(thresholds * 100))
+  tier_cols <- paste0("condition_invariant_", labels)
+  for (i in seq_along(thresholds)) {
+    cs[[tier_cols[i]]] <-
+      is.finite(cs$prevalence) & cs$prevalence >= thresholds[i]
+  }
+  best <- rep("none", nrow(cs))
+  for (i in seq_along(thresholds)) {
+    best[cs[[tier_cols[i]]] %in% TRUE] <- labels[i]
+  }
+  cs$condition_invariant_class <- best
+  cs
+}
+
+#' Per-sample "stands out" flags for a WHOLE dataset, computed ONCE on the
+#' pooled per-sample spectra -- every condition's samples together -- before
+#' any split by condition.
+#'
+#' prevalence_from_rank() (and the maxT flag below) were already
+#' condition-blind in their MATH: each sample's own threshold depends only on
+#' that sample's own spectrum, never on which other samples happen to be in
+#' the table. But calling them once per condition-filtered subset, the way
+#' stage_consensus()'s per-condition loop calls consensus_spectrum(), still
+#' means the code reads a condition label before anything is decided. This
+#' function makes that impossible: it takes the pool assembled BEFORE the
+#' per-condition loop begins, and condition is not a parameter here -- the
+#' pool does not carry one that this function looks at. A caller groups the
+#' result by condition afterwards, in condition_invariants_from_pool().
+#'
+#' @param pool per-sample spectra across every condition of a dataset (chr,
+#'   N, k, sample, power[, power_normalised], phase)
+#' @param maxt optional POOLED per-sample maxT table (every condition's,
+#'   already row-bound -- the same table stage_consensus() builds for the
+#'   null, reused here)
+#' @param quantile_cut passed to prevalence_from_rank()
+#' @param alpha the maxT significance level (only used when `maxt` is given)
+#' @return one row per (chr, N, k, sample): `stands_out` (maxT-based when
+#'   `maxt` is supplied and covers that row, rank-based otherwise), plus
+#'   `stands_out_rank` and `stands_out_maxt` kept separately for audit, and
+#'   `pnorm`/`phase` carried through so a caller can compute median power and
+#'   phase-locking WITHIN a group (e.g. a condition) without re-reading the
+#'   spectra -- see condition_invariants_from_pool().
+pooled_stands_out <- function(pool, maxt = NULL, quantile_cut = 0.95, alpha = 0.05) {
+  needed <- c("chr", "N", "k", "sample", "power", "phase")
+  missing <- setdiff(needed, colnames(pool))
+  if (length(missing)) tsf_abort("pooled_stands_out needs columns: ",
+                                 paste(missing, collapse = ", "))
+  d <- pool
+  if ("power_normalised" %in% colnames(d)) {
+    d$pnorm <- d$power_normalised
+  } else {
+    tot <- stats::ave(d$power, paste(d$sample, d$chr), FUN = function(x) sum(x, na.rm = TRUE))
+    d$pnorm <- d$power / pmax(tot, .Machine$double.eps)
+  }
+  d$stands_out_rank <- prevalence_from_rank(d$pnorm, d$sample, d$chr, quantile_cut)
+  has_maxt <- !is.null(maxt) && "p_empirical_maxT" %in% colnames(maxt)
+  d$stands_out_maxt <- if (has_maxt) {
+    key_d <- paste(d$chr, d$N, d$k, d$sample)
+    key_m <- paste(maxt$chr, maxt$N, maxt$k, maxt$sample)
+    sig <- maxt$p_empirical_maxT <= alpha
+    out <- sig[match(key_d, key_m)]
+    out[is.na(out)] <- FALSE
+    out
+  } else rep(NA, nrow(d))
+  d$stands_out <- if (has_maxt) d$stands_out_maxt else d$stands_out_rank
+  d[, c("chr", "N", "k", "sample", "pnorm", "phase",
+        "stands_out", "stands_out_rank", "stands_out_maxt")]
+}
+
+#' Condition-own invariant components, from per-sample "stands out" flags
+#' that were computed on the whole pool before any condition was consulted
+#' (see pooled_stands_out()). Condition enters ONLY here, as a filter on
+#' flags that already exist -- never inside pooled_stands_out().
+#'
+#' A component is not just "present or absent": `prevalence` alone would call
+#' two components the same just because they share (chr, N, k), even if their
+#' phase and power look nothing alike across this condition's samples. So
+#' alongside prevalence, this reports -- WITHIN the condition's own samples,
+#' no other data, no permutation, no bootstrap -- the same two axes
+#' consensus_spectrum() reports for the whole-dataset question:
+#'   median_power_normalised  median of pnorm across the condition's samples
+#'   plv                      phase_locking()'s |mean(exp(i*phase))|, 1 when
+#'                            every sample puts the crest in the same place
+#' These two are computed here, deterministically, from this call alone.
+#' Confidence intervals (bootstrap) and a null p-value (permutation against
+#' the whole pool) are NOT computed here -- see condition_invariant_bootstrap()
+#' and stage_consensus()'s use of null_consensus_distribution(), which attach
+#' them afterwards as DESCRIPTIVE columns. None of it gates the tier: no
+#' threshold on power, phase, the CI or the null p-value is applied here,
+#' because none was specified for this tier system -- inventing one would be
+#' a filter nobody asked for. `prevalence` alone decides the 60/80/90% tier;
+#' everything else rides along as evidence to judge each component by.
+#'
+#' @param pooled the table pooled_stands_out() returns
+#' @param condition_samples sample ids belonging to ONE condition
+#' @param thresholds forwarded to classify_condition_invariants()
+#' @return one row per (chr, N, k) reached by this condition's samples, with
+#'   `prevalence`, `n_samples_condition`, `median_power_normalised`, `plv`,
+#'   `consensus_score_rank` (their product, so null_component_pvalues() can
+#'   be reused unchanged), and the tier columns from
+#'   classify_condition_invariants() -- restricted to rows that clear at
+#'   least the lowest threshold (NULL if none do).
+condition_invariants_from_pool <- function(pooled, condition_samples,
+                                           thresholds = c(0.60, 0.80, 0.90)) {
+  sub <- pooled[pooled$sample %in% condition_samples & is.finite(pooled$stands_out), ,
+               drop = FALSE]
+  if (!nrow(sub)) return(NULL)
+  key <- paste(sub$chr, sub$N, sub$k, sep = "|")
+  groups <- split(seq_len(nrow(sub)), key)
+  rows <- lapply(names(groups), function(g) {
+    i <- groups[[g]]
+    parts <- strsplit(g, "|", fixed = TRUE)[[1]]
+    pl <- phase_locking(sub$phase[i])
+    med_p <- stats::median(sub$pnorm[i], na.rm = TRUE)
+    prev <- mean(sub$stands_out[i])
+    data.frame(chr = parts[1], N = as.integer(parts[2]), k = as.integer(parts[3]),
+               period = as.integer(parts[2]) / as.integer(parts[3]),
+               n_samples_condition = length(unique(sub$sample[i])),
+               prevalence = prev,
+               median_power_normalised = med_p,
+               plv = unname(pl[["plv"]]),
+               plv_rayleigh_p = unname(pl[["rayleigh_p"]]),
+               # Same product as consensus_spectrum()'s consensus_score_rank
+               # (median power x prevalence x PLV), kept under that name so
+               # null_component_pvalues() -- built for that column -- can be
+               # reused unchanged to attach a null p-value to these rows too.
+               consensus_score_rank = med_p * prev * unname(pl[["plv"]]),
+               stringsAsFactors = FALSE)
+  })
+  cs <- do.call(rbind, rows)
+  cs <- classify_condition_invariants(cs, thresholds)
+  cs <- cs[cs$condition_invariant_class != "none", , drop = FALSE]
+  if (!nrow(cs)) return(NULL)
+  cs[order(-cs$prevalence), ]
+}
+
+#' Bootstrap confidence intervals for a condition's own invariants, by
+#' resampling THAT CONDITION'S OWN samples (with replacement). Descriptive
+#' only -- it does not gate condition_invariant_class, which is already
+#' decided by the time this runs. Answers a different question from the null
+#' p-value: not "is this more than chance", but "if a slightly different set
+#' of patients had made up this condition, would prevalence/power/PLV still
+#' look like this" -- i.e. how much of the estimate is this specific set of
+#' patients versus the condition in general.
+#'
+#' Only bootstraps the (chr, N, k) rows already in `cond_inv` -- the
+#' components that already cleared a prevalence tier -- not every frequency
+#' the condition was ever tested at, which is what made the legacy route
+#' expensive.
+#'
+#' @param pooled the table pooled_stands_out() returns
+#' @param condition_samples sample ids belonging to ONE condition
+#' @param cond_inv the table condition_invariants_from_pool() returned for
+#'   this same condition
+#' @param n_boot resamples (default 200, the same default consensus_spectrum()
+#'   uses)
+#' @param seed for reproducibility
+#' @return `cond_inv` with `prevalence_ci_lower/upper`,
+#'   `median_power_ci_lower/upper`, `plv_ci_lower/upper` and
+#'   `consensus_score_ci_lower/upper` added. The last is needed by
+#'   null_component_pvalues()'s `beats_global_null` (consensus_spectrum()'s
+#'   own signature-selection column), so call this BEFORE
+#'   null_component_pvalues(), not after.
+condition_invariant_bootstrap <- function(pooled, condition_samples, cond_inv,
+                                          n_boot = 200L, seed = 42L) {
+  if (is.null(cond_inv) || !nrow(cond_inv)) return(cond_inv)
+  sub <- pooled[pooled$sample %in% condition_samples & is.finite(pooled$stands_out), ,
+               drop = FALSE]
+  key <- paste(sub$chr, sub$N, sub$k, sep = "|")
+  want <- paste(cond_inv$chr, cond_inv$N, cond_inv$k, sep = "|")
+
+  set.seed(seed)
+  bounds <- lapply(want, function(k0) {
+    i <- which(key == k0)
+    if (!length(i)) {
+      return(c(prev_lo = NA_real_, prev_hi = NA_real_, power_lo = NA_real_,
+               power_hi = NA_real_, plv_lo = NA_real_, plv_hi = NA_real_,
+               score_lo = NA_real_, score_hi = NA_real_))
+    }
+    samples_here <- unique(sub$sample[i])
+    draws <- vapply(seq_len(n_boot), function(b) {
+      pick <- sample(samples_here, replace = TRUE)
+      idx <- unlist(lapply(pick, function(s) i[sub$sample[i] == s]), use.names = FALSE)
+      if (!length(idx)) return(c(NA_real_, NA_real_, NA_real_, NA_real_))
+      prev_b <- mean(sub$stands_out[idx], na.rm = TRUE)
+      pow_b <- stats::median(sub$pnorm[idx], na.rm = TRUE)
+      plv_b <- Mod(mean(exp(1i * sub$phase[idx])))
+      c(prev_b, pow_b, plv_b, prev_b * pow_b * plv_b)
+    }, numeric(4))
+    qs <- function(v) stats::quantile(v, c(0.025, 0.975), na.rm = TRUE)
+    q1 <- qs(draws[1, ]); q2 <- qs(draws[2, ]); q3 <- qs(draws[3, ]); q4 <- qs(draws[4, ])
+    c(prev_lo = unname(q1[1]), prev_hi = unname(q1[2]),
+      power_lo = unname(q2[1]), power_hi = unname(q2[2]),
+      plv_lo = unname(q3[1]), plv_hi = unname(q3[2]),
+      score_lo = unname(q4[1]), score_hi = unname(q4[2]))
+  })
+  bmat <- do.call(rbind, bounds)
+  cond_inv$prevalence_ci_lower <- bmat[, "prev_lo"]
+  cond_inv$prevalence_ci_upper <- bmat[, "prev_hi"]
+  cond_inv$median_power_ci_lower <- bmat[, "power_lo"]
+  cond_inv$median_power_ci_upper <- bmat[, "power_hi"]
+  cond_inv$plv_ci_lower <- bmat[, "plv_lo"]
+  cond_inv$plv_ci_upper <- bmat[, "plv_hi"]
+  cond_inv$consensus_score_ci_lower <- bmat[, "score_lo"]
+  cond_inv$consensus_score_ci_upper <- bmat[, "score_hi"]
+  cond_inv
+}
