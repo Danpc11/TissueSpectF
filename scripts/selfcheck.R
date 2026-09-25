@@ -133,7 +133,15 @@ run_selfcheck <- function() {
   project$maxt$primary_scheme <- "full"
 
   opt <- list(datasets = c("GSE135251", "GSE162694"), cond = NULL,
-              branch = NULL, branches = "average", force = TRUE)
+              branch = NULL, branches = "average", force = TRUE,
+              # The block below ("what the consensus must and must not
+              # confirm") checks signature_<cond>.tsv and its
+              # confirmed/exploratory classification -- output only the
+              # legacy consensus_spectrum()/consensus_signature() route
+              # writes, off by default since condition_invariants_<cond>.tsv
+              # became the default. Asking for it explicitly here is what
+              # keeps this specific check exercising what it always tested.
+              legacy_signature = TRUE)
   project$fingerprint$n_masks <- 3L            # keep the self-check quick
   project$fingerprint$max_queries_per_mask <- 6L
   project$consensus$n_null <- 20L
