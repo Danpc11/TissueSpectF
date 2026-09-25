@@ -281,8 +281,15 @@ run_library() {
     # markers existed. Their provenance is unknown; tsf would reuse them.
     FORCE="--force"; log "[$NAME] stage outputs present without a completion marker: provenance unknown, recomputing (--force)"
   fi
+  # --legacy-signature: consensus_spectrum_<cond>.tsv and signature_<cond>.tsv
+  # -- the bootstrap+permutation-null "confirmed vs exploratory" classification
+  # -- are off by default now that condition_invariants_<cond>.tsv (60/80/90%
+  # tiers within one condition) is the default output of stage_consensus().
+  # build_final_condition_spectra.R, called right below, still reads the
+  # legacy files to build condition_library/'s cross-cohort shared_robust/
+  # core_invariant library, so this run has to ask for them explicitly.
   ensure "$TSF_RESULTS_DIR/.stages_done" "$STAGES_DIG" \
-    bash -c './tsf run $1 --from spectra --to compare --grid-axis bp --bin-size "$2" --gene-mask "$3" --stage-order F0,F1,F2,F3,F4 --min-period-biological "$6" --max-period "$7" $5 && touch "$4"' _ \
+    bash -c './tsf run $1 --from spectra --to compare --grid-axis bp --bin-size "$2" --gene-mask "$3" --stage-order F0,F1,F2,F3,F4 --min-period-biological "$6" --max-period "$7" --legacy-signature $5 && touch "$4"' _ \
       "$DS_LIST" "$TSF_BIN_SIZE" "$MASK" "$TSF_RESULTS_DIR/.stages_done" "$FORCE" "$MIN_PERIOD_BINS" "$MAX_PERIOD_BINS"
   step "[$NAME] fingerprint library + out-of-cohort validation (profile stored in reference.rds)"
   local REF_DIG="$DIG|mask=$MASK_MD5|profile=$PROF_MD5"
