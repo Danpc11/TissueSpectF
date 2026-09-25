@@ -221,6 +221,7 @@ write_null_cache <- function(path, metadata, result) {
 
 stage_consensus <- function(project, opt) {
   n_sig <- 0L
+  n_cond_inv_90 <- 0L
   for (id in stage_datasets(opt)) {
     inp <- tsf_stage_inputs(project, id, need = "maxt")
     n_cores <- local_workers(opt,
@@ -235,16 +236,48 @@ stage_consensus <- function(project, opt) {
     pool_parts <- lapply(pool_paths, read_tsv_tsf, required = FALSE)
     pool_parts <- pool_parts[!vapply(pool_parts, is.null, logical(1))]
     pool <- if (length(pool_parts)) do.call(rbind, pool_parts) else NULL
+
+    # Condition-own invariants (60/80/90% tiers): the per-sample "stands out"
+    # decision is made HERE, on the pool of every sample in the dataset,
+    # before the per-condition loop below reads any condition label. This is
+    # stricter than "the math happens not to depend on it" -- the CODE itself
+    # does not consult condition until pooled_flags is grouped by it, inside
+    # the loop. See pooled_stands_out() / condition_invariants_from_pool() in
+    # consensus.R.
+    pooled_maxt_flags <- tryCatch(
+      do.call(rbind, Filter(Negate(is.null), inp$maxt)), error = function(e) NULL)
+    pooled_flags <- if (!is.null(pool)) pooled_stands_out(
+      pool, maxt = pooled_maxt_flags,
+      quantile_cut = project$consensus$quantile_cut %||% 0.95,
+      alpha = project$maxt$alpha %||% 0.05) else NULL
+
     # The null depends only on how many samples are drawn, so conditions of the
     # same size share it. Without this the same permutation set is recomputed
     # once per condition, which dominates the stage's cost on real data.
     null_cache <- list()
-    prepared_null <- NULL
+    # Built once, pool-wide, before any condition is read -- condition-blind
+    # in its construction, exactly like pooled_flags above. Used two ways
+    # below: (a) by default, to attach a DESCRIPTIVE null p-value to each
+    # condition's own invariants (small family: only the (chr, N, k) rows
+    # already in that condition's tier table, not every frequency), and
+    # (b) by --legacy-signature, to test the full per-condition
+    # consensus_spectrum() family. Building it once here means the legacy
+    # block's own "if (is.null(prepared_null))" step below finds it already
+    # done and does not repeat the work.
+    prepared_null <- if (!is.null(pool)) prepare_null_consensus_matrices(
+      pool, quantile_cut = project$consensus$quantile_cut %||% 0.95,
+      maxt = pooled_maxt_flags, alpha = project$maxt$alpha %||% 0.05) else NULL
+    if (!is.null(prepared_null)) {
+      tsf_log("  prepared null matrices: ",
+              nrow(prepared_null$pnorm), " frequencies x ",
+              ncol(prepared_null$pnorm), " samples")
+    }
     # sample -> condition, accumulated across the loop, for the contrast below.
     cond_groups <- character(0)
     # Samples are not always independent. When the metadata names a blocking
-    # variable, the null draws whole blocks so its dependence structure matches
-    # the data's.
+    # variable, the null draws whole blocks so its dependence structure
+    # matches the data's -- for the default descriptive null below as much as
+    # for --legacy-signature's.
     block_col <- project$consensus$permutation_block %||% NULL
     blocks <- NULL
     if (!is.null(block_col)) {
@@ -265,6 +298,89 @@ stage_consensus <- function(project, opt) {
         tsf_warn("  ", cond, ": no per-sample spectra; run the spectra stage")
         next
       }
+      these <- unique(as.character(sp$sample))
+      cond_groups[these] <- cond
+      n_here <- length(these)
+      # The FULL family this condition actually tests -- every (chr, N, k)
+      # this condition's own samples have a row for in pooled_flags, before
+      # any prevalence tier is applied. Used as retained_keys for the null
+      # below: restricting to only the tier WINNERS would let each
+      # permutation's maximum compete against a family shrunk by the very
+      # outcome being tested, inflating p_null_fwer -- the same "filter after
+      # the fact" mistake apply_period_floor()'s own comment warns about.
+      # It also buys no speed: null_matrix_draw() computes every key's score
+      # on every draw regardless of retained_keys, which only trims the
+      # output afterwards.
+      tested_keys_here <- if (!is.null(pooled_flags)) unique(paste(
+        pooled_flags$chr[pooled_flags$sample %in% these],
+        pooled_flags$N[pooled_flags$sample %in% these],
+        pooled_flags$k[pooled_flags$sample %in% these], sep = "|")) else character(0)
+
+      # Condition-own invariants (60/80/90% prevalence tiers): the DEFAULT,
+      # primary output of this stage. Condition enters here, and only here:
+      # `these` (this condition's own sample ids) filters `pooled_flags`,
+      # whose "stands out" decisions -- and the phase/power carried alongside
+      # them -- were already computed above, on the whole pool, before this
+      # loop started. A different question from the legacy signature below,
+      # which additionally requires beating a permutation null against the
+      # whole dataset. See pooled_stands_out() / condition_invariants_from_pool()
+      # in consensus.R.
+      if (!is.null(pooled_flags)) {
+        cond_inv <- condition_invariants_from_pool(
+          pooled_flags, these,
+          thresholds = project$consensus$condition_invariant_thresholds %||%
+            c(0.60, 0.80, 0.90))
+
+        # Descriptive-only additions: a bootstrap CI (how much does
+        # resampling THIS condition's own patients move
+        # prevalence/power/PLV/score?) and a null p-value (is the score more
+        # than a random group of this size from the whole pool would give?).
+        # Neither changes condition_invariant_class, already decided above.
+        # Bootstrap runs FIRST: null_component_pvalues()'s beats_global_null
+        # needs the consensus_score_ci_lower column the bootstrap produces --
+        # see the two functions' docs in consensus.R. retained_keys is
+        # tested_keys_here, the FULL family this condition was tested at
+        # (see its definition above) -- not just the tier winners in
+        # cond_inv, which would bias p_null_fwer.
+        if (!is.null(cond_inv) && nrow(cond_inv) && !is.null(prepared_null)) {
+          cond_inv <- condition_invariant_bootstrap(
+            pooled_flags, these, cond_inv,
+            n_boot = project$consensus$n_boot %||% 500L,
+            seed = project$maxt$seed %||% 42L)
+          nd <- null_consensus_distribution(
+            pool, n_here, n_null = project$consensus$n_null %||% 50L,
+            seed = project$maxt$seed, quantile_cut = project$consensus$quantile_cut %||% 0.95,
+            blocks = blocks, n_cores = n_cores, engine = "matrix",
+            prepared = prepared_null, retained_keys = tested_keys_here)
+          cond_inv <- null_component_pvalues(
+            cond_inv, nd, null_q = project$consensus$null_q %||% 0.05)
+        }
+
+        if (!is.null(cond_inv) && nrow(cond_inv)) {
+          write_tsv_tsf(cond_inv, file.path(inp$paths$base, "consensus",
+                                            sprintf("condition_invariants_%s.tsv", cond)))
+          n90 <- sum(cond_inv$condition_invariant_class == "90")
+          n_cond_inv_90 <- n_cond_inv_90 + n90
+          tsf_log("  ", cond, ": ", n90,
+                  " component(s) at >=90% of samples, ",
+                  sum(cond_inv$condition_invariant_class %in% c("80", "90")),
+                  " at >=80%, ", nrow(cond_inv), " at >=60% (of ",
+                  length(tested_keys_here), " frequencies tested)")
+        } else {
+          tsf_log("  ", cond, ": no component reaches the 60% condition-own prevalence tier")
+        }
+      }
+
+      # --- legacy consensus signature (opt-in: --legacy-signature) ----------
+      # Bootstrap (n_boot resamples) + permutation null (n_null draws against
+      # the whole dataset) -> "confirmed vs exploratory" classification. This
+      # is what build_final_condition_spectra.R needs to build the
+      # cross-condition shared_robust/core_invariant library; the
+      # condition-own tiers above use none of it. Off by default: it is the
+      # expensive part of this stage, and the default result above does not
+      # need it.
+      if (!isTRUE(opt$legacy_signature)) next
+
       cs <- consensus_spectrum(sp, maxt = inp$maxt[[cond]],
                                n_boot = project$consensus$n_boot %||% 500L,
                                alpha = project$maxt$alpha,
@@ -339,10 +455,6 @@ stage_consensus <- function(project, opt) {
           draws_for_bh(nrow(cs)), n_b))
       }
 
-      these <- unique(as.character(sp$sample))
-      cond_groups[these] <- cond
-
-      n_here <- length(unique(sp$sample))
       # Keyed on sample count AND the retained family: two conditions with the
       # same n can now have different families, because coverage -- and so the
       # auto period floor -- is per condition. Sharing a null between them
@@ -469,7 +581,13 @@ stage_consensus <- function(project, opt) {
               " invariant frequency(ies)")
     }
   }
-  sprintf("%d confirmed signature component(s) across conditions", n_sig)
+  if (isTRUE(opt$legacy_signature)) {
+    sprintf("%d condition-own component(s) at >=90%%, %d confirmed legacy signature component(s) across conditions",
+            n_cond_inv_90, n_sig)
+  } else {
+    sprintf("%d condition-own component(s) at >=90%% of samples across conditions (--legacy-signature not run)",
+            n_cond_inv_90)
+  }
 }
 
 # --- CLEAN decomposition -----------------------------------------------------
