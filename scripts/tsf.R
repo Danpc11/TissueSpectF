@@ -106,6 +106,14 @@ Parameters (override config/project.R):
                         only lever, so this is a power decision.
   --stage-order <a,b>   ordered levels for the differential trend test
   --n-boot <n>          bootstrap resamples of the consensus score
+  --legacy-signature    also run the bootstrap + permutation-null consensus
+                        signature (consensus_spectrum_<cond>.tsv,
+                        signature_<cond>.tsv, condition_contrast.tsv) that
+                        build_final_condition_spectra.R needs. Off by
+                        default: the condition-own invariant tiers
+                        (condition_invariants_<cond>.tsv, 60/80/90%
+                        prevalence) do not need it and it is the expensive
+                        part of this stage.
   --n-masks <n>         masks per coverage band in the reference calibration
   --cores <n>           local worker processes (or set N_WORKERS; default <= 8)
   --k-max <n>           frequencies per chromosome in a fingerprint
@@ -202,7 +210,9 @@ FLAG_ALIASES <- c(
   periodbins = "period_bins", period_bins = "period_bins",
   force = "force", dryrun = "dry_run", dry_run = "dry_run",
                   help = "help", h = "help", persample = "per_sample",
-                  per_sample = "per_sample")
+                  per_sample = "per_sample",
+                  legacysignature = "legacy_signature",
+                  legacy_signature = "legacy_signature")
 
 normalise_key <- function(k) tolower(gsub("-", "_", k))
 
