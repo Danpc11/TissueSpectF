@@ -251,6 +251,18 @@ stage_consensus <- function(project, opt) {
       quantile_cut = project$consensus$quantile_cut %||% 0.95,
       alpha = project$maxt$alpha %||% 0.05) else NULL
 
+    # window_suspect: the half of Daniel's original shared_candidate gate
+    # (build_final_condition_spectra.R) that IS reproducible here --
+    # depends only on the grid (inp$chrom_idx: observed positions and N),
+    # never on condition or expression, so it is the same for every
+    # condition and computed once per dataset. cohort_log2_enrichment, the
+    # other half, compares a condition against the others and has no
+    # equivalent in this file by design -- see window_pct_by_chr() in
+    # consensus.R.
+    window_tab <- tryCatch(
+      window_pct_by_chr(inp$chrom_idx, window_cut = project$consensus$window_cut %||% 1),
+      error = function(e) { tsf_warn("window_pct_by_chr failed: ", conditionMessage(e)); NULL })
+
     # The null depends only on how many samples are drawn, so conditions of the
     # same size share it. Without this the same permutation set is recomputed
     # once per condition, which dominates the stage's cost on real data.
@@ -326,10 +338,17 @@ stage_consensus <- function(project, opt) {
       # whole dataset. See pooled_stands_out() / condition_invariants_from_pool()
       # in consensus.R.
       if (!is.null(pooled_flags)) {
+        # window_tab (chr, k identify it uniquely, same for every condition
+        # -- see its definition above) is passed IN, not joined afterwards:
+        # condition_invariants_from_pool() drops window_suspect==TRUE rows
+        # BEFORE classify_condition_invariants() ever sees them -- the same
+        # hard gate Daniel's shared_candidate applies (!window_suspect), not
+        # merely a reported column.
         cond_inv <- condition_invariants_from_pool(
           pooled_flags, these,
           thresholds = project$consensus$condition_invariant_thresholds %||%
-            c(0.60, 0.80, 0.90))
+            c(0.60, 0.80, 0.90),
+          window_tab = window_tab)
 
         # Descriptive-only additions: a bootstrap CI (how much does
         # resampling THIS condition's own patients move
