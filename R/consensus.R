@@ -886,11 +886,17 @@ pooled_stands_out <- function(pool, maxt = NULL, quantile_cut = 0.95, alpha = 0.
 #' Confidence intervals (bootstrap) and a null p-value (permutation against
 #' the whole pool) are NOT computed here -- see condition_invariant_bootstrap()
 #' and stage_consensus()'s use of null_consensus_distribution(), which attach
-#' them afterwards as DESCRIPTIVE columns. None of it gates the tier: no
+#' them afterwards as DESCRIPTIVE columns. None of THOSE gates the tier: no
 #' threshold on power, phase, the CI or the null p-value is applied here,
 #' because none was specified for this tier system -- inventing one would be
-#' a filter nobody asked for. `prevalence` alone decides the 60/80/90% tier;
-#' everything else rides along as evidence to judge each component by.
+#' a filter nobody asked for. `prevalence` alone decides the 60/80/90% tier
+#' among the components that reach this point; everything else rides along
+#' as evidence to judge each component by. The ONE exception is
+#' window_suspect (see the `window_tab` parameter below): it already was a
+#' hard gate in Daniel's own pipeline (shared_candidate's !window_suspect in
+#' build_final_condition_spectra.R), and stays one here on request, dropping
+#' a component before prevalence is even classified rather than just
+#' reporting it.
 #'
 #' @param pooled the table pooled_stands_out() returns
 #' @param condition_samples sample ids belonging to ONE condition
@@ -898,11 +904,25 @@ pooled_stands_out <- function(pool, maxt = NULL, quantile_cut = 0.95, alpha = 0.
 #' @return one row per (chr, N, k) reached by this condition's samples, with
 #'   `prevalence`, `n_samples_condition`, `median_power_normalised`, `plv`,
 #'   `consensus_score_rank` (their product, so null_component_pvalues() can
-#'   be reused unchanged), and the tier columns from
+#'   be reused unchanged), `window_power`/`window_pct`/`window_suspect` when
+#'   `window_tab` is supplied, and the tier columns from
 #'   classify_condition_invariants() -- restricted to rows that clear at
-#'   least the lowest threshold (NULL if none do).
+#'   least the lowest threshold AND are not window_suspect (NULL if none do).
+#'
+#' @param window_tab optional, window_pct_by_chr()'s output (one row per
+#'   chr, k -- the same for every condition of the dataset, since it depends
+#'   only on the grid). When given, a component with window_suspect==TRUE is
+#'   DROPPED before classify_condition_invariants() ever sees it -- the same
+#'   hard gate Daniel's shared_candidate applies (!window_suspect, in
+#'   build_final_condition_spectra.R), not merely reported. NULL (the
+#'   default) skips the gate entirely -- every other metric here
+#'   (PLV, power, the bootstrap CI, the null p-value) stays descriptive-only
+#'   by design; window_suspect is the one exception, because it already was
+#'   a hard filter in Daniel's own pipeline and the user asked for it to stay
+#'   one here.
 condition_invariants_from_pool <- function(pooled, condition_samples,
-                                           thresholds = c(0.60, 0.80, 0.90)) {
+                                           thresholds = c(0.60, 0.80, 0.90),
+                                           window_tab = NULL) {
   sub <- pooled[pooled$sample %in% condition_samples & is.finite(pooled$stands_out), ,
                drop = FALSE]
   if (!nrow(sub)) return(NULL)
@@ -929,6 +949,16 @@ condition_invariants_from_pool <- function(pooled, condition_samples,
                stringsAsFactors = FALSE)
   })
   cs <- do.call(rbind, rows)
+
+  if (!is.null(window_tab)) {
+    cs <- merge(cs, window_tab, by = c("chr", "k"), all.x = TRUE, sort = FALSE)
+    # A component whose window status is unknown (key missing from
+    # window_tab, which should not happen but is not assumed) is kept, not
+    # silently dropped -- only a CONFIRMED window_suspect==TRUE gates it out.
+    cs <- cs[is.na(cs$window_suspect) | !cs$window_suspect, , drop = FALSE]
+  }
+  if (!nrow(cs)) return(NULL)
+
   cs <- classify_condition_invariants(cs, thresholds)
   cs <- cs[cs$condition_invariant_class != "none", , drop = FALSE]
   if (!nrow(cs)) return(NULL)
@@ -1005,4 +1035,40 @@ condition_invariant_bootstrap <- function(pooled, condition_samples, cond_inv,
   cond_inv$consensus_score_ci_lower <- bmat[, "score_lo"]
   cond_inv$consensus_score_ci_upper <- bmat[, "score_hi"]
   cond_inv
+}
+
+#' Spectral-window percentile per (chr, k): how much of the sampling
+#' pattern's OWN leakage a frequency carries, ranked within its own
+#' chromosome. Uses spectral_window() (R/grid.R) on nothing but the observed
+#' gene positions and the grid size -- no expression, no sample, no
+#' condition -- so it is the same for every condition of a dataset and is
+#' computed ONCE, not per condition.
+#'
+#' This is the enrichment-free half of Daniel's original shared_candidate
+#' gate (build_final_condition_spectra.R): !window_suspect. The other half,
+#' cohort_log2_enrichment, compares a condition's power against the OTHER
+#' conditions -- a between-condition question this file deliberately does
+#' not ask (see pooled_stands_out()) -- so it has no equivalent here and is
+#' not reproduced.
+#'
+#' @param chrom_idx named list, one entry per chromosome, each with `$t`
+#'   (observed grid positions) and `$N` (grid size) -- tsf_stage_inputs()
+#'   already builds this for every stage that needs the grid.
+#' @param window_cut a frequency is window_suspect when its window_pct (0-100,
+#'   lower = more leakage) is at or below this (default 1, the same default
+#'   build_final_condition_spectra.R uses for the same test)
+#' @return one row per (chr, k): window_power, window_pct, window_suspect
+window_pct_by_chr <- function(chrom_idx, window_cut = 1) {
+  rows <- lapply(names(chrom_idx), function(chr_now) {
+    ci <- chrom_idx[[chr_now]]
+    w <- spectral_window(ci$t, ci$N)
+    w$chr <- chr_now
+    w$window_rank <- rank(-w$window_power, ties.method = "min", na.last = "keep")
+    n_finite <- sum(is.finite(w$window_power))
+    w$window_pct <- if (n_finite > 0) 100 * w$window_rank / n_finite else NA_real_
+    w[, c("chr", "k", "window_power", "window_pct")]
+  })
+  out <- do.call(rbind, rows)
+  out$window_suspect <- is.finite(out$window_pct) & out$window_pct <= window_cut
+  out
 }
