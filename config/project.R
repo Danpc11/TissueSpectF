@@ -203,7 +203,14 @@ list(
     # a different, looser question from min_prevalence/plv_q above, which
     # gate the confirmed signature. See classify_condition_invariants() in
     # consensus.R.
-    condition_invariant_thresholds = c(0.60, 0.80, 0.90)
+    condition_invariant_thresholds = c(0.60, 0.80, 0.90),
+    # window_suspect for condition_invariants_<cond>.tsv: a frequency is
+    # flagged when its window_pct (spectral-window leakage rank within its
+    # own chromosome, 0-100, lower = more leakage) is at or below this.
+    # Same default and same test as build_final_condition_spectra.R's
+    # window_cut, reused so the two independent implementations of
+    # window_suspect stay comparable.
+    window_cut = 1
   ),
 
   # CLEAN decomposition: greedy deflation with an extended-BIC stopping rule.
